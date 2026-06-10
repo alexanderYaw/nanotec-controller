@@ -123,5 +123,14 @@ namespace MotorControlApp
 
         /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
         public long GetDigitalInputs(AxisId id) => _axes[id].ReadDigitalInputs();
+
+        // --- Expert: arbitrary object write + NV save (the "Write Object" console) -----
+
+        /// <summary>Writes an arbitrary OD entry on one axis. Expert/manual use only.</summary>
+        public void WriteObject(AxisId id, ushort index, byte subIndex, long value, uint bitLength)
+            => _axes[id].WriteObject(index, subIndex, value, bitLength);
+
+        /// <summary>Persists one axis's current parameters to non-volatile memory (0x1010:01 = "save").</summary>
+        public void SaveParametersToNV(AxisId id) => _axes[id].SaveParametersToNV();
     }
 }

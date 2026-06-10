@@ -48,6 +48,10 @@ namespace MotorControlApp
             new(0x203B, 0x02, "i2t peak duration",   "ms"),
             new(0x6072, 0x00, "Max torque",          "0.1% rated"),
             new(0x6080, 0x00, "Max motor speed",     "rpm"),
+            // Profile ramps used by jog (Profile Velocity) and point-to-point moves. A large
+            // 0x6084 is why an axis coasts down slowly after the jog button is released.
+            new(0x6083, 0x00, "Profile acceleration", "vel units/s"),
+            new(0x6084, 0x00, "Profile deceleration", "vel units/s"),
         };
 
         // Factor group + SI-unit codes: these DEFINE the position/velocity units.

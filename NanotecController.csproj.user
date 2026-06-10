@@ -20,6 +20,12 @@
     <Compile Update="FrmMain.Jog.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Update="FrmMain.Params.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmParams.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Update="Input\JoystickPad.cs">
       <SubType>Component</SubType>
     </Compile>

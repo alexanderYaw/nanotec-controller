@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("NanotecController")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c472e3f23ea9289f9a08f2a645e98547d0f458d6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+038991b671d0a9737406e541fe8ee46b3743d1a2")]
 [assembly: System.Reflection.AssemblyProductAttribute("NanotecController")]
 [assembly: System.Reflection.AssemblyTitleAttribute("NanotecController")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -29,6 +29,8 @@ namespace MotorControlApp
         private readonly OdIndex OD_HomingMethod = new OdIndex(0x6098, 0x00);
         // Digital Inputs status object (limit-switch bits used by the calibration find).
         private readonly OdIndex OD_DigitalInputs = new OdIndex(0x60FD, 0x00);
+        // Store-parameters object: writing the "save" signature persists RAM values → NV.
+        private readonly OdIndex OD_StoreParameters = new OdIndex(0x1010, 0x01);
 
         // Profile Position mode objects (for MoveAbsolute / MoveRelative).
         private readonly OdIndex OD_TargetPosition  = new OdIndex(0x607A, 0x00);
@@ -42,6 +44,9 @@ namespace MotorControlApp
         private const uint BITS_8  = 8;
         private const uint BITS_16 = 16;
         private const uint BITS_32 = 32;
+
+        // Signature written to 0x1010:01 to persist current parameters to NV (ASCII "save").
+        private const long STORE_SIGNATURE = 0x65766173;
 
         // --- CiA 402 controlword commands (object 0x6040) ---
         private const ushort CW_DISABLE          = 0x0000; // disable voltage
@@ -317,6 +322,23 @@ namespace MotorControlApp
         /// </summary>
         public bool IsQuickStopped()
             => (Read(OD_Statusword, "statusword") & SW_STATE_MASK) == SW_STATE_QUICK_STOP_ACTIVE;
+
+        /// <summary>
+        /// Writes an arbitrary object-dictionary entry. Expert/manual use (the "Write Object"
+        /// console) — there is no validation beyond NanoLib's, so it can change any writable
+        /// drive setting. <paramref name="bitLength"/> must match the object size (8/16/32).
+        /// </summary>
+        public void WriteObject(ushort index, byte subIndex, long value, uint bitLength)
+            => Write(value, new OdIndex(index, subIndex), bitLength,
+                     $"manual write 0x{index:X4}:{subIndex:X2}");
+
+        /// <summary>
+        /// Persists the drive's CURRENT parameter values to non-volatile memory by writing the
+        /// "save" signature to object 0x1010:01, so a prior <see cref="WriteObject"/> survives a
+        /// power-cycle. Saves the whole parameter set, not just the last write.
+        /// </summary>
+        public void SaveParametersToNV()
+            => Write(STORE_SIGNATURE, OD_StoreParameters, BITS_32, "store parameters to NV (0x1010:01)");
 
         /// <summary>
         /// Reads 0x6064 (Position Actual Value) as a SIGNED 32-bit count. NanoLib returns

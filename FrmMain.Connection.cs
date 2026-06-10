@@ -117,50 +117,5 @@ namespace MotorControlApp
             RestartTimers();
             RefreshButtons();
         }
-
-        // --- Parameter readout (power-cycle verification) -------------------------
-        // Read-only sweep of every connected drive's key objects. Writes nothing, so
-        // it can't disturb the values it reads. Reads from the live connection.
-
-        private async void readParamsButton_Click(object? sender, EventArgs e)
-        {
-            if (!_connection.IsConnected) return;
-
-            _busy = true;
-            RefreshButtons();
-            AppendLog("=== Read drive parameters (read-only; writes nothing) ===");
-
-            statusTimer.Stop();
-            joystickTimer.Stop();
-            await Task.Run(() =>
-            {
-                try
-                {
-                    for (int i = 0; i < _connection.Handles.Count; i++)
-                    {
-                        DeviceIdentity id = _connection.Devices[i];
-                        string axis = TableAxes.NameForBusPosition(id.BusPosition);
-                        _log.Report($"--- [pos {id.BusPosition}] AXIS {axis}  ({id.Name})  serial={id.Serial}  fw={id.Firmware} ---");
-
-                        _log.Report("  Protection / motor limits:");
-                        foreach (ParameterReadout p in DriveDiagnostics.ReadLimits(_connection.Accessor!, _connection.Handles[i]))
-                            _log.Report("    " + p);
-
-                        _log.Report("  Units & scaling (defines position/velocity units):");
-                        foreach (ParameterReadout p in DriveDiagnostics.ReadUnitsScaling(_connection.Accessor!, _connection.Handles[i]))
-                            _log.Report("    " + p);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.Report($"ERROR during parameter read: {ex.Message}");
-                }
-            });
-            AppendLog("=== Done. Re-run after a power cycle and compare to confirm NV persistence. ===");
-
-            _busy = false;
-            RestartTimers();
-            RefreshButtons();
-        }
     }
 }

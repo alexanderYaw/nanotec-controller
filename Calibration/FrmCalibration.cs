@@ -20,7 +20,7 @@ namespace MotorControlApp
         private readonly FrmMain _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
-        private sealed record Row(Label Readout, Button SetMin, Button SetMax, Button? SetHome, Button? Find, Button GoHome);
+        private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button? Find, Button GoHome);
         private readonly Dictionary<AxisId, Row> _rows = new();
 
         public FrmCalibration(FrmMain owner)
@@ -36,9 +36,9 @@ namespace MotorControlApp
                 Location = new Point(12, 8),
                 AutoSize = true,
                 MaximumSize = new Size(700, 0),
-                Text = "Jog an axis to a position in the main window, then Set Min / Set Max here. "
-                     + "Home = centre of the two limits for X/Y; Z's Home is set explicitly. "
-                     + "Find Limits drives Y into its switches automatically.",
+                Text = "Jog an axis to a position in the main window, then Set Min / Set Max here "
+                     + "(Clear Min / Clear Max removes a stored limit). Home = centre of the two limits "
+                     + "for X/Y; Z's Home is set explicitly. Find Limits drives Y into its switches automatically.",
             };
             Controls.Add(hint);
 
@@ -90,19 +90,23 @@ namespace MotorControlApp
             }
 
             Button setMin = Add("Set Min");
+            Button clearMin = Add("Clear Min");
             Button setMax = Add("Set Max");
+            Button clearMax = Add("Clear Max");
             // Z defines Home explicitly (no two references to centre); Y can auto-find its limits.
             Button? setHome = id == AxisId.Z ? Add("Set Home") : null;
             Button? find = id == AxisId.Y ? Add("Find Limits") : null;
             Button goHome = Add("Go Home");
 
             setMin.Click += (s, e) => { _owner.SetCalibrationMin(id); UpdateUi(); };
+            clearMin.Click += (s, e) => { _owner.ClearCalibrationMin(id); UpdateUi(); };
             setMax.Click += (s, e) => { _owner.SetCalibrationMax(id); UpdateUi(); };
+            clearMax.Click += (s, e) => { _owner.ClearCalibrationMax(id); UpdateUi(); };
             if (setHome != null) setHome.Click += (s, e) => { _owner.SetCalibrationHome(id); UpdateUi(); };
             if (find != null) find.Click += async (s, e) => { await _owner.FindLimitsAsync(id); UpdateUi(); };
             goHome.Click += async (s, e) => { await _owner.GoHomeAsync(id); UpdateUi(); };
 
-            _rows[id] = new Row(readout, setMin, setMax, setHome, find, goHome);
+            _rows[id] = new Row(readout, setMin, clearMin, setMax, clearMax, setHome, find, goHome);
             return x;
         }
 
@@ -120,6 +124,8 @@ namespace MotorControlApp
 
                 r.SetMin.Enabled = canCapture;
                 r.SetMax.Enabled = canCapture;
+                r.ClearMin.Enabled = c.Min.HasValue;   // clearing is a local edit; only needs a value to clear
+                r.ClearMax.Enabled = c.Max.HasValue;
                 if (r.SetHome != null) r.SetHome.Enabled = canCapture;
                 if (r.Find != null) r.Find.Enabled = canMove;
                 r.GoHome.Enabled = canMove && _owner.HomeTargetFor(id).HasValue;

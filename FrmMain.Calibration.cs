@@ -155,6 +155,22 @@ namespace MotorControlApp
         internal void SetCalibrationMax(AxisId id) => CaptureInto(id, isMax: true, isHome: false);
         internal void SetCalibrationHome(AxisId id) => CaptureInto(id, isMax: false, isHome: true);
 
+        internal void ClearCalibrationMin(AxisId id) => ClearLimit(id, isMax: false);
+        internal void ClearCalibrationMax(AxisId id) => ClearLimit(id, isMax: true);
+
+        // Removes a stored soft limit (sets it back to "none") and persists. Local edit only —
+        // touches no drive. Also drops any soft-limit jog block for the axis, since the limit
+        // that produced it is gone.
+        private void ClearLimit(AxisId id, bool isMax)
+        {
+            AxisCalibration c = _calib.For(id);
+            if (isMax) { c.Max = null; AppendLog($"{id} Max limit cleared."); }
+            else { c.Min = null; AppendLog($"{id} Min limit cleared."); }
+            TrySaveCalibration();
+            _limitBlockedDir[id] = 0;
+            _atSoftLimit.Remove(id);
+        }
+
         private void CaptureInto(AxisId id, bool isMax, bool isHome)
         {
             if (!CanCaptureCalibration) return;
