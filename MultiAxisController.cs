@@ -1,0 +1,112 @@
+using System;
+using System.Collections.Generic;
+
+namespace MotorControlApp
+{
+    /// <summary>
+    /// The shared motion API for the inspection table. One per-axis controller is
+    /// built over each connected drive (mapped by <see cref="AxisConfig.BusPosition"/>),
+    /// and every consumer — the joystick, the GUI buttons, and later the automation
+    /// sequencer — drives the table through THIS class, never the drives directly.
+    ///
+    /// Threading: these calls are short SDO writes but are NOT thread-safe against
+    /// each other (NanoLib is single-channel per device). Serialize access — e.g.
+    /// drive jog start/stop from the UI thread and longer ops from one worker.
+    /// </summary>
+    public sealed class MultiAxisController
+    {
+        private readonly Dictionary<AxisId, ChuckController> _axes = new();
+
+        /// <summary>
+        /// Builds a controller per axis from the connection's handles.
+        /// Throws if a config points at a bus position that wasn't connected, so a
+        /// mis-count is caught here rather than as a null move later.
+        /// </summary>
+        public MultiAxisController(MultiAxisConnection connection, IReadOnlyList<AxisConfig> configs)
+        {
+            if (connection.Accessor == null || !connection.IsConnected)
+                throw new InvalidOperationException("Connection is not established.");
+
+            foreach (AxisConfig cfg in configs)
+            {
+                if (cfg.BusPosition < 0 || cfg.BusPosition >= connection.Handles.Count)
+                    throw new ArgumentOutOfRangeException(nameof(configs),
+                        $"Axis {cfg.Id} ('{cfg.Name}') maps to bus position {cfg.BusPosition}, " +
+                        $"but only {connection.Handles.Count} drive(s) are connected.");
+
+                _axes[cfg.Id] = new ChuckController(
+                    connection.Accessor, connection.Handles[cfg.BusPosition], cfg);
+            }
+        }
+
+        public IReadOnlyCollection<AxisId> Axes => _axes.Keys;
+
+        public bool Has(AxisId id) => _axes.ContainsKey(id);
+
+        /// <summary>Direct access to a single axis (e.g. for homing or status).</summary>
+        public ChuckController this[AxisId id] => _axes[id];
+
+        // --- Enable / disable -----------------------------------------------------
+
+        /// <summary>Enables every axis (walks each through the CiA 402 state machine).</summary>
+        public void EnableAll()
+        {
+            foreach (ChuckController axis in _axes.Values)
+                axis.EnableDrive(true);
+        }
+
+        /// <summary>Stops then disables every axis. Best-effort: never throws.</summary>
+        public void DisableAll()
+        {
+            foreach (ChuckController axis in _axes.Values)
+            {
+                try { axis.StopManualJog(); } catch (ChuckException) { }
+                try { axis.EnableDrive(false); } catch (ChuckException) { }
+            }
+        }
+
+        // --- Jog (joystick / manual) ----------------------------------------------
+
+        /// <summary>
+        /// Jogs one axis at an explicit speed (drive velocity units), applying the
+        /// axis's InvertDirection. Direction is -1/0/+1; 0 stops. Used by the GUI jog
+        /// buttons, where the speed comes from a UI control rather than the config.
+        /// </summary>
+        public void JogAt(AxisId id, int direction, int speed)
+        {
+            ChuckController axis = _axes[id];
+            if (direction == 0) { axis.StopManualJog(); return; }
+            int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
+            axis.StartManualJog(speed * sign);
+        }
+
+        public void Stop(AxisId id) => _axes[id].StopManualJog();
+
+        /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>
+        public void StopAll()
+        {
+            foreach (ChuckController axis in _axes.Values)
+            {
+                try { axis.StopManualJog(); } catch (ChuckException) { }
+            }
+        }
+
+        // --- Positioning (Profile Position) ---------------------------------------
+
+        public void MoveAbsolute(AxisId id, long targetPosition, int profileVelocity)
+            => _axes[id].MoveAbsolute(targetPosition, profileVelocity);
+
+        public void MoveRelative(AxisId id, long deltaPosition, int profileVelocity)
+            => _axes[id].MoveRelative(deltaPosition, profileVelocity);
+
+        public bool WaitForMotionComplete(AxisId id, int timeoutMs)
+            => _axes[id].WaitForMotionComplete(timeoutMs);
+
+        // --- Status ----------------------------------------------------------------
+
+        public ChuckController.ChuckStatus GetStatus(AxisId id) => _axes[id].GetStatus();
+
+        /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
+        public long GetDigitalInputs(AxisId id) => _axes[id].ReadDigitalInputs();
+    }
+}

@@ -1,0 +1,108 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace MotorControlApp
+{
+    /// <summary>
+    /// Stored travel limits + home for one axis, in raw drive position units (object
+    /// 0x6064). Min/Max are the two "digital limits"; <see cref="Center"/> is their
+    /// midpoint, used as Home for the linear stages that have two references (X, Y).
+    /// </summary>
+    public sealed class AxisCalibration
+    {
+        public long? Min { get; set; }
+        public long? Max { get; set; }
+        /// <summary>Explicit home, used where Center doesn't apply (Z has no two references).</summary>
+        public long? Home { get; set; }
+
+        /// <summary>Midpoint of the two limits, or null until both are set.</summary>
+        [JsonIgnore]
+        public long? Center => Min.HasValue && Max.HasValue ? (Min.Value + Max.Value) / 2 : null;
+    }
+
+    /// <summary>
+    /// Per-axis calibration persisted to a JSON file, so a defined home survives restarts.
+    /// Theta is excluded by convention (the rotary chuck has no home). The home model is
+    /// the caller's policy: X/Y use <see cref="AxisCalibration.Center"/>; Z uses its
+    /// explicit <see cref="AxisCalibration.Home"/>.
+    /// </summary>
+    public sealed class CalibrationStore
+    {
+        public Dictionary<AxisId, AxisCalibration> Axes { get; set; } = new();
+
+        /// <summary>Gets (creating if absent) the calibration record for an axis.</summary>
+        public AxisCalibration For(AxisId id)
+        {
+            if (!Axes.TryGetValue(id, out AxisCalibration? c)) { c = new AxisCalibration(); Axes[id] = c; }
+            return c;
+        }
+
+        private static readonly JsonSerializerOptions Opts = new()
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() },
+        };
+
+        public static string DefaultPath => Path.Combine(AppContext.BaseDirectory, "calibration.json");
+
+        /// <summary>
+        /// Loads the saved calibration, or a fresh (empty) store if none exists / it is
+        /// corrupt. <paramref name="warning"/> is set (and the bad file preserved as
+        /// <c>calibration.corrupt.json</c>) when an existing file could not be read — the
+        /// caller MUST surface it, because starting with an empty store silently removes the
+        /// soft limits, which on X+/Z are the only travel protection.
+        /// </summary>
+        public static CalibrationStore Load(out string? warning)
+        {
+            warning = null;
+            try
+            {
+                if (File.Exists(DefaultPath))
+                {
+                    CalibrationStore? s = JsonSerializer.Deserialize<CalibrationStore>(
+                        File.ReadAllText(DefaultPath), Opts);
+                    if (s != null) return s;
+                    warning = "calibration.json was empty/invalid - starting with NO soft limits.";
+                }
+            }
+            catch (Exception ex)
+            {
+                warning = $"calibration.json could not be read ({ex.Message}) - starting with NO soft limits.";
+            }
+            if (warning != null) TryPreserveCorrupt();
+            return new CalibrationStore();
+        }
+
+        // Moves an unreadable calibration file aside so it isn't silently overwritten by the
+        // next Save() and can be inspected/recovered. Best effort — never throws.
+        private static void TryPreserveCorrupt()
+        {
+            try
+            {
+                if (File.Exists(DefaultPath))
+                {
+                    string bak = Path.Combine(AppContext.BaseDirectory, "calibration.corrupt.json");
+                    File.Copy(DefaultPath, bak, overwrite: true);
+                }
+            }
+            catch { /* best effort */ }
+        }
+
+        /// <summary>
+        /// Writes the store to disk atomically (temp file + replace) so a crash mid-write
+        /// can't truncate the live calibration and silently drop the limits. Throws on IO
+        /// failure so the caller can report it.
+        /// </summary>
+        public void Save()
+        {
+            string json = JsonSerializer.Serialize(this, Opts);
+            string tmp = DefaultPath + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(DefaultPath)) File.Replace(tmp, DefaultPath, null);
+            else File.Move(tmp, DefaultPath);
+        }
+    }
+}
