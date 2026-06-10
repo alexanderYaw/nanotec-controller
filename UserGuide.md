@@ -1,105 +1,232 @@
-# Developer & Operational Guide: Low-Level Chuck Control System
+# User Guide — Nanotec Inspection-Table Controller
 
-This user guide documents the C# implementation designed to control the high-precision rotating chuck of a wafer inspection station. The system leverages Nanotec’s **NanoLib** library to communicate over **EtherCAT** via the **CoE (CANopen over EtherCAT) CiA 402** drive profile.
+This is the operator guide for the multi-axis motion application that drives the
+inspection table's four EtherCAT axes — **X, Y, Z, and Θ (the rotary chuck)** — through
+Nanotec drives using **NanoLib** over **EtherCAT (CoE / CiA 402)** with an **Npcap soft
+master**.
 
----
+> **Status:** This application is still being brought up on real hardware. Treat every
+> first motion on a new machine as a commissioning step: keep the E-stop within reach,
+> start at low jog speeds, and confirm each axis moves the way you expect before trusting
+> automated moves (Home All, Go Home, Find Limits).
 
-## 1. System Requirements & Prerequisites
-
-To successfully build and run this application, the host computer and physical workspace must meet the following configuration parameters:
-
-### Software Requirements
-* **.NET SDK (v8.0 or later):** Required to compile and build the codebase toolchain.
-* **Npcap (v1.88 or later):** Must be installed with the **"Install Npcap in WinPcap API-compatible Mode"** checkbox selected. This allows the underlying native NanoLib binaries (`wpcap.dll` hooks) to execute raw packet injection bypassing the Windows TCP/IP stack.
-* **Nanotec NanoLib Package:** The `nanotec.services.nanolib` package must be present in a local repository and declared inside the `nuget.config` file.
-
-### Project Layout & Architecture Target
-* **Target Architecture:** The project file (`.csproj`) **must** be explicitly compiled for **`x64`** platforms. NanoLib's underlying hardware driver libraries (`nanolibm_ethercat.dll`) are strictly 64-bit binaries. Running under `Any CPU` will trigger a runtime `BadImageFormatException`.
-* **File Separation:** The implementation utilizes standard C# modular architecture where files belong to the unified `namespace MotorControlApp`:
-  * `Program.cs`: Acts as the orchestrator, executing network configuration scans, safe teardowns, and the interactive terminal polling loop.
-  * `ChuckController.cs`: Encapsulates low-level object dictionary read/write primitives, CiA 402 state machine transitions, and encoder calibration logic.
-
-### Physical Interconnects
-1. An Ethernet cable must connect directly from the PC’s dedicated Network Interface Card (NIC) to the **EtherCAT IN** port of the Nanotec motor controller.
-2. The motor driver stage must be powered by an external source matching the voltage constraints of the specific chuck actuator.
+For how the software works internally, see **DeveloperGuide.md**.
 
 ---
 
-## 2. Low-Level Control Architecture (`ChuckController.cs`)
+## 1. Before you start
 
-The `ChuckController` class acts as an abstraction barrier between your high-level application logic and raw hardware registers.
+### Software the PC needs
+* **Npcap** — installed with **"Install Npcap in WinPcap API-Compatible Mode"** ticked.
+  NanoLib's EtherCAT master sends raw packets through Npcap; without it, no drives are found.
+* **.NET 10 (Windows) runtime / SDK** — to build and run.
+* The **NanoLib** package (`nanotec.services.nanolib` 1.4.0) is restored automatically as
+  a project dependency.
 
-### Checked Communication Primitives
-Rather than allowing silent failures or unhandled null values, the class implements explicit wrapper methods around `_accessor.writeNumber` and `_accessor.readNumber`:
+### The application must run **as Administrator**
+Raw packet access through Npcap requires elevation. If you launch without admin rights,
+the bus scan will either find no adapters or fail to open the EtherCAT NIC.
 
-* **`Write(long value, OdIndex od, uint bitLength, string what)`**: Automatically evaluates the returned `ResultVoid` from NanoLib. If a hardware or network timeout occurs, it wraps the internal error text into a descriptive `ChuckException`.
-* **`Read(OdIndex od, string what)`**: Wraps the NanoLib `ResultInt` query. If the read fail condition triggers, it aborts immediately rather than passing a silent fallback value of `0` down to precision math wrappers.
-
-### The CiA 402 State Machine Workflow
-Industrial motor controllers do not accept movement variables when powered up initially. The drive stage must step through a mandatory hardware loop. The `EnableDrive(true)` method handles this progression automatically, checking the **Statusword (0x6041)** at every step:
-
-1. **Fault Latch Verification:** Checks bit 3 (`SW_FAULT`). If active, fires a rising edge reset pulse (`0x0080`) and waits for completion.
-2. **Shutdown Command (`0x0006`):** Transitions to the *Ready To Switch On* state. The system polls the Statusword until it matches `0x0021`.
-3. **Switch On Command (`0x0007`):** Transitions to the *Switched On* state. The system polls until it matches `0x0023`.
-4. **Enable Operation Command (`0x000F`):** Energizes the drive loops, placing the system into the *Operation Enabled* state (`0x0027`).
-
----
-
-## 3. Position Calibration & Synchronization
-
-Wafer inspection profiles require sub-millimeter geometric accuracy. When the machine boots up, the motor encoder value does not inherently match the physical orientation of the chuck. The `SynchronizeEncoderToPhysicalZero()` routine fixes this reference constraint:
-
-1. **Latch Home Offsets:** It resets the **Home Offset register (0x607C)** to `0` prior to initiating movement. Writing offsets post-initialization will cause the register to fail to latch.
-2. **Transition to Homing Mode:** It writes a value of `6` to the **Modes of Operation (0x6060)** object.
-3. **Set Method 34:** Configures **Homing Method (0x6098)** to method `34` (Home on current position / alignment indexing).
-4. **Assert Strobe:** Fires the `CW_START_HOMING (0x001F)` strobe pattern (asserting Bit 4) to force the internal hardware registry to redefine its baseline.
-5. **Deterministic Check:** It polls the Statusword using an extended timeout envelope (`10,000ms`). Per the strict **CiA 402 standard**, homing is validated if and only if **both** `SW_HOMING_ATTAINED` (Bit 12) and `SW_TARGET_REACHED` (Bit 10) evaluate to true.
-
-### Precision Scaling Constants
-The actual angle computation maps encoder counts to a localized 360-degree floating-point coordinate space using the tracking variable:
-
-$$\text{Angle} = \left(\frac{\text{Raw Ticks} \pmod{40000}}{40000}\right) \times 360.0^\circ$$
-
-The constant `ENCODER_TICKS_PER_REV = 40000` defines the total quadrature resolution boundaries of your chuck assembly. If the readout counts downwards during a clockwise manual rotation, the internal scaling inversion can be applied directly by updating the hardware **Polarity Object (0x607E)**.
+### Hardware connections
+1. Connect the PC's dedicated NIC straight into the **EtherCAT IN** port of the first
+   drive in the chain.
+2. Power the drive stage from its external supply.
+3. The four drives are daisy-chained. Their **bus order is fixed as X, Y, Z, Θ** — i.e.
+   the first drive on the line is X, the last is Θ.
 
 ---
 
-## 4. Manual Operation Framework (`Program.cs`)
+## 2. The main window at a glance
 
-The high-level UI layer processes asynchronous keyboard interaction from a user and pipes commands down into velocity vectors. 
-
-### Operational Key Mappings
-When running the system in terminal mode via `dotnet run`, the following live keyboard mapping binds to the active execution context:
-
-| Input Key | Command Action | Underlying Hardware Vector Passed |
-| :--- | :--- | :--- |
-| **Right Arrow** | Continuous Clockwise Spin | Modes of Op $\rightarrow$ `3` (Velocity), Target Velocity $\rightarrow$ `1500` |
-| **Left Arrow** | Continuous Counter-Clockwise Spin | Modes of Op $\rightarrow$ `3` (Velocity), Target Velocity $\rightarrow$ `-1500` |
-| **Spacebar** | Immediate Motion Halt | Target Velocity $\rightarrow$ `0`, Controlword $\rightarrow$ `0x010F` (Halt bit 8) |
-| **Escape** | Graceful Disconnect & Exit | Break tracking loop $\rightarrow$ Execute Teardown sequence |
-
-*Note: The jog magnitude (`1500`) relies heavily on your driver's internal factor-group configuration (Objects 0x6091-0x6096). Verify your gear ratio scaling profiles if the physical rotation speed doesn't align with software expectations.*
-
-### Safe Intercept Handling (Ctrl+C & Fault Recovery)
-Abruptly killing a command-line utility controlling heavy mechanical hardware can leave an active induction loop energized or spin a motor out of bounds. To circumvent this, `Program.cs` implements a hardware protection lifecycle wrapper:
-
-1. **`Console.CancelKeyPress` Interception:** If a user triggers a termination shortcut (`Ctrl+C`), the handler cancels the immediate operating system abort signal (`e.Cancel = true`) and raises an internal thread flag `_exitRequested = true`.
-2. **Falling Through to `finally`:** The manual loop drops naturally into a structural `finally` teardown block.
-3. **Safe Shutdown Sequence:**
-   * `chuck?.StopManualJog()` is immediately asserted to decelerate rotation down to zero velocity.
-   * `chuck?.EnableDrive(false)` drops the Controlword to `0x0000`, removing bias voltage from the driver stage and allowing the chuck to enter a low-energy state safely.
-   * `TeardownHardware()` releases the logical device maps, frees memory handles, and closes the physical network sockets gracefully.
+| Area | What it does |
+|---|---|
+| **Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
+| **Connect / Disconnect** | Open or close the link to all drives. |
+| **Read Params** | Read-only dump of each drive's limits & unit settings to the log. |
+| **Calibration…** | Opens the travel-limits & Home window (see §8). |
+| **Enable All / Disable All** | Energise / de-energise all drives. |
+| **Home All** | Retract Z, then send X & Y to their home positions (see §7). |
+| **Per-axis rows (X / Y / Z / Θ)** | Speed slider, **−/+ hold-to-jog** buttons, and a live position + state readout per axis. |
+| **Input source (Off / USB / On-screen)** | Selects the joystick input (see §6). |
+| **On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
+| **Move To** | Type X/Y/Z target coordinates and move there (see §9). |
+| **Log** | Timestamped record of everything the app did. Read it — it reports every stop, limit, and error. |
 
 ---
 
-## 5. API Reference & Status Monitoring
+## 3. Connecting
 
-The application aggregates tracking telemetry via the `GetStatus()` method, returning an atomic, immutable snapshot structure:
+1. Click **Connect**.
+2. The app scans the PC's network adapters and shows a **bus picker** dialog. EtherCAT-
+   capable adapters are tagged **`[EtherCAT]`**. Choose the one your drives are on and
+   click **Connect**.
+3. The app connects to **every drive on the line in bus order** and logs each drive's
+   axis name, serial number, and firmware. Confirm it found **4 drives** and that the
+   serials line up with the axes you expect.
 
-```csharp
-public readonly struct ChuckStatus
-{
-    public double AngleDegrees { get; init; } // Normalized orientation value (0.00° - 359.99°)
-    public string State { get; init; }        // Decoded string variant ("Ready", "Operation Enabled", etc.)
-    public bool HasFault { get; init; }       // Active error latch flag read directly from hardware
-}
+**Connecting never moves anything.** All drives come up **disabled** (no torque, no
+motion). This is deliberate — bring-up is always a separate, explicit step.
+
+If the app finds a different number of drives than expected, it warns you in the log. If
+the axis mapping can't be completed (e.g. a drive is missing), it disconnects rather than
+run with a partial table.
+
+---
+
+## 4. Enabling the drives
+
+Click **Enable All**. The app walks every drive through its power-on sequence and leaves
+each one **holding position with zero commanded speed** — energised but not moving.
+
+* The status row for each axis should read **Operation Enabled**.
+* **No axis should move when you enable.** If one does, disable immediately and report it
+  — that indicates a leftover motion target or a running on-drive program.
+
+**Disable All** stops and de-energises every axis. Switching the input source to **Off**
+or disabling always halts motion first.
+
+---
+
+## 5. Jogging with the on-screen buttons
+
+Each axis row has:
+* A **speed slider** — that axis's jog speed (in the drive's own velocity units). The
+  live value is shown beside it. Each axis has its own sensible default and maximum.
+* **− and +** buttons — **hold to move, release to stop.** Motion only lasts as long as
+  you hold the button. There is no "latched" jog.
+
+The speed is taken at the moment you press, so set the slider first, then press and hold.
+
+---
+
+## 6. Joystick control
+
+Pick the input with the **Off / USB / On-screen** radio buttons (only available once
+drives are enabled). The two joysticks are mutually exclusive.
+
+### USB joystick
+Any controller Windows lists in **`joy.cpl`** works. The default button map:
+
+| Button | Function |
+|---|---|
+| **1** | **Deadman** — *must be held* for any motion. Release = immediate stop. |
+| **2** | **Fast** — multiplies the jog speed (capped at each axis's slider maximum). |
+| 3 / 4 | Z − / Z + |
+| 5 / 6 | Θ − / Θ + |
+
+The main stick drives **X/Y**; the D-pad/hat also works. Stick directions are digital
+(full speed when deflected). **If the joystick is unplugged or vanishes mid-use, all
+axes stop.**
+
+### On-screen joystick (mouse)
+Drag the **puck** inside the circle. Unlike the USB stick this is **analog**: the puck's
+angle sets the X/Y direction and how far you push sets the speed (rim = that axis's slider
+speed). **Release the mouse and the puck springs back to centre → motion stops.** There is
+no deadman — holding the mouse *is* the intent.
+
+---
+
+## 7. Soft travel limits (automatic protection)
+
+Once you've calibrated an axis's **Min/Max** (see §8), the app watches each axis while you
+jog and **stops it if it tries to travel past a stored limit**. You can always jog **back
+into range** — only further-out motion is blocked.
+
+Important caveats:
+* This is a **software** guard polled a few times a second, so expect a little overshoot
+  at high speed. Where physical limit switches exist, **they** are the real safety; the
+  soft limit is a convenience guard.
+* On this machine, **X's + end and both ends of Z have no working limit switch**, so the
+  soft limit is the *only* protection there. Calibrate those axes before jogging them far,
+  and keep speeds modest.
+* If `calibration.json` is missing or unreadable at startup, the app logs a **"starting
+  with NO soft limits"** warning. Take it seriously — re-calibrate before jogging.
+
+---
+
+## 8. Calibration window (travel limits & Home)
+
+Open it with **Calibration…**. It shows X, Y, Z (Θ has no home and is excluded). All
+calibration values are saved to `calibration.json` next to the app and survive restarts.
+
+For each axis:
+* **Set Min / Set Max** — jog the axis to a position in the main window, then click to
+  **capture the current position** as that limit.
+* **Set Home** (Z only) — captures Z's explicit home position.
+* **Find Limits** (Y only) — **automatically** drives Y into each end switch, records both
+  edges as Min/Max, and sets Home to the centre. Watch it run; it backs off the switches
+  when done.
+* **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
+  explicit Home for Z) and reports how close it landed.
+
+Home model summary:
+* **X / Y:** Home = midpoint of the two limits (needs both Min and Max set).
+* **Z:** Home = the explicit position you captured with Set Home.
+
+### Home All
+The **Home All** button on the main window runs a safe homing sequence:
+1. **Z moves to its home first** (e.g. retracts to a safe height) — and the app **confirms
+   Z arrived** before doing anything else.
+2. **Then X and Y move to their homes together.**
+
+It requires Home to be defined for **all three** of X, Y, Z; otherwise it refuses and tells
+you which are missing — so X/Y never traverse while Z is still down.
+
+---
+
+## 9. Move To (go to a coordinate)
+
+The **Move To** panel takes X/Y/Z target values in the same drive units shown as Min/Max.
+
+* Any field left **blank** means "leave that axis where it is."
+* Entered targets are **range-checked against each axis's Min/Max**. If any one is out of
+  range, the **whole move is cancelled** and the offending value is logged.
+* The entered axes move together.
+
+---
+
+## 10. Read Params (verify drive settings)
+
+**Read Params** dumps each connected drive's key configuration to the log **without writing
+anything** — current/torque limits, max speed, and the unit/scaling objects that define
+what "position" and "velocity" units actually mean.
+
+Typical use: read once, **power-cycle the drives**, read again, and compare to confirm the
+drives kept their settings in non-volatile memory.
+
+It only runs while the drives are connected, and pauses live polling while it reads.
+
+---
+
+## 11. Safety behaviours you can rely on
+
+* **Connecting performs no motion.** Drives come up disabled.
+* **Enabling holds position** with zero speed — no lurch (provided no on-drive program is
+  running).
+* **All jogging is momentary** — release the button, release the deadman, or re-centre the
+  puck and motion stops.
+* **Losing window focus stops everything** and pauses the joystick. (A running Home/Find
+  operation is left alone — it owns the drives.)
+* **Losing the USB joystick stops all axes.**
+* **Soft limits stop outward jogs** on calibrated axes.
+* **Closing the window** disables the drives and disconnects cleanly.
+
+---
+
+## 12. Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| Connect finds **no buses** | Npcap not installed / not in WinPcap-compatible mode; app not run as Administrator. |
+| Connect finds **no drives** | Cabling (IN vs OUT port), drive power, wrong adapter chosen in the bus picker. |
+| **Wrong number of drives** found | An unpowered drive or a bad daisy-chain link — check the log for the count. |
+| An axis **moves on Enable** | Disable immediately. Suspect a leftover target or an on-drive (NanoJ) program still running. |
+| Jog buttons are **greyed out** | Drives aren't enabled, or an operation is busy (amber LED), or the axis is parked against a soft limit in that direction. |
+| **"starting with NO soft limits"** at launch | `calibration.json` was missing/corrupt (a `calibration.corrupt.json` backup is kept). Re-calibrate. |
+| **Lost contact with a drive** in the log | The link dropped after several failed reads; reconnect. The soft master is not real-time, so the occasional miss is tolerated before it gives up. |
+
+---
+
+*Position and velocity values are shown in the **drive's own configured units**, not yet
+converted to millimetres or degrees. Until that scaling is confirmed on hardware, treat the
+numbers as raw drive units and verify physical magnitudes by observation.*
