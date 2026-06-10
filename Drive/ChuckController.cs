@@ -66,6 +66,12 @@ namespace MotorControlApp
         private const long SW_STATE_READY_TO_SWITCH = 0x0021;
         private const long SW_STATE_SWITCHED_ON     = 0x0023;
         private const long SW_STATE_OP_ENABLED      = 0x0027;
+        // Quick-Stop-Active (0x07) is what a limit hit leaves the drive in on this machine:
+        // bits 0/1/2 set but the quick-stop bit (5) CLEAR. Motion commands are ignored until
+        // it is cleared by a re-enable. Fault-Reaction-Active (0x0F) is the transient state
+        // while a fault ramps down.
+        private const long SW_STATE_QUICK_STOP_ACTIVE = 0x0007;
+        private const long SW_STATE_FAULT_REACTION    = 0x000F;
         // "Switch On Disabled" uses mask 0x4F (the quick-stop bit is don't-care here).
         private const long SW_STATE_MASK_SOD           = 0x004F;
         private const long SW_STATE_SWITCH_ON_DISABLED = 0x0040;
@@ -303,6 +309,16 @@ namespace MotorControlApp
         public long ReadDigitalInputs() => Read(OD_DigitalInputs, "digital inputs 0x60FD");
 
         /// <summary>
+        /// True if the drive is held in Quick-Stop-Active (state 0x07) — what a limit hit
+        /// leaves it in on this machine. While in this state the drive ignores motion
+        /// commands; only a re-enable (<see cref="EnableDrive"/>(true), which normalises via
+        /// Disable Voltage → Switch-On-Disabled) clears it. A plain jog/controlword 0x0F does
+        /// NOT reliably recover it here.
+        /// </summary>
+        public bool IsQuickStopped()
+            => (Read(OD_Statusword, "statusword") & SW_STATE_MASK) == SW_STATE_QUICK_STOP_ACTIVE;
+
+        /// <summary>
         /// Reads 0x6064 (Position Actual Value) as a SIGNED 32-bit count. NanoLib returns
         /// the raw object zero-extended, so a negative position would otherwise come back
         /// as ~4.29 billion (e.g. -117863 → 4294849433) and corrupt any maths on it. The
@@ -342,10 +358,12 @@ namespace MotorControlApp
             if ((sw & SW_FAULT) != 0) return "Fault";
             return (sw & SW_STATE_MASK) switch
             {
-                SW_STATE_OP_ENABLED      => "Operation Enabled",
-                SW_STATE_SWITCHED_ON     => "Switched On",
-                SW_STATE_READY_TO_SWITCH => "Ready",
-                _                        => $"State 0x{sw & SW_STATE_MASK:X2}",
+                SW_STATE_OP_ENABLED        => "Operation Enabled",
+                SW_STATE_SWITCHED_ON       => "Switched On",
+                SW_STATE_READY_TO_SWITCH   => "Ready",
+                SW_STATE_QUICK_STOP_ACTIVE => "Quick Stop",
+                SW_STATE_FAULT_REACTION    => "Fault Reaction",
+                _                          => $"State 0x{sw & SW_STATE_MASK:X2}",
             };
         }
     }

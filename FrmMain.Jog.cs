@@ -22,6 +22,13 @@ namespace MotorControlApp
             int speed = _axisRows[id].Speed.Value;
             try
             {
+                // If a limit hit left the axis in Quick-Stop-Active, clear it first so the
+                // jog can drive it off the switch (a plain jog/controlword 0x0F won't recover
+                // it on this drive — same reason the auto limit-find re-enables). This runs
+                // on the UI thread, so there is a brief (~1 s) hitch while it re-enables, but
+                // only when actually quick-stopped; a normal jog is just one extra status read.
+                if (_motion.RecoverIfQuickStopped(id))
+                    AppendLog($"{id} was in Quick Stop (limit) - re-enabled.");
                 _motion.JogAt(id, direction, speed);
                 _cmdDir[id] = direction;
                 AppendLog($"Jog {id} {(direction > 0 ? "+" : "−")} at {speed}.");

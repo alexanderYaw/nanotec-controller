@@ -51,10 +51,13 @@ namespace MotorControlApp
             {
                 // 1) Z home first. ABORT before moving the table if Z does not actually
                 //    arrive, so X/Y never traverse while Z is still down (collision).
-                _motion!.MoveAbsolute(AxisId.Z, zT.Value, zSpd);
+                _motion!.RecoverIfQuickStopped(AxisId.Z);   // clear a quick stop so the move runs
+                _motion.MoveAbsolute(AxisId.Z, zT.Value, zSpd);
                 if (!_motion.WaitForMotionComplete(AxisId.Z, FIND_TIMEOUT_MS))
                     throw new ChuckException("Z did not reach Home in time - aborting before X/Y move.");
                 // 2) X and Y together: issue both moves, then wait for both to finish.
+                _motion.RecoverIfQuickStopped(AxisId.X);
+                _motion.RecoverIfQuickStopped(AxisId.Y);
                 _motion.MoveAbsolute(AxisId.X, xT.Value, xSpd);
                 _motion.MoveAbsolute(AxisId.Y, yT.Value, ySpd);
                 _motion.WaitForMotionComplete(AxisId.X, FIND_TIMEOUT_MS);
@@ -113,7 +116,7 @@ namespace MotorControlApp
             AppendLog($"Move to: {desc}...");
             bool ok = await RunDriveOp(() =>
             {
-                foreach ((AxisId id, long pos) t in targets) _motion!.MoveAbsolute(t.id, t.pos, HomeSpeedFor(t.id));
+                foreach ((AxisId id, long pos) t in targets) { _motion!.RecoverIfQuickStopped(t.id); _motion.MoveAbsolute(t.id, t.pos, HomeSpeedFor(t.id)); }
                 foreach ((AxisId id, long pos) t in targets) _motion!.WaitForMotionComplete(t.id, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Move complete." : "Move FAILED - see error above.");
@@ -181,6 +184,7 @@ namespace MotorControlApp
             bool ok = await RunDriveOp(() =>
             {
                 before = _motion!.GetStatus(id).Position;
+                _motion.RecoverIfQuickStopped(id);   // clear a limit-induced quick stop so the move runs
                 _motion.MoveAbsolute(id, target.Value, speed);
                 reached = _motion.WaitForMotionComplete(id, FIND_TIMEOUT_MS);
                 after = _motion.GetStatus(id).Position;

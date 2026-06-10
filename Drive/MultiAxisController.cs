@@ -65,6 +65,21 @@ namespace MotorControlApp
             }
         }
 
+        /// <summary>
+        /// If the axis is held in Quick-Stop-Active (e.g. after a limit hit), clears it by
+        /// re-enabling so a following move can take effect, and returns true. No-op (returns
+        /// false) when the axis is healthy, so a holding axis (e.g. Z under gravity) is NOT
+        /// briefly de-energised unnecessarily. Call this before commanding a move/jog that
+        /// must run even after a limit stop.
+        /// </summary>
+        public bool RecoverIfQuickStopped(AxisId id)
+        {
+            ChuckController axis = _axes[id];
+            if (!axis.IsQuickStopped()) return false;
+            axis.EnableDrive(true);
+            return true;
+        }
+
         // --- Jog (joystick / manual) ----------------------------------------------
 
         /// <summary>
