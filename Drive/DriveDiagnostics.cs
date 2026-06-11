@@ -36,7 +36,7 @@ namespace MotorControlApp
     public static class DriveDiagnostics
     {
         private readonly record struct ParamSpec(
-            ushort Index, byte Sub, string Label, string Unit, bool Hex = false);
+            ushort Index, byte Sub, string Label, string Unit, bool Hex = false, byte SignedBits = 0);
 
         // Protection / motor limits. Units here are fixed (not factor-group dependent).
         private static readonly ParamSpec[] Limits =
@@ -68,6 +68,25 @@ namespace MotorControlApp
             new(0x6096, 0x02, "Velocity factor: den",  ""),
         };
 
+        // Live motion / Profile-Position state. Read these RIGHT AFTER issuing a Move To /
+        // Go Home to diagnose the open bug where an absolute move "completes" in the object
+        // dictionary (0x6064 reaches target, Target-Reached trips) but the stage doesn't
+        // physically move. Signed objects are sign-extended (NanoLib reads zero-extended).
+        //   0x6061 mode display: 1=Profile Position, 3=Profile Velocity, 6=Homing.
+        //   0x6041 statusword: low byte = CiA state; bit10=target reached, bit12=setpoint ack.
+        //   0x607A vs 0x6064: did the target we wrote land, and did actual reach it?
+        private static readonly ParamSpec[] MotionState =
+        {
+            new(0x6061, 0x00, "Mode display",         "(1=PP 3=PV 6=home)", SignedBits: 8),
+            new(0x6060, 0x00, "Mode commanded",       "",                   SignedBits: 8),
+            new(0x6041, 0x00, "Statusword",           "bits",   Hex: true),
+            new(0x607A, 0x00, "Target position",      "pos units", SignedBits: 32),
+            new(0x6064, 0x00, "Position actual",      "pos units", SignedBits: 32),
+            new(0x6081, 0x00, "Profile velocity",     "vel units"),
+            new(0x6083, 0x00, "Profile acceleration", "vel units/s"),
+            new(0x6084, 0x00, "Profile deceleration", "vel units/s"),
+        };
+
         /// <summary>Protection / motor-limit objects (fixed units).</summary>
         public static IReadOnlyList<ParameterReadout> ReadLimits(
             NanoLibAccessor accessor, DeviceHandle handle) => Read(Limits, accessor, handle);
@@ -75,6 +94,10 @@ namespace MotorControlApp
         /// <summary>Factor-group / SI-unit objects that define position &amp; velocity units.</summary>
         public static IReadOnlyList<ParameterReadout> ReadUnitsScaling(
             NanoLibAccessor accessor, DeviceHandle handle) => Read(UnitsScaling, accessor, handle);
+
+        /// <summary>Live motion / Profile-Position state objects (for diagnosing absolute moves).</summary>
+        public static IReadOnlyList<ParameterReadout> ReadMotionState(
+            NanoLibAccessor accessor, DeviceHandle handle) => Read(MotionState, accessor, handle);
 
         private static IReadOnlyList<ParameterReadout> Read(
             ParamSpec[] specs, NanoLibAccessor accessor, DeviceHandle handle)
@@ -84,9 +107,16 @@ namespace MotorControlApp
             {
                 string idx = $"0x{p.Index:X4}:{p.Sub:X2}";
                 using ResultInt r = accessor.readNumber(handle, new OdIndex(p.Index, p.Sub));
-                results.Add(r.hasError()
-                    ? new ParameterReadout(p.Label, idx, null, p.Unit, r.getError(), p.Hex)
-                    : new ParameterReadout(p.Label, idx, r.getResult(), p.Unit, null, p.Hex));
+                if (r.hasError())
+                {
+                    results.Add(new ParameterReadout(p.Label, idx, null, p.Unit, r.getError(), p.Hex));
+                    continue;
+                }
+                long v = r.getResult();
+                // NanoLib zero-extends every read; reinterpret the low SignedBits as
+                // two's-complement so a negative value doesn't read back as billions.
+                if (p.SignedBits != 0) { int sh = 64 - p.SignedBits; v = (v << sh) >> sh; }
+                results.Add(new ParameterReadout(p.Label, idx, v, p.Unit, null, p.Hex));
             }
             return results;
         }

@@ -45,7 +45,7 @@ namespace MotorControlApp
             // Buttons auto-size to their text so they don't clip at higher display scaling.
             int y = 56;
             int maxRight = 480;
-            foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 44; }
+            foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 84; }
             ClientSize = new Size(maxRight + 12, y + 8);
 
             _refresh.Tick += (s, e) => UpdateUi();
@@ -72,31 +72,49 @@ namespace MotorControlApp
             Controls.Add(name);
             Controls.Add(readout);
 
-            // Lay the action buttons left-to-right, each auto-sized to fit its caption.
+            // Action buttons, each auto-sized to its caption. Set Min/Max sit on the top row;
+            // Clear Min/Max sit directly BELOW their respective Set button (a second row). The
+            // remaining single buttons (Set Home / Find / Go Home) stay on the top row.
+            const int gap = 6;
+            int row1 = y + 2;
+            int row2 = y + 38;
             int x = 410;
-            Button Add(string text)
+
+            Button Make(string text, int bx, int by)
             {
                 var b = new Button
                 {
                     Text = text,
-                    Location = new Point(x, y + 2),
+                    Location = new Point(bx, by),
                     AutoSize = true,
                     AutoSizeMode = AutoSizeMode.GrowAndShrink,
                     Padding = new Padding(8, 3, 8, 3),
                 };
                 Controls.Add(b);
-                x += b.PreferredSize.Width + 6;
                 return b;
             }
 
-            Button setMin = Add("Set Min");
-            Button clearMin = Add("Clear Min");
-            Button setMax = Add("Set Max");
-            Button clearMax = Add("Clear Max");
+            // Min column: Set Min on top, Clear Min below; advance by the wider of the two.
+            Button setMin = Make("Set Min", x, row1);
+            Button clearMin = Make("Clear Min", x, row2);
+            x += Math.Max(setMin.PreferredSize.Width, clearMin.PreferredSize.Width) + gap;
+
+            // Max column: Set Max on top, Clear Max below.
+            Button setMax = Make("Set Max", x, row1);
+            Button clearMax = Make("Clear Max", x, row2);
+            x += Math.Max(setMax.PreferredSize.Width, clearMax.PreferredSize.Width) + gap;
+
+            // Remaining buttons run along the top row only.
+            Button AddTop(string text)
+            {
+                Button b = Make(text, x, row1);
+                x += b.PreferredSize.Width + gap;
+                return b;
+            }
             // Z defines Home explicitly (no two references to centre); Y can auto-find its limits.
-            Button? setHome = id == AxisId.Z ? Add("Set Home") : null;
-            Button? find = id == AxisId.Y ? Add("Find Limits") : null;
-            Button goHome = Add("Go Home");
+            Button? setHome = id == AxisId.Z ? AddTop("Set Home") : null;
+            Button? find = id == AxisId.Y ? AddTop("Find Limits") : null;
+            Button goHome = AddTop("Go Home");
 
             setMin.Click += (s, e) => { _owner.SetCalibrationMin(id); UpdateUi(); };
             clearMin.Click += (s, e) => { _owner.ClearCalibrationMin(id); UpdateUi(); };

@@ -54,6 +54,10 @@ namespace MotorControlApp
                         sink.Report("  Units & scaling (defines position/velocity units):");
                         foreach (ParameterReadout p in DriveDiagnostics.ReadUnitsScaling(_connection.Accessor!, _connection.Handles[i]))
                             sink.Report("    " + p);
+
+                        sink.Report("  Motion state (read right after a Move To / Go Home):");
+                        foreach (ParameterReadout p in DriveDiagnostics.ReadMotionState(_connection.Accessor!, _connection.Handles[i]))
+                            sink.Report("    " + p);
                     }
                 }
                 catch (Exception ex)
