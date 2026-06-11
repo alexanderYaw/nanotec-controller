@@ -118,7 +118,7 @@ namespace MotorControlApp
             readParamsButton.Name = "readParamsButton";
             readParamsButton.Size = new Size(175, 46);
             readParamsButton.TabIndex = 4;
-            readParamsButton.Text = "Read Params (all axes)";
+            readParamsButton.Text = "Parameters...";
             readParamsButton.UseVisualStyleBackColor = true;
             readParamsButton.Click += readParamsButton_Click;
             // 

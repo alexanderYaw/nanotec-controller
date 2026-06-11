@@ -2,13 +2,31 @@
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup />
   <ItemGroup>
-    <Compile Update="FrmCalibration.cs">
+    <Compile Update="Calibration\FrmCalibration.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmMain.Calibration.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmMain.Connection.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Update="FrmMain.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Update="JoystickPad.cs">
+    <Compile Update="FrmMain.Input.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmMain.Jog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmMain.Params.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmParams.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="Input\JoystickPad.cs">
       <SubType>Component</SubType>
     </Compile>
   </ItemGroup>
