@@ -65,7 +65,8 @@ namespace MotorControlApp
                 foreach (AxisId id in _motion.Axes)
                 {
                     ChuckController.ChuckStatus st = _motion.GetStatus(id);
-                    _axisRows[id].Status.Text = $"{st.Position,12:N0}   {st.State}{(st.HasFault ? "  [FAULT]" : "")}";
+                    long shown = (id == AxisId.Y) ? -st.Position : st.Position;   // invert Y for more intuitive readout
+                    _axisRows[id].Status.Text = $"{shown,12:N0}{st.State}{(st.HasFault ? "  [Fault]" : "")}";
                     EnforceSoftLimits(id, st.Position);
                 }
                 _statusFailures = 0;

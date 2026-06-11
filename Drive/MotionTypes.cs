@@ -44,19 +44,14 @@ namespace MotorControlApp
         public int JogVelocityMax { get; init; } = 2000;
 
         /// <summary>
-        /// If true, a positive jog command drives the motor in the negative
-        /// direction. Lets the joystick "up/right = +" feel match the mechanics
-        /// without rewiring or changing polarity on the drive.
-        /// </summary>
-        public bool InvertDirection { get; init; }
-
-        /// <summary>
         /// Optional host-side soft travel limits in the drive's position units
         /// (object 0x6064). Null disables the check. These are a convenience guard
         /// for jogging; the drive's own limit objects (0x607D) remain authoritative.
         /// </summary>
         public long? MinPosition { get; init; }
         public long? MaxPosition { get; init; }
+
+        public bool InvertDirection { get; init; }
     }
 
     /// <summary>
@@ -72,7 +67,7 @@ namespace MotorControlApp
         {
             new AxisConfig { Id = AxisId.X,     Name = "X",     BusPosition = 0, JogVelocityDefault = 4000, JogVelocityMax = 6000 },
             new AxisConfig { Id = AxisId.Y,     Name = "Y",     BusPosition = 1, JogVelocityDefault = 4000, JogVelocityMax = 12000 },
-            new AxisConfig { Id = AxisId.Z,     Name = "Z",     BusPosition = 2, JogVelocityDefault = 300,  JogVelocityMax = 800},
+            new AxisConfig { Id = AxisId.Z,     Name = "Z",     BusPosition = 2, JogVelocityDefault = 300,  JogVelocityMax = 800, InvertDirection = true },   // Z is mounted "upside down" relative to the others, so invert its jog direction to match intuition
             new AxisConfig { Id = AxisId.Theta, Name = "Theta", BusPosition = 3, JogVelocityDefault = 400,  JogVelocityMax = 800},
         };
 

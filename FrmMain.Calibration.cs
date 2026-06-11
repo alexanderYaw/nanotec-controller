@@ -130,7 +130,8 @@ namespace MotorControlApp
             val = null;
             text = text?.Trim() ?? "";
             if (text.Length == 0) return true;
-            if (long.TryParse(text, out long v)) { val = v; return true; }
+            if (long.TryParse(text, out long v)) { val = id == AxisId.Y ? -v : v; return true; }   // invert Y for more intuitive readout and entry
+            
             AppendLog($"Move: '{text}' is not a valid {id} coordinate.");
             return false;
         }
