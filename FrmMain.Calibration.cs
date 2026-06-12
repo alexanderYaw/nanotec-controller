@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -22,6 +23,62 @@ namespace MotorControlApp
         }
 
         private async void homeAllButton_Click(object? sender, EventArgs e) => await HomeAllAsync();
+
+        // --- Position Map (separate window: XY grid + numeric X/Y/Z + Go) ----------
+        // The window (FrmPosition) is pure UI; it reads the position/limits FrmMain exposes
+        // in the USER frame and executes through the existing MoveToAsync. The FrmMain side
+        // lives here (alongside MoveToAsync and the calibration store it shares).
+
+        private FrmPosition? _posWindow;
+        private Button positionButton = null!;
+
+        // Last polled RAW position per axis (written in statusTimer_Tick); read in the USER
+        // frame via TryCurrentUser. Cleared with the soft-limit tracking so no stale dot shows.
+        private readonly Dictionary<AxisId, long> _lastPos = new();
+
+        /// <summary>Builds the "Position Map..." open-button (replaces the old inline Move-To console).</summary>
+        private void BuildPositionButton()
+        {
+            positionButton = new Button
+            {
+                Text = "Position Map...",
+                Location = new Point(694, 452),
+                Size = new Size(168, 40),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Enabled = false,
+            };
+            positionButton.Click += positionButton_Click;
+            Controls.Add(positionButton);
+        }
+
+        private void positionButton_Click(object? sender, EventArgs e)
+        {
+            if (_posWindow == null || _posWindow.IsDisposed)
+                _posWindow = new FrmPosition(this);
+            _posWindow.Show();
+            _posWindow.BringToFront();
+        }
+
+        /// <summary>Current position of an axis in the USER frame (Y inverted), if polled yet.</summary>
+        internal bool TryCurrentUser(AxisId id, out long user)
+        {
+            if (_lastPos.TryGetValue(id, out long raw)) { user = id == AxisId.Y ? -raw : raw; return true; }
+            user = 0;
+            return false;
+        }
+
+        /// <summary>
+        /// An axis's travel limits in the USER frame, or null if both ends aren't set. The Y
+        /// negation flips min/max order, so they're re-sorted before returning.
+        /// </summary>
+        internal (long min, long max)? UserLimits(AxisId id)
+        {
+            AxisCalibration c = _calib.For(id);
+            if (!c.Min.HasValue || !c.Max.HasValue) return null;
+            long a = id == AxisId.Y ? -c.Min.Value : c.Min.Value;
+            long b = id == AxisId.Y ? -c.Max.Value : c.Max.Value;
+            return (Math.Min(a, b), Math.Max(a, b));
+        }
 
         /// <summary>
         /// Universal home: brings Z to its home FIRST (e.g. retract to a safe height) and
