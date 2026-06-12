@@ -12,28 +12,25 @@ Nanotec EtherCAT drives (X, Y, Z, Θ) through **NanoLib 1.4.0** over **EtherCAT 
 
 ## 1. Architecture & layering
 
-```
-            ┌──────────────────────────────────────────────┐
-   UI /     │  FrmMain (partial: .cs/.Connection/.Jog/      │
-   input    │          .Input/.Calibration/.Designer)       │
-            │  FrmCalibration · BusPicker · JoystickPad ·    │
-            │  Joystick (USB)                               │
-            └───────────────┬──────────────────────────────┘
-                            │  (the ONLY motion entry point)
-            ┌───────────────▼──────────────────────────────┐
-  Shared    │  MultiAxisController                          │
-  motion    │  EnableAll/DisableAll · JogAt/Stop/StopAll ·  │
-   API      │  MoveAbsolute/Relative · WaitForMotionComplete│
-            └───────────────┬──────────────────────────────┘
-            ┌───────────────▼──────────────────────────────┐
-  Per-axis  │  ChuckController  (one per drive)             │
-  CiA 402   │  checked Read/Write · state machine ·         │
-            │  jog · profile-position · digital inputs      │
-            └───────────────┬──────────────────────────────┘
-            ┌───────────────▼──────────────────────────────┐
-  Link      │  MultiAxisConnection  (scan/connect all) ·    │
-            │  NanoLib accessor + device handles            │
-            └──────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph UI["UI / input"]
+        F["FrmMain (partials: .cs · .Connection · .Jog · .Input · .Calibration · .Params · .Designer)"]
+        W["FrmCalibration · FrmParams · FrmPosition · PositionGrid · BusPicker · JoystickPad · Joystick (USB)"]
+    end
+    subgraph API["Shared motion API"]
+        M["MultiAxisController<br/>EnableAll/DisableAll · JogAt/Stop/StopAll · MoveAbsolute/Relative · WaitForMotionComplete"]
+    end
+    subgraph AXIS["Per-axis CiA 402"]
+        C["ChuckController (one per drive)<br/>checked Read/Write · state machine · jog · profile-position · digital inputs"]
+    end
+    subgraph LINK["Link"]
+        L["MultiAxisConnection (scan/connect all)<br/>NanoLib accessor + device handles"]
+    end
+
+    UI ==>|the ONLY motion entry point| API
+    API ==> AXIS
+    AXIS ==> LINK
 ```
 
 **Golden rule:** every consumer (jog buttons, both joysticks, calibration, automation)
@@ -43,6 +40,138 @@ direction inversion, the single-channel serialization, and the API surface in on
 > `ChuckController` is a legacy name; it models *any* axis (the chuck is just Θ). A rename
 > to `AxisController` is pending; its `ChuckStatus`/`ChuckException` types leak the old name.
 
+### Type model (class diagram)
+
+The static structure of the motion stack and the tool windows. `FrmCalibration` and
+`FrmParams` follow the same **pure-UI-over-FrmMain** pattern shown here for `FrmPosition`.
+
+```mermaid
+classDiagram
+    class FrmMain {
+        <<partial Form>>
+        -MultiAxisConnection _connection
+        -MultiAxisController? _motion
+        -CalibrationStore _calib
+        -Dictionary~AxisId, long~ _lastPos
+        +MoveToAsync(x, y, z) Task
+        +UserLimits(id) tuple?
+        +TryCurrentUser(id, out user) bool
+        +CanMoveCalibration bool
+    }
+    class MultiAxisConnection {
+        -NanoLibAccessor? _accessor
+        +Handles IReadOnlyList~DeviceHandle~
+        +Devices IReadOnlyList~DeviceIdentity~
+        +IsConnected bool
+        +ListBuses(log)
+        +Connect(busIndex, expected, log) bool
+        +Disconnect(log)
+    }
+    class MultiAxisController {
+        -Dictionary~AxisId, ChuckController~ _axes
+        +EnableAll() / DisableAll()
+        +JogAt(id, dir, speed) / Stop / StopAll
+        +MoveAbsolute/Relative(id, pos, vel)
+        +WaitForMotionComplete(id, ms) bool
+        +GetStatus(id) ChuckStatus
+        +RecoverIfQuickStopped(id) bool
+    }
+    class ChuckController {
+        -NanoLibAccessor _accessor
+        -DeviceHandle _deviceHandle
+        +AxisConfig Config
+        +EnableDrive(bool)
+        +StartManualJog/StopManualJog
+        +MoveAbsolute/Relative + WaitForMotionComplete
+        +GetStatus() ChuckStatus
+        +ReadDigitalInputs() / IsQuickStopped()
+    }
+    class AxisConfig {
+        +AxisId Id
+        +string Name
+        +int BusPosition
+        +int JogVelocityDefault / Max
+        +bool InvertDirection
+    }
+    class AxisId {
+        <<enumeration>>
+        X
+        Y
+        Z
+        Theta
+    }
+    class CalibrationStore {
+        +For(id) AxisCalibration
+        +Load(out warning) CalibrationStore$
+        +Save()
+    }
+    class AxisCalibration {
+        +long? Min / Max / Home
+        +long? Center
+    }
+    class FrmPosition {
+        <<pure-UI Form>>
+        -FrmMain _owner
+    }
+    class PositionGrid {
+        <<Control>>
+        +SetLimits / SetCurrent / SetTarget
+        +event TargetPicked
+    }
+
+    FrmMain "1" *-- "1" MultiAxisConnection : owns
+    FrmMain "1" o-- "0..1" MultiAxisController : after Connect
+    FrmMain "1" *-- "1" CalibrationStore : owns
+    FrmMain ..> FrmPosition : opens
+    MultiAxisController "1" *-- "4" ChuckController : _axes
+    MultiAxisController ..> MultiAxisConnection : built from Handles
+    ChuckController "1" --> "1" AxisConfig : Config
+    CalibrationStore "1" *-- "0..3" AxisCalibration : Axes
+    AxisConfig --> AxisId
+    FrmPosition "1" *-- "1" PositionGrid : grid
+    FrmPosition ..> FrmMain : reads (USER frame) + MoveToAsync
+```
+
+### Runtime objects (object diagram)
+
+A snapshot once connected, showing the composition that makes the **single-channel**
+contract real: every `ChuckController` shares the **one** `NanoLibAccessor`, so all SDO
+access must be serialized (see §10). Each controller is bound to its drive by
+**bus position** (all NodeIDs are 1).
+
+```mermaid
+flowchart TB
+    frm["aForm : FrmMain"]
+    cal["_calib : CalibrationStore"]
+    conn["_connection : MultiAxisConnection"]
+    mac["_motion : MultiAxisController"]
+    acc(["accessor : NanoLibAccessor<br/>(ONE channel — shared)"])
+
+    frm --> cal
+    frm --> conn
+    frm -->|new after Connect| mac
+
+    conn --> acc
+    conn --> H0["Handles[0] : DeviceHandle (bus 0)"]
+    conn --> H1["Handles[1] : DeviceHandle (bus 1)"]
+    conn --> H2["Handles[2] : DeviceHandle (bus 2)"]
+    conn --> H3["Handles[3] : DeviceHandle (bus 3)"]
+
+    mac -->|AxisId.X| cX["X : ChuckController"]
+    mac -->|AxisId.Y| cY["Y : ChuckController"]
+    mac -->|AxisId.Z| cZ["Z : ChuckController"]
+    mac -->|AxisId.Theta| cT["Theta : ChuckController"]
+
+    cX --> H0
+    cY --> H1
+    cZ --> H2
+    cT --> H3
+    cX -.shares.-> acc
+    cY -.shares.-> acc
+    cZ -.shares.-> acc
+    cT -.shares.-> acc
+```
+
 ---
 
 ## 2. File & folder organization
@@ -50,7 +179,7 @@ direction inversion, the single-channel serialization, and the API surface in on
 | Folder | Files | Role |
 |---|---|---|
 | **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `ChuckController.cs`, `MultiAxisController.cs`, `DriveDiagnostics.cs`, `NanotecConnection.cs` | The motion stack: types, link, per-axis CiA 402, shared API, diagnostics. (`NanotecConnection` is the unused single-axis legacy link.) |
-| **`Input/`** | `Joystick.cs`, `JoystickPad.cs` | USB (winmm) reader and the on-screen analog puck control. |
+| **`Input/`** | `Joystick.cs`, `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | USB (winmm) reader, the on-screen analog puck, and the Position Map grid control + its window. |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits/home store and its UI window. |
 | **root** | `FrmMain.*`, `BusPicker.cs`, `Program.cs` | The main window (split into partials) plus the entry point. |
 
@@ -62,12 +191,13 @@ compilation, and all files share the one namespace (folders ≠ namespaces here)
 full mutual access to every field and method:
 
 * `FrmMain.cs` — shared state (fields/constants), constructor, data-driven UI scaffolding
-  (`BuildAxisRows`, `BuildMoveToConsole`), shared helpers (`RunDriveOp`, `RestartTimers`),
+  (`BuildAxisRows`, `BuildPositionButton`), shared helpers (`RunDriveOp`, `RestartTimers`),
   window lifecycle, `SetState`/`RefreshButtons`/`AppendLog`.
 * `FrmMain.Connection.cs` — connect/disconnect, enable/disable, `Read Params`.
 * `FrmMain.Jog.cs` — per-axis jog buttons, the status poll, the soft-limit guard.
 * `FrmMain.Input.cs` — USB + on-screen joystick polling and mapping.
-* `FrmMain.Calibration.cs` — Home All, Move To, limit capture/find, Go Home.
+* `FrmMain.Calibration.cs` — Home All, Move To, limit capture/find, Go Home, plus the
+  Position Map window's data feed (position cache + USER-frame accessors + open-button).
 * `FrmMain.Designer.cs` — designer-generated layout.
 
 ---
@@ -327,6 +457,33 @@ ownership is required because NanoLib is single-channel.
   entered target against Min/Max and rejects the whole move** if any is out of range, then moves
   the entered axes together.
 
+### Position Map window (`Input/FrmPosition.cs`, `Input/PositionGrid.cs`)
+An absolute-positioning window: an XY grid (`PositionGrid`) plus numeric X/Y/Z fields and a
+**Go** button. **Stage-then-confirm** — clicking the grid (or typing) only stages a target
+marker and fills the fields; nothing moves until **Go**, which calls the same `MoveToAsync`
+(reusing its bounds-check and Y input-flip). Z is numeric only (no grid axis).
+
+Like the other tool windows it is **pure UI** — it owns no drive access and reads everything
+through `FrmMain` in the **USER frame**:
+* **`UserLimits(id)`** / **`TryCurrentUser(id, out user)`** (in `FrmMain.Calibration.cs`) return
+  the travel envelope and the live position with the **Y inversion already applied** (negating Y
+  also swaps Min/Max, so the limits are re-sorted before returning). `PositionGrid` therefore
+  never re-implements the Y flip — it just renders whatever user-frame numbers it's handed, and
+  `MoveToAsync`'s own `TryCoord` flips the entered Y back to raw.
+* The live position is served from **`_lastPos`**, a raw-per-axis cache the 200 ms status poll
+  fills and `ResetSoftLimitTracking` clears. The window's own **250 ms** timer reads it and also
+  reflects `CanMoveCalibration` onto the **Go** button.
+
+`PositionGrid` is a self-contained `Control`: a filled current-position dot + a hollow target
+crosshair, true XY aspect (letterboxed), greyed until both X and Y limits exist. It raises
+`TargetPicked` (user-frame, clamped to limits) on click and exposes `SetCurrent` / `SetLimits` /
+`SetTarget`. The old inline **Move To** console on the main form was removed (`BuildMoveToConsole`
+→ `BuildPositionButton`); `MoveToAsync` now has this window as its only external caller (plus Home
+All / Go Home internally).
+
+> **Z-collision is operational, not coded:** there's no automatic Z guard. Set Z's Min limit
+> above the chuck so a too-low Z target is rejected by the existing range check.
+
 ---
 
 ## 14. Auto limit-find (`FrmMain.Calibration.cs`)
@@ -380,7 +537,8 @@ Intended workflow: read → power-cycle → read → compare to confirm NV persi
 ## 17. Known limitations / open items
 
 * **Unvalidated on hardware** — the full bring-up (4-drive enumeration, enable, jog, joystick,
-  calibration, Home/Find) has not yet been confirmed on real drives.
+  calibration, Home/Find) has not yet been confirmed on real drives. The **Position Map** window
+  is build-verified only — not yet exercised on hardware.
 * **Units unverified** — positions/velocities are raw drive units; the factor-group decode
   (0x60A8/0x60A9 + gear/feed/velocity factors) is not yet wired into a mm/deg conversion.
 * **Set-point-acknowledge (bit 12)** behaviour on these drives is unconfirmed (see §8).
@@ -389,3 +547,131 @@ Intended workflow: read → power-cycle → read → compare to confirm NV persi
   linear axes.
 * **Partial bring-up** isn't supported: a missing drive aborts the whole connect (the
   connection layer's "partial works" comment overstates what `MultiAxisController` allows).
+
+---
+
+## 18. Appendix — sequence diagrams (key flows)
+
+Dynamic views of the flows where ordering is subtle. (Static structure is in §1.)
+
+### 18.1 Connect → build controllers → Enable All
+
+Connecting only scans + verifies; controllers are built afterward; enabling forces a
+non-moving set-point so no axis lurches (§6).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Operator
+    participant F as FrmMain
+    participant C as MultiAxisConnection
+    participant A as NanoLibAccessor
+    participant M as MultiAxisController
+    participant D as ChuckController (×4)
+
+    U->>F: Connect
+    F->>C: ListBuses(log)
+    C->>A: listAvailableBusHardware()
+    A-->>C: bus list
+    C-->>F: adapter names
+    F->>F: BusPicker.Choose() -> busIndex
+    F->>C: Connect(busIndex, 4, log)
+    C->>A: openBusHardware + scanDevices
+    loop each drive, in bus order
+        C->>A: addDevice + connectDevice
+        C->>A: read name / serial / firmware
+    end
+    C-->>F: true, Handles[0..3]
+    F->>M: new(connection, TableAxes.Default)
+    loop each AxisConfig
+        M->>D: new ChuckController(accessor, Handles[busPos], cfg)
+    end
+    Note over F,D: Connected & DISABLED — no motion yet
+
+    U->>F: Enable All
+    F->>F: RunDriveOp (background thread, both timers paused)
+    F->>M: EnableAll()
+    loop each axis
+        M->>D: EnableDrive(true)
+        D->>A: fault-reset? -> DisableVoltage -> Shutdown -> SwitchOn
+        D->>A: PV mode + target 0 + Halt (CW 0x010F)
+        D->>A: WaitForStatus(Operation Enabled)
+    end
+    Note over D: holding torque, zero speed (no lurch)
+```
+
+### 18.2 Profile-Position move + set-point handshake (Home All, Z-first)
+
+The set-point-acknowledge wait (§8) is what makes completion measure *this* move, not the
+previous one's stale Target-Reached bit — which is what lets Home All gate X/Y on Z arriving.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Operator
+    participant F as FrmMain.Calibration
+    participant M as MultiAxisController
+    participant Z as ChuckController(Z)
+    participant XY as ChuckController(X / Y)
+    participant A as drive (CW / SW)
+
+    U->>F: Home All
+    F->>F: HomeAllAsync — require Z, X, Y home targets
+    F->>F: RunDriveOp (background, timers paused)
+
+    Note over F,Z: 1) Z first, with an arrival gate
+    F->>M: RecoverIfQuickStopped(Z)
+    F->>M: MoveAbsolute(Z, zHome, zSpd)
+    M->>Z: Move(pos, vel, relative=false)
+    Z->>A: mode=PP, 0x6081 vel, 0x607A target
+    Z->>A: CW 0x000F (clear set-point)
+    Z->>A: CW 0x003F (new set-point, change-now)
+    Z->>A: WaitForStatus(bit 12 set-point-ack)
+    Note right of Z: accepting the set-point CLEARS the<br/>previous move's stale Target-Reached
+    Z->>A: CW 0x000F (release set-point)
+    F->>M: WaitForMotionComplete(Z)
+    M->>Z: poll bit 10 Target-Reached
+    alt Z reached home
+        Note over F,XY: 2) only now move X & Y together
+        F->>M: MoveAbsolute(X, …) + MoveAbsolute(Y, …)
+        F->>M: WaitForMotionComplete(X) + (Y)
+    else Z timed out
+        Z-->>F: throw ChuckException
+        Note over F: abort — X/Y never traverse while Z is still down
+    end
+```
+
+### 18.3 Auto limit-find (Find Limits, Y)
+
+Direction-agnostic edge detection on the 0x60FD limit bits, with a Quick-Stop recovery
+between ends (§14). Polarity is unverified, so the search keys off a *newly-set* bit, not a
+specific direction.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Operator
+    participant FC as FrmCalibration
+    participant F as FrmMain.Calibration
+    participant M as MultiAxisController
+    participant Y as ChuckController(Y)
+
+    U->>FC: Find Limits (Y)
+    FC->>F: FindLimitsAsync(Y)
+    F->>F: Task.Run(FindLimitsCore) — timers paused
+    F->>M: ClearAnyActiveLimit — if parked on a switch, back off (try both dirs)
+
+    Note over F,Y: end A (direction +1)
+    loop until a NEW 0x60FD bit (0 or 1) sets, or timeout
+        F->>M: JogAt(Y, +1, FIND_LIMIT_SPEED)
+        F->>M: GetDigitalInputs(Y)
+    end
+    F->>M: GetStatus(Y).Position (capture end A)
+    F->>M: Stop(Y)
+    F->>M: RecoverAndBackOff(-1) — EnableDrive(true) exits Quick-Stop, jog clear
+
+    Note over F,Y: end B — repeat the loop with direction −1, capture end B
+    F->>M: RecoverAndBackOff(+1) — leave Y off the switch
+
+    F-->>FC: Min=min(A,B), Max=max(A,B), Home=centre → saved to calibration.json
+```

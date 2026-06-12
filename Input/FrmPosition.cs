@@ -49,7 +49,7 @@ namespace MotorControlApp
             {
                 Text = "Target (drive units)",
                 Location = new Point(404, 12),
-                Size = new Size(184, 210),
+                Size = new Size(184, 297),
                 Anchor = AnchorStyles.Top | AnchorStyles.Right,
             };
 

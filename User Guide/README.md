@@ -10,7 +10,7 @@ master**.
 > start at low jog speeds, and confirm each axis moves the way you expect before trusting
 > automated moves (Home All, Go Home, Find Limits).
 
-For how the software works internally, see **DeveloperGuide.md**.
+For how the software works internally, see the **Developer Guide** (`Developer Guide/README.md`).
 
 ---
 
@@ -38,19 +38,21 @@ the bus scan will either find no adapters or fail to open the EtherCAT NIC.
 
 ## 2. The main window at a glance
 
-| Area | What it does |
-|---|---|
-| **Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
-| **Connect / Disconnect** | Open or close the link to all drives. |
-| **Read Params** | Read-only dump of each drive's limits & unit settings to the log. |
-| **Calibration…** | Opens the travel-limits & Home window (see §8). |
-| **Enable All / Disable All** | Energise / de-energise all drives. |
-| **Home All** | Retract Z, then send X & Y to their home positions (see §7). |
-| **Per-axis rows (X / Y / Z / Θ)** | Speed slider, **−/+ hold-to-jog** buttons, and a live position + state readout per axis. |
-| **Input source (Off / USB / On-screen)** | Selects the joystick input (see §6). |
-| **On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
-| **Move To** | Type X/Y/Z target coordinates and move there (see §9). |
-| **Log** | Timestamped record of everything the app did. Read it — it reports every stop, limit, and error. |
+![Main window annotated](images/main-window-annotated.png)
+
+| Ref. no | Area | What it does |
+|---|---|---|
+| 1.|**Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
+| 2.|**Connect / Disconnect** | Open or close the link to all drives. |
+| 3.|**Parameters…** | Opens the parameters window: a read-only dump of each drive's limits & unit/scaling settings, plus an **expert** option to write objects (RAM) or save to NV (see §10). |
+| 4.|**Calibration…** | Opens the travel-limits & Home window (see §8). |
+| 5.|**Enable All / Disable All** | Energise / de-energise all drives. |
+| 6.|**Home All** | Retract Z, then send X & Y to their home positions (see §7). |
+| 7.|**Per-axis rows (X / Y / Z / Θ)** | Speed slider, **−/+ hold-to-jog** buttons, and a live position + state readout per axis. |
+| 8.|**Input source (Off / USB / On-screen)** | Selects the joystick input (see §6). |
+| 9.|**On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
+| 10.|**Position Map…** | Opens the absolute-positioning window: click an XY grid (or type X/Y/Z) to set a target, then Go (see §9). |
+| 11.|**Log** | Timestamped record of everything the app did. Read it — it reports every stop, limit, and error. |
 
 ---
 
@@ -146,12 +148,16 @@ Important caveats:
 
 ## 8. Calibration window (travel limits & Home)
 
+![calibration-window](images/calibration-window.jpg)
+
 Open it with **Calibration…**. It shows X, Y, Z (Θ has no home and is excluded). All
 calibration values are saved to `calibration.json` next to the app and survive restarts.
 
 For each axis:
 * **Set Min / Set Max** — jog the axis to a position in the main window, then click to
   **capture the current position** as that limit.
+* **Clear Min / Clear Max** — removes a stored limit (back to "none"). This is a local edit
+  only — it moves nothing — and also drops any jog block that limit was enforcing.
 * **Set Home** (Z only) — captures Z's explicit home position.
 * **Find Limits** (Y only) — **automatically** drives Y into each end switch, records both
   edges as Min/Max, and sets Home to the centre. Watch it run; it backs off the switches
@@ -162,6 +168,9 @@ For each axis:
 Home model summary:
 * **X / Y:** Home = midpoint of the two limits (needs both Min and Max set).
 * **Z:** Home = the explicit position you captured with Set Home.
+
+### Special Note
+It is **highly recommended** to set the Z-minimum above the chuck.
 
 ### Home All
 The **Home All** button on the main window runs a safe homing sequence:
@@ -174,27 +183,66 @@ you which are missing — so X/Y never traverse while Z is still down.
 
 ---
 
-## 9. Move To (go to a coordinate)
+## 9. Position Map (go to a coordinate)
 
-The **Move To** panel takes X/Y/Z target values in the same drive units shown as Min/Max.
+Open it with **Position Map…**. It shows an **XY grid** of the table's travel envelope on the
+left and numeric **X / Y / Z** target fields with a **Go** button on the right.
 
+**Pick a target two ways — nothing moves until you press Go:**
+* **Click the grid** — stages a target crosshair at that spot and fills the X/Y fields. The
+  filled blue dot is the live current position; the hollow red crosshair is your staged target.
+* **Type into X / Y / Z** — the crosshair follows what you type (Z has no grid axis, so it's
+  numeric only).
+
+Then press **Go** to move. The same rules as before apply:
 * Any field left **blank** means "leave that axis where it is."
-* Entered targets are **range-checked against each axis's Min/Max**. If any one is out of
-  range, the **whole move is cancelled** and the offending value is logged.
-* The entered axes move together.
+* Targets are **range-checked against each axis's Min/Max**. If any one is out of range, the
+  **whole move is cancelled** and the offending value is logged.
+* The entered axes move together. Values are in the same drive units shown as Min/Max.
+
+![position-map-annotated](images/position-map-annotated.png)
+
+Notes:
+* The grid stays **greyed out until both X and Y limits are calibrated** (see §8) — it needs the
+  envelope to map clicks to coordinates.
+* **Z is not on the grid.** There is no automatic Z-collision check — guard it by setting Z's
+  **Min limit above the chuck** so a too-low Z target is rejected by the range check.
+* **Go** is only enabled while the drives are enabled and idle; the window can be left open
+  while you jog from the main form to fine-tune.
 
 ---
 
-## 10. Read Params (verify drive settings)
+## 10. Parameters (read & write drive settings)
 
-**Read Params** dumps each connected drive's key configuration to the log **without writing
-anything** — current/torque limits, max speed, and the unit/scaling objects that define
-what "position" and "velocity" units actually mean.
+Open it with **Parameters…**. It's a separate window with its own output log, and it does two
+very different jobs.
+
+### Read Params — safe, read-only
+**Read Params (all axes)** dumps each connected drive's key configuration to the window's log
+**without writing anything** — current/torque limits, max speed, the unit/scaling objects that
+define what "position" and "velocity" units actually mean, and a motion-state snapshot (mode,
+target, profile accel/decel).
 
 Typical use: read once, **power-cycle the drives**, read again, and compare to confirm the
 drives kept their settings in non-volatile memory.
 
-It only runs while the drives are connected, and pauses live polling while it reads.
+![parameters-annotated](images/parameters-annotated.png)
+
+### Write object / Save to NV — expert, changes the drive
+The write row sets **any** object-dictionary entry on a chosen axis. Enter the object as
+`index : sub` in hex (e.g. `6084 : 00`), the value in decimal or `0x…` hex, and its size in
+bits (8 / 16 / 32):
+* **Write** — writes the value to the drive's **RAM**: it takes effect now but is lost on the
+  next power-cycle.
+* **Save to NV** — persists that axis's **current** parameter values to non-volatile memory
+  (object 0x1010:01), so they survive a power-cycle.
+
+**Both ask for confirmation first**, because there is no validation beyond the drive's own — a
+wrong object or value can change any writable setting. (For example, to fix X's slow stop you
+can write `6084 = 20000` on X, then **Save to NV**.)
+
+The window only works while the drives are connected, and pauses live polling while it reads or
+writes.
 
 ---
 
@@ -205,8 +253,8 @@ It only runs while the drives are connected, and pauses live polling while it re
   running).
 * **All jogging is momentary** — release the button, release the deadman, or re-centre the
   puck and motion stops.
-* **Losing window focus stops everything** and pauses the joystick. (A running Home/Find
-  operation is left alone — it owns the drives.)
+* **Losing window focus stops everything** and pauses the joystick. (A running operation —
+  Home, Find Limits, Move, or Go Home — is left alone, since it owns the drives.)
 * **Losing the USB joystick stops all axes.**
 * **Soft limits stop outward jogs** on calibrated axes.
 * **Closing the window** disables the drives and disconnects cleanly.
