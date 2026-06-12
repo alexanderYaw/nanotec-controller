@@ -88,10 +88,6 @@ namespace MotorControlApp
         private readonly Dictionary<AxisId, int> _cmdDir = new();
         private readonly Dictionary<AxisId, int> _limitBlockedDir = new();
 
-        // "Move To" console (built in code), enabled with motion.
-        private TextBox _moveXBox = null!, _moveYBox = null!, _moveZBox = null!;
-        private Button _moveButton = null!;
-
         private sealed record AxisRow(Button Neg, Button Pos, Label Status, TrackBar Speed, Label SpeedValue);
         private readonly Dictionary<AxisId, AxisRow> _axisRows = new();
         // Last joystick command per axis, for send-on-change (don't flood the soft master).
@@ -109,52 +105,12 @@ namespace MotorControlApp
             _log = new Progress<string>(AppendLog);
             _calib = CalibrationStore.Load(out string? calibWarning);
             BuildAxisRows();
-            BuildMoveToConsole();
+            BuildPositionButton();
             SetState(connected: false, busy: false, "Disconnected");
             if (calibWarning != null) AppendLog("WARN: " + calibWarning);
         }
 
         // --- UI scaffolding (the data-driven controls built in code) --------------
-
-        /// <summary>
-        /// Builds the "Move To" console (X/Y/Z coordinate fields + Move button) in the
-        /// free area below the on-screen joystick. Each field is optional; the move is
-        /// validated against the per-axis limits in <see cref="MoveToAsync"/>.
-        /// </summary>
-        private void BuildMoveToConsole()
-        {
-            var group = new GroupBox
-            {
-                Text = "Move To (drive units)",
-                Location = new Point(694, 452),
-                Size = new Size(168, 156),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            };
-
-            TextBox Field(string label, int y)
-            {
-                group.Controls.Add(new Label { Text = label, Location = new Point(12, y + 3), AutoSize = true });
-                var tb = new TextBox { Location = new Point(36, y), Size = new Size(118, 26) };
-                group.Controls.Add(tb);
-                return tb;
-            }
-
-            _moveXBox = Field("X", 28);
-            _moveYBox = Field("Y", 60);
-            _moveZBox = Field("Z", 92);
-
-            _moveButton = new Button
-            {
-                Text = "Move",
-                Location = new Point(36, 122),
-                Size = new Size(118, 28),
-                Enabled = false,
-            };
-            _moveButton.Click += async (s, e) => await MoveToAsync(_moveXBox.Text, _moveYBox.Text, _moveZBox.Text);
-            group.Controls.Add(_moveButton);
-
-            Controls.Add(group);
-        }
 
         /// <summary>
         /// Creates the per-axis jog rows: name + speed slider (+ live value) + hold-to-move
@@ -306,7 +262,7 @@ namespace MotorControlApp
             enableButton.Enabled = !_busy && conn && !_drivesEnabled;
             disableButton.Enabled = !_busy && conn && _drivesEnabled;
             homeAllButton.Enabled = !_busy && conn && _drivesEnabled;
-            _moveButton.Enabled = !_busy && conn && _drivesEnabled;
+            positionButton.Enabled = !_busy && conn;   // open whenever connected; Go is gated inside the window
             bool inputOk = !_busy && conn && _drivesEnabled;
             rbOff.Enabled = inputOk;
             rbUsb.Enabled = inputOk;

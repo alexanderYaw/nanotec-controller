@@ -65,8 +65,9 @@ namespace MotorControlApp
                 foreach (AxisId id in _motion.Axes)
                 {
                     ChuckController.ChuckStatus st = _motion.GetStatus(id);
+                    _lastPos[id] = st.Position;   // cache raw; Position Map reads it in the user frame
                     long shown = (id == AxisId.Y) ? -st.Position : st.Position;   // invert Y for more intuitive readout
-                    _axisRows[id].Status.Text = $"{shown,12:N0}{st.State}{(st.HasFault ? "  [Fault]" : "")}";
+                    _axisRows[id].Status.Text = $"{shown,12:N0}   {st.State}{(st.HasFault ? "  [Fault]" : "")}";
                     EnforceSoftLimits(id, st.Position);
                 }
                 _statusFailures = 0;
@@ -128,6 +129,7 @@ namespace MotorControlApp
             _atSoftLimit.Clear();
             _cmdDir.Clear();
             _limitBlockedDir.Clear();
+            _lastPos.Clear();
         }
     }
 }
