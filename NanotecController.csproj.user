@@ -26,7 +26,13 @@
     <Compile Update="FrmParams.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Update="Input\FrmPosition.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Update="Input\JoystickPad.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Input\PositionGrid.cs">
       <SubType>Component</SubType>
     </Compile>
   </ItemGroup>

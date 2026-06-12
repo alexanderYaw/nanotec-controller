@@ -43,7 +43,7 @@ namespace MotorControlApp
             Controls.Add(hint);
 
             // Buttons auto-size to their text so they don't clip at higher display scaling.
-            int y = 56;
+            int y = 70;
             int maxRight = 480;
             foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 84; }
             ClientSize = new Size(maxRight + 12, y + 8);
