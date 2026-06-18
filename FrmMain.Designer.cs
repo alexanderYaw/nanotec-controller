@@ -272,16 +272,16 @@ namespace MotorControlApp
             axesGroup.Controls.Add(axesPanel);
             axesGroup.Location = new Point(18, 388);
             axesGroup.Name = "axesGroup";
-            axesGroup.Size = new Size(662, 208);
+            axesGroup.Size = new Size(662, 360);
             axesGroup.TabIndex = 8;
             axesGroup.TabStop = false;
-            axesGroup.Text = "Axis Jog - slider sets speed, hold - / + for direction";
+            axesGroup.Text = "Axis Jog - slider sets speed, hold an arrow for direction";
             // 
             // axesPanel
             // 
             axesPanel.Location = new Point(14, 28);
             axesPanel.Name = "axesPanel";
-            axesPanel.Size = new Size(636, 175);
+            axesPanel.Size = new Size(636, 316);
             axesPanel.TabIndex = 0;
             // 
             // statusTimer
@@ -298,7 +298,7 @@ namespace MotorControlApp
             // 
             logLabel.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             logLabel.AutoSize = true;
-            logLabel.Location = new Point(18, 604);
+            logLabel.Location = new Point(18, 758);
             logLabel.Name = "logLabel";
             logLabel.Size = new Size(37, 20);
             logLabel.TabIndex = 9;
@@ -309,7 +309,7 @@ namespace MotorControlApp
             logBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             logBox.BackColor = Color.White;
             logBox.Font = new Font("Consolas", 9F);
-            logBox.Location = new Point(18, 628);
+            logBox.Location = new Point(18, 782);
             logBox.Multiline = true;
             logBox.Name = "logBox";
             logBox.ReadOnly = true;
@@ -321,7 +321,7 @@ namespace MotorControlApp
             // 
             AutoScaleDimensions = new SizeF(8F, 20F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(880, 824);
+            ClientSize = new Size(880, 980);
             Controls.Add(titleLabel);
             Controls.Add(statusGroup);
             Controls.Add(connectButton);
@@ -335,7 +335,7 @@ namespace MotorControlApp
             Controls.Add(logLabel);
             Controls.Add(logBox);
             Font = new Font("Segoe UI", 9F);
-            MinimumSize = new Size(760, 780);
+            MinimumSize = new Size(760, 940);
             Name = "FrmMain";
             StartPosition = FormStartPosition.CenterScreen;
             Text = "Nanotec Controller - Motion";

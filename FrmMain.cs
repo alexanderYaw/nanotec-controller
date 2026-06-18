@@ -119,22 +119,80 @@ namespace MotorControlApp
         /// </summary>
         private void BuildAxisRows()
         {
-            int y = 2;
+            // ---- Direction d-pad (top of the panel) ------------------------------
+            // X = ◀/▶, Y = ▲/▼, Z = ▲/▼ (right of the XY cross), Θ = ↺/↻.
+            // Each is hold-to-jog. The sign handed to StartJog keeps the existing
+            // per-axis convention (JogAt applies Z's InvertDirection internally), so
+            // up / right / clockwise = +1. If a direction feels reversed on hardware,
+            // swap that axis's two glyphs below — nothing else depends on the sign.
+            var neg = new Dictionary<AxisId, Button>();
+            var pos = new Dictionary<AxisId, Button>();
+
+            Button Arrow(string glyph, int x, int y, AxisId id, int dir)
+            {
+                var b = new Button
+                {
+                    Text = glyph,
+                    Location = new Point(x, y),
+                    Size = new Size(46, 36),
+                    Font = new Font("Segoe UI Symbol", 13F),
+                    Enabled = false,
+                };
+                b.MouseDown += (s, e) => StartJog(id, dir);
+                b.MouseUp += (s, e) => StopJog(id);
+                (dir < 0 ? neg : pos)[id] = b;
+                axesPanel.Controls.Add(b);
+                return b;
+            }
+
+            void Header(string text, int x) => axesPanel.Controls.Add(new Label
+            {
+                Text = text,
+                Location = new Point(x, 0),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+            });
+
+            // XY cross (left)
+            Header("X / Y", 50);
+            Arrow("▲", 56, 16, AxisId.Y, +1);
+            Arrow("◀", 10, 56, AxisId.X, -1);
+            Arrow("▶", 102, 56, AxisId.X, +1);
+            Arrow("▼", 56, 96, AxisId.Y, -1);
+            // Z column (right of the cross)
+            Header("Z", 196);
+            Arrow("▲", 180, 36, AxisId.Z, +1);
+            Arrow("▼", 180, 76, AxisId.Z, -1);
+            // Theta (rotary chuck)
+            Header("Θ", 292);
+            Arrow("↻", 250, 56, AxisId.Theta, +1);   // clockwise
+            Arrow("↺", 302, 56, AxisId.Theta, -1);   // counter-clockwise
+
+            // separator between the d-pad and the speed/position rows
+            axesPanel.Controls.Add(new Panel
+            {
+                Location = new Point(6, 146),
+                Size = new Size(528, 2),
+                BorderStyle = BorderStyle.Fixed3D,
+            });
+
+            // ---- Per-axis speed slider + live position readout -------------------
+            int rowY = 156;
             foreach (AxisConfig cfg in TableAxes.Default)
             {
-                AxisId id = cfg.Id; // capture for the closures below
+                AxisId id = cfg.Id; // capture for the closure below
 
                 var name = new Label
                 {
                     Text = cfg.Name,
-                    Location = new Point(6, y + 12),
+                    Location = new Point(6, rowY + 9),
                     AutoSize = true,
                     Font = new Font("Segoe UI", 10F, FontStyle.Bold),
                 };
                 var speed = new TrackBar
                 {
-                    Location = new Point(44, y),
-                    Size = new Size(160, 40),
+                    Location = new Point(40, rowY),
+                    Size = new Size(160, 36),
                     Minimum = 0,
                     Maximum = cfg.JogVelocityMax,
                     TickStyle = TickStyle.None,
@@ -143,27 +201,19 @@ namespace MotorControlApp
                     Value = Math.Min(Math.Max(cfg.JogVelocityDefault, 0), cfg.JogVelocityMax),
                     Enabled = false,
                 };
-                var speedValue = new Label { Text = speed.Value.ToString(), Location = new Point(208, y + 12), AutoSize = true };
-                var neg = new Button { Text = "◀  −", Location = new Point(252, y + 4), Size = new Size(74, 34), Enabled = false };
-                var pos = new Button { Text = "+  ▶", Location = new Point(330, y + 4), Size = new Size(74, 34), Enabled = false };
-                var status = new Label { Text = "pos -", Location = new Point(412, y + 12), AutoSize = true, Font = new Font("Consolas", 9F) };
+                var speedValue = new Label { Text = speed.Value.ToString(), Location = new Point(204, rowY + 9), AutoSize = true };
+                var status = new Label { Text = "pos -", Location = new Point(260, rowY + 9), AutoSize = true, Font = new Font("Consolas", 9F) };
 
                 speed.Scroll += (s, e) => speedValue.Text = speed.Value.ToString();
-                neg.MouseDown += (s, e) => StartJog(id, -1);
-                neg.MouseUp += (s, e) => StopJog(id);
-                pos.MouseDown += (s, e) => StartJog(id, +1);
-                pos.MouseUp += (s, e) => StopJog(id);
 
                 axesPanel.Controls.Add(name);
                 axesPanel.Controls.Add(speed);
                 axesPanel.Controls.Add(speedValue);
-                axesPanel.Controls.Add(neg);
-                axesPanel.Controls.Add(pos);
                 axesPanel.Controls.Add(status);
 
-                _axisRows[id] = new AxisRow(neg, pos, status, speed, speedValue);
+                _axisRows[id] = new AxisRow(neg[id], pos[id], status, speed, speedValue);
                 _lastJoy[id] = (0, false);
-                y += 42;
+                rowY += 40;
             }
         }
 

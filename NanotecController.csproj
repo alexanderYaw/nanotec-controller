@@ -13,6 +13,12 @@
 
   <ItemGroup>
     <PackageReference Include="nanotec.services.nanolib" Version="1.4.0" />
+    <Reference Include="halcondotnet">
+      <HintPath>C:\Users\AlexanderYawKaiMun\AppData\Local\Programs\MVTec\HALCON-24.11-Progress-Steady\bin\dotnet35\halcondotnet.dll</HintPath>
+    </Reference>
+    <Reference Include="hdevenginedotnet">
+      <HintPath>C:\Users\AlexanderYawKaiMun\AppData\Local\Programs\MVTec\HALCON-24.11-Progress-Steady\bin\dotnet35\hdevenginedotnet.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>
