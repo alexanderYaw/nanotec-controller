@@ -11,9 +11,20 @@ namespace MotorControlApp
         // --- Per-axis hold-to-jog (individual control) ----------------------------
         // Quick SDO writes done on the UI thread so press/release ordering is exact.
 
+        // Movement-inversion toggle (visual-centering): when on, flips the commanded jog
+        // direction for the in-plane / rotary axes so the controls match the inverted camera
+        // view. Applied at every manual-jog entry point (d-pad, USB joystick, on-screen puck)
+        // BEFORE the soft-limit logic, so _cmdDir / _limitBlockedDir stay in true command
+        // space. Z is excluded (depth axis, unaffected by an in-plane view flip).
+        private bool _invertMovement;
+
+        private int InvertDir(AxisId id, int dir)
+            => (_invertMovement && (id == AxisId.X || id == AxisId.Y || id == AxisId.Theta)) ? -dir : dir;
+
         private void StartJog(AxisId id, int direction)
         {
             if (_motion == null || !_drivesEnabled || _busy) return;
+            direction = InvertDir(id, direction);
             if (IsJogBlocked(id, direction))
             {
                 AppendLog($"{id} at soft limit - jog {(direction > 0 ? "+" : "−")} blocked (jog back into range first).");
