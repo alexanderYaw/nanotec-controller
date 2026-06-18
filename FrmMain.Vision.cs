@@ -9,14 +9,14 @@ namespace MotorControlApp
     // (Partial of FrmMain.)
     public partial class FrmMain
     {
-        private FrmVisionTest? _visionWindow;
+        private FrmVision? _visionWindow;
         private Button visionButton = null!;
 
         private void BuildVisionButton()
         {
             visionButton = new Button
             {
-                Text = "Vision Test...",
+                Text = "Vision...",
                 Location = new Point(694, 500),
                 Size = new Size(168, 40),
                 Anchor = AnchorStyles.Top | AnchorStyles.Right,
@@ -28,7 +28,7 @@ namespace MotorControlApp
         private void visionButton_Click(object? sender, EventArgs e)
         {
             if (_visionWindow == null || _visionWindow.IsDisposed)
-                _visionWindow = new FrmVisionTest();
+                _visionWindow = new FrmVision();
             _visionWindow.Show();
             _visionWindow.BringToFront();
         }

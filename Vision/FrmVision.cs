@@ -20,7 +20,7 @@ namespace MotorControlApp
     /// the per-pixel conversion off the UI thread, and frames are downscaled to the view size
     /// before conversion — the two things that made the original timer-on-UI version laggy.
     /// </summary>
-    public sealed class FrmVisionTest : Form
+    public sealed class FrmVision : Form
     {
         private readonly VisionCamera _camera = new();
         private readonly PictureBox _liveBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
@@ -28,9 +28,12 @@ namespace MotorControlApp
         private readonly Button _captureBtn = new() { Text = "Capture Image", Enabled = false };
         private readonly Button _saveBtn = new() { Text = "Save Image", Enabled = false };
         private readonly Button _crosshairBtn = new() { Text = "Crosshair: Off" };
+        private readonly Button _invertBtn = new() { Text = "Invert: On" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
 
         private bool _showCrosshair;
+        private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
+        private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
 
         private Task? _grabTask;
         private CancellationTokenSource? _cts;
@@ -39,9 +42,9 @@ namespace MotorControlApp
         private bool _displayQueued;        // a BeginInvoke(ShowPending) is already in flight
         private volatile int _viewW = 480, _viewH = 440;   // downscale target (live box size)
 
-        public FrmVisionTest()
+        public FrmVision()
         {
-            Text = "Vision - live view test";
+            Text = "Vision - live view";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
             ClientSize = new Size(1000, 540);
@@ -60,17 +63,17 @@ namespace MotorControlApp
             _capturedBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Right;
 
             _captureBtn.Location = new Point(12, 484);
-            _captureBtn.Size = new Size(140, 40);
+            _captureBtn.Size = new Size(120, 40);
             _captureBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _captureBtn.Click += (s, e) => CaptureFrame();
 
-            _saveBtn.Location = new Point(160, 484);
-            _saveBtn.Size = new Size(140, 40);
+            _saveBtn.Location = new Point(140, 484);
+            _saveBtn.Size = new Size(120, 40);
             _saveBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _saveBtn.Click += (s, e) => SaveCaptured();
 
-            _crosshairBtn.Location = new Point(308, 484);
-            _crosshairBtn.Size = new Size(140, 40);
+            _crosshairBtn.Location = new Point(268, 484);
+            _crosshairBtn.Size = new Size(120, 40);
             _crosshairBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _crosshairBtn.Click += (s, e) =>
             {
@@ -80,7 +83,16 @@ namespace MotorControlApp
             };
             _liveBox.Paint += DrawCrosshair;
 
-            _status.Location = new Point(456, 496);
+            _invertBtn.Location = new Point(396, 484);
+            _invertBtn.Size = new Size(120, 40);
+            _invertBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _invertBtn.Click += (s, e) =>
+            {
+                _invertView = !_invertView;
+                _invertBtn.Text = _invertView ? "Invert: On" : "Invert: Off";
+            };
+
+            _status.Location = new Point(524, 496);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             Controls.Add(liveLabel);
@@ -90,6 +102,7 @@ namespace MotorControlApp
             Controls.Add(_captureBtn);
             Controls.Add(_saveBtn);
             Controls.Add(_crosshairBtn);
+            Controls.Add(_invertBtn);
             Controls.Add(_status);
 
             Load += (s, e) => StartCamera();
@@ -120,10 +133,30 @@ namespace MotorControlApp
                 try { frame = _camera.GrabImage(); }
                 catch (HOperatorException ex) { PostStatus("Live grab stopped: " + ex.Message); return; }
 
+                // Full-resolution capture: convert this frame at native size (no downscale)
+                // before it's disposed. Done here, not on the UI thread, so we never touch the
+                // HALCON acquisition handle from two threads.
+                if (_captureRequested)
+                {
+                    _captureRequested = false;
+                    Bitmap? full = null;
+                    try { full = HalconBitmap.ToBitmap(frame, 0, 0); }
+                    catch (HOperatorException) { full = null; }   // skip; user can retry
+                    if (full != null)
+                    {
+                        if (_invertView) full.RotateFlip(RotateFlipType.Rotate180FlipNone);
+                        try { BeginInvoke(new Action(() => SetCaptured(full))); }
+                        catch (InvalidOperationException) { full.Dispose(); }   // closing
+                    }
+                }
+
                 Bitmap bmp;
                 try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH); }
                 catch (HOperatorException) { frame.Dispose(); continue; }   // skip a bad frame
                 finally { frame.Dispose(); }
+
+                // Camera is mounted inverted: flip on both axes (180°) so the view is upright.
+                if (_invertView) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
 
                 Bitmap? dropped;
                 bool queue;
@@ -156,15 +189,24 @@ namespace MotorControlApp
             if (!ReferenceEquals(old, next)) old?.Dispose();
         }
 
+        // Asks GrabLoop to convert the next frame at full resolution; SetCaptured shows it.
         private void CaptureFrame()
         {
-            if (_liveBox.Image == null) return;
-            var snap = new Bitmap(_liveBox.Image);   // independent copy of the current frame
+            if (!_camera.IsOpen) return;
+            _captureRequested = true;
+            _status.Text = "Capturing full-resolution frame...";
+        }
+
+        // UI thread: takes ownership of the full-res capture from GrabLoop. The captured pane
+        // is SizeMode.Zoom, so it shows the full image scaled to fit; saving keeps full res.
+        private void SetCaptured(Bitmap full)
+        {
+            if (IsDisposed) { full.Dispose(); return; }
             Image? old = _capturedBox.Image;
-            _capturedBox.Image = snap;
+            _capturedBox.Image = full;
             old?.Dispose();
             _saveBtn.Enabled = true;
-            _status.Text = "Captured at " + DateTime.Now.ToString("HH:mm:ss") + ".";
+            _status.Text = $"Captured {full.Width}x{full.Height} at {DateTime.Now:HH:mm:ss}.";
         }
 
         // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the
