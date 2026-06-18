@@ -27,7 +27,10 @@ namespace MotorControlApp
         private readonly PictureBox _capturedBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
         private readonly Button _captureBtn = new() { Text = "Capture Image", Enabled = false };
         private readonly Button _saveBtn = new() { Text = "Save Image", Enabled = false };
+        private readonly Button _crosshairBtn = new() { Text = "Crosshair: Off" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
+
+        private bool _showCrosshair;
 
         private Task? _grabTask;
         private CancellationTokenSource? _cts;
@@ -66,7 +69,18 @@ namespace MotorControlApp
             _saveBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _saveBtn.Click += (s, e) => SaveCaptured();
 
-            _status.Location = new Point(312, 496);
+            _crosshairBtn.Location = new Point(308, 484);
+            _crosshairBtn.Size = new Size(140, 40);
+            _crosshairBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _crosshairBtn.Click += (s, e) =>
+            {
+                _showCrosshair = !_showCrosshair;
+                _crosshairBtn.Text = _showCrosshair ? "Crosshair: On" : "Crosshair: Off";
+                _liveBox.Invalidate();
+            };
+            _liveBox.Paint += DrawCrosshair;
+
+            _status.Location = new Point(456, 496);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             Controls.Add(liveLabel);
@@ -75,6 +89,7 @@ namespace MotorControlApp
             Controls.Add(_capturedBox);
             Controls.Add(_captureBtn);
             Controls.Add(_saveBtn);
+            Controls.Add(_crosshairBtn);
             Controls.Add(_status);
 
             Load += (s, e) => StartCamera();
@@ -150,6 +165,19 @@ namespace MotorControlApp
             old?.Dispose();
             _saveBtn.Enabled = true;
             _status.Text = "Captured at " + DateTime.Now.ToString("HH:mm:ss") + ".";
+        }
+
+        // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the
+        // framed image is centred in the box, so box-centre = frame geometric centre. This is
+        // a visual reference only — NOT the calibrated optical/Theta centre (see Stage B).
+        private void DrawCrosshair(object? sender, PaintEventArgs e)
+        {
+            if (!_showCrosshair) return;
+            int cx = _liveBox.ClientSize.Width / 2;
+            int cy = _liveBox.ClientSize.Height / 2;
+            using var pen = new Pen(Color.Lime, 1f);
+            e.Graphics.DrawLine(pen, cx, 0, cx, _liveBox.ClientSize.Height);
+            e.Graphics.DrawLine(pen, 0, cy, _liveBox.ClientSize.Width, cy);
         }
 
         // Saves the captured frame as a PNG under Desktop\images (created if missing).
