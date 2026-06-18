@@ -28,7 +28,7 @@ namespace MotorControlApp
         private void visionButton_Click(object? sender, EventArgs e)
         {
             if (_visionWindow == null || _visionWindow.IsDisposed)
-                _visionWindow = new FrmVision();
+                _visionWindow = new FrmVision(this);
             _visionWindow.Show();
             _visionWindow.BringToFront();
         }

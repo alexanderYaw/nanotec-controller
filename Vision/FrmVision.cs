@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -31,6 +32,17 @@ namespace MotorControlApp
         private readonly Button _invertBtn = new() { Text = "Invert: On" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
 
+        // --- Camera-scale calibration (manual jog + capture; owner supplies motor position) --
+        private readonly FrmMain? _owner;
+        private readonly ReflectiveMarkDetector _markDetector = new();
+        private readonly CameraCalibrator _calibrator = new();
+        private volatile bool _sampleRequested;     // UI asked GrabLoop for a calibration sample
+        private readonly Button _sampleBtn = new() { Text = "Add Sample", Enabled = false };
+        private readonly Button _computeBtn = new() { Text = "Compute && Save A", Enabled = false };
+        private readonly Button _clearBtn = new() { Text = "Clear", Enabled = false };
+        private readonly TextBox _sampleList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
+        private readonly Label _calibResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
+
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
         private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
@@ -42,13 +54,14 @@ namespace MotorControlApp
         private bool _displayQueued;        // a BeginInvoke(ShowPending) is already in flight
         private volatile int _viewW = 480, _viewH = 440;   // downscale target (live box size)
 
-        public FrmVision()
+        public FrmVision(FrmMain owner)
         {
+            _owner = owner;
             Text = "Vision - live view";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
-            ClientSize = new Size(1000, 540);
-            MinimumSize = new Size(720, 440);
+            ClientSize = new Size(1240, 540);
+            MinimumSize = new Size(1000, 480);
 
             var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
@@ -60,7 +73,7 @@ namespace MotorControlApp
 
             _capturedBox.Location = new Point(508, 32);
             _capturedBox.Size = new Size(480, 440);
-            _capturedBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Right;
+            _capturedBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
 
             _captureBtn.Location = new Point(12, 484);
             _captureBtn.Size = new Size(120, 40);
@@ -95,6 +108,36 @@ namespace MotorControlApp
             _status.Location = new Point(524, 496);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
+            // ---- Camera-scale calibration column (right) -------------------------
+            // Manual workflow: jog the table (main window) to keep the ring in view, then
+            // Add Sample — that records (motor X,Y) + the detected ring centre (row,col).
+            // After >= 3 samples spanning both axes, Compute & Save solves the pixel->step
+            // affine and writes it to the shared CalibrationStore.
+            var calibLabel = new Label { Text = "Camera scale calibration", Location = new Point(1000, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+
+            _sampleBtn.Location = new Point(1000, 34);
+            _sampleBtn.Size = new Size(228, 30);
+            _sampleBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _sampleBtn.Click += (s, e) => RequestSample();
+
+            _clearBtn.Location = new Point(1000, 68);
+            _clearBtn.Size = new Size(228, 26);
+            _clearBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _clearBtn.Click += (s, e) => ClearSamples();
+
+            _sampleList.Location = new Point(1000, 100);
+            _sampleList.Size = new Size(228, 210);
+            _sampleList.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+            _computeBtn.Location = new Point(1000, 316);
+            _computeBtn.Size = new Size(228, 32);
+            _computeBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _computeBtn.Click += (s, e) => ComputeAndSave();
+
+            _calibResult.Location = new Point(1000, 354);
+            _calibResult.Size = new Size(228, 110);
+            _calibResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
             Controls.Add(liveLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
@@ -104,6 +147,12 @@ namespace MotorControlApp
             Controls.Add(_crosshairBtn);
             Controls.Add(_invertBtn);
             Controls.Add(_status);
+            Controls.Add(calibLabel);
+            Controls.Add(_sampleBtn);
+            Controls.Add(_clearBtn);
+            Controls.Add(_sampleList);
+            Controls.Add(_computeBtn);
+            Controls.Add(_calibResult);
 
             Load += (s, e) => StartCamera();
             FormClosing += (s, e) => Teardown();
@@ -117,6 +166,7 @@ namespace MotorControlApp
             _viewW = Math.Max(1, _liveBox.Width);
             _viewH = Math.Max(1, _liveBox.Height);
             _captureBtn.Enabled = true;
+            _sampleBtn.Enabled = true;
             _status.Text = "Live.";
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
@@ -147,6 +197,29 @@ namespace MotorControlApp
                         if (_invertView) full.RotateFlip(RotateFlipType.Rotate180FlipNone);
                         try { BeginInvoke(new Action(() => SetCaptured(full))); }
                         catch (InvalidOperationException) { full.Dispose(); }   // closing
+                    }
+                }
+
+                // Calibration sample: detect the fiducial on the RAW frame (no flip — pixel
+                // coords must be consistent), and hand a raw full-res bitmap to the UI so the
+                // user can confirm the detection. Done here so the HALCON handle stays single-
+                // threaded, like the capture path above.
+                if (_sampleRequested)
+                {
+                    _sampleRequested = false;
+                    bool found;
+                    ReflectiveMarkDetector.Mark mark;
+                    try { found = _markDetector.TryDetect(frame, out mark); }
+                    catch (HOperatorException) { found = false; mark = default; }
+
+                    Bitmap? raw = null;
+                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
+                    catch (HOperatorException) { raw = null; }
+                    if (raw != null)
+                    {
+                        bool f = found; ReflectiveMarkDetector.Mark m = mark; Bitmap r = raw;
+                        try { BeginInvoke(new Action(() => OnSampleGrabbed(f, m, r))); }
+                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
                     }
                 }
 
@@ -202,11 +275,108 @@ namespace MotorControlApp
         private void SetCaptured(Bitmap full)
         {
             if (IsDisposed) { full.Dispose(); return; }
-            Image? old = _capturedBox.Image;
-            _capturedBox.Image = full;
-            old?.Dispose();
-            _saveBtn.Enabled = true;
+            ShowCaptured(full);
             _status.Text = $"Captured {full.Width}x{full.Height} at {DateTime.Now:HH:mm:ss}.";
+        }
+
+        // Puts a bitmap in the captured pane, taking ownership (disposes the previous one).
+        private void ShowCaptured(Bitmap bmp)
+        {
+            if (IsDisposed) { bmp.Dispose(); return; }
+            Image? old = _capturedBox.Image;
+            _capturedBox.Image = bmp;
+            if (!ReferenceEquals(old, bmp)) old?.Dispose();
+            _saveBtn.Enabled = true;
+        }
+
+        // ---- Camera-scale calibration -------------------------------------------------
+
+        // Asks GrabLoop to detect the fiducial in the next frame (the table is held still by
+        // the user during a manual sample).
+        private void RequestSample()
+        {
+            if (!_camera.IsOpen) return;
+            _sampleRequested = true;
+            _status.Text = "Sampling: detecting fiducial...";
+        }
+
+        // UI thread: GrabLoop found (or didn't) the fiducial and handed us a raw full-res
+        // frame. Pair the detected pixel with the current motor position and store a sample.
+        private void OnSampleGrabbed(bool found, ReflectiveMarkDetector.Mark mark, Bitmap raw)
+        {
+            if (IsDisposed) { raw.Dispose(); return; }
+
+            if (!found)
+            {
+                ShowCaptured(raw);   // show what the camera saw so the user can adjust
+                _status.Text = "Sample: fiducial NOT found - adjust framing/lighting (test thresholds in HDevelop).";
+                return;
+            }
+            if (_owner == null
+                || !_owner.TryCurrentUser(AxisId.X, out long x)
+                || !_owner.TryCurrentUser(AxisId.Y, out long y))
+            {
+                ShowCaptured(raw);
+                _status.Text = "Sample: motor position unavailable - connect & enable so the live position is updating.";
+                return;
+            }
+
+            _calibrator.Add(mark.Row, mark.Column, x, y);
+            DrawMarkOverlay(raw, mark);
+            ShowCaptured(raw);
+            RefreshCalibUi();
+            _status.Text = $"Sample {_calibrator.Count}: pos=({x}, {y})  px=(r {mark.Row:F1}, c {mark.Column:F1})";
+        }
+
+        // Draws the detected circle + centre cross onto the (raw) sample bitmap. GDI x = column,
+        // y = row. Drawn at full-res coordinates; the Zoom pane scales it to fit.
+        private static void DrawMarkOverlay(Bitmap bmp, ReflectiveMarkDetector.Mark mark)
+        {
+            using var g = Graphics.FromImage(bmp);
+            float cx = (float)mark.Column, cy = (float)mark.Row, r = (float)mark.Radius;
+            using var pen = new Pen(Color.Lime, Math.Max(2f, bmp.Width / 400f));
+            g.DrawEllipse(pen, cx - r, cy - r, 2 * r, 2 * r);
+            g.DrawLine(pen, cx - r, cy, cx + r, cy);
+            g.DrawLine(pen, cx, cy - r, cx, cy + r);
+        }
+
+        private void ClearSamples()
+        {
+            _calibrator.Clear();
+            RefreshCalibUi();
+            _status.Text = "Calibration samples cleared.";
+        }
+
+        private void RefreshCalibUi()
+        {
+            var sb = new StringBuilder();
+            int i = 1;
+            foreach (CameraCalibrator.Sample s in _calibrator.Samples)
+                sb.AppendLine($"{i++,2}: X={s.X,8} Y={s.Y,8}  r={s.Row,7:F1} c={s.Column,7:F1}");
+            _sampleList.Text = sb.ToString();
+            _computeBtn.Enabled = _calibrator.Count >= 3;
+            _clearBtn.Enabled = _calibrator.Count > 0;
+        }
+
+        // Solves the pixel->step affine from the samples and saves it to the shared store.
+        private void ComputeAndSave()
+        {
+            if (!_calibrator.TrySolve(out PixelStepAffine a, out double resid, out string? err))
+            {
+                _calibResult.Text = "Solve failed:\r\n" + err;
+                return;
+            }
+            if (_owner != null)
+            {
+                _owner.Calibration.PixelStep = a;
+                try { _owner.Calibration.Save(); }
+                catch (Exception ex) { _calibResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
+            }
+            _calibResult.Text =
+                $"Saved.  N={a.SampleCount}  RMS resid={resid:F1} steps\r\n" +
+                $"dX/drow={a.Xr:F3}  dX/dcol={a.Xc:F3}\r\n" +
+                $"dY/drow={a.Yr:F3}  dY/dcol={a.Yc:F3}";
+            _status.Text = "Calibration computed and saved to calibration.json.";
         }
 
         // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the
