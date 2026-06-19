@@ -43,6 +43,14 @@ namespace MotorControlApp
         private readonly TextBox _sampleList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
         private readonly Label _calibResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
 
+        // Drift-corrected "vision jog": commands X+Y together (via the calibration) so the
+        // on-screen motion is purely horizontal/vertical. Hold-to-jog like the main d-pad.
+        private readonly NumericUpDown _vSpeed = new() { Minimum = 0, Maximum = 6000, Value = 1000, Increment = 100, Enabled = false };
+        private readonly Button _vUp = new() { Text = "▲", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
+        private readonly Button _vDown = new() { Text = "▼", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
+        private readonly Button _vLeft = new() { Text = "◀", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
+        private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
+
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
         private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
@@ -60,8 +68,8 @@ namespace MotorControlApp
             Text = "Vision - live view";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
-            ClientSize = new Size(1240, 540);
-            MinimumSize = new Size(1000, 480);
+            ClientSize = new Size(1240, 640);
+            MinimumSize = new Size(1100, 680);
 
             var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
@@ -138,6 +146,28 @@ namespace MotorControlApp
             _calibResult.Size = new Size(228, 110);
             _calibResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
+            // ---- Drift-corrected vision jog (uses the calibration) ---------------
+            // Each press drives X+Y together so the live view moves purely along one screen
+            // axis. Accounts for the display Invert state. Hold-to-jog (MouseDown/MouseUp).
+            var vLabel = new Label { Text = "Vision jog (drift-corrected)", Location = new Point(1000, 470), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var vSpeedLabel = new Label { Text = "Speed:", Location = new Point(1000, 496), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            _vSpeed.Location = new Point(1060, 493);
+            _vSpeed.Size = new Size(80, 24);
+            _vSpeed.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+            void VisionPad(Button b, int x, int y, int sx, int sy)
+            {
+                b.Location = new Point(x, y);
+                b.Size = new Size(46, 36);
+                b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+                b.MouseDown += (s, e) => VisionJog(sx, sy);
+                b.MouseUp += (s, e) => _owner?.VisionStop();
+            }
+            VisionPad(_vUp, 1090, 522, 0, +1);
+            VisionPad(_vLeft, 1044, 560, -1, 0);
+            VisionPad(_vRight, 1136, 560, +1, 0);
+            VisionPad(_vDown, 1090, 598, 0, -1);
+
             Controls.Add(liveLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
@@ -153,9 +183,19 @@ namespace MotorControlApp
             Controls.Add(_sampleList);
             Controls.Add(_computeBtn);
             Controls.Add(_calibResult);
+            Controls.Add(vLabel);
+            Controls.Add(vSpeedLabel);
+            Controls.Add(_vSpeed);
+            Controls.Add(_vUp);
+            Controls.Add(_vDown);
+            Controls.Add(_vLeft);
+            Controls.Add(_vRight);
 
             Load += (s, e) => StartCamera();
             FormClosing += (s, e) => Teardown();
+            // Safety: if this window loses focus mid-hold (e.g. alt-tab), stop the vision jog
+            // (a held button's MouseUp may not fire when focus is stolen).
+            Deactivate += (s, e) => _owner?.VisionStop();
         }
 
         private void StartCamera()
@@ -167,6 +207,8 @@ namespace MotorControlApp
             _viewH = Math.Max(1, _liveBox.Height);
             _captureBtn.Enabled = true;
             _sampleBtn.Enabled = true;
+            _vSpeed.Enabled = true;
+            _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = true;
             _status.Text = "Live.";
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
@@ -418,8 +460,38 @@ namespace MotorControlApp
             catch (InvalidOperationException) { /* closing */ }
         }
 
+        // Drift-corrected jog: convert a desired SCREEN direction (sx: right+, sy: up+) into a
+        // motor command via the calibration so the on-screen motion is pure along that axis.
+        // Screen->raw-pixel mapping accounts for the 180° display Invert; the motor vector is
+        // A·(Δrow,Δcol), scaled so the larger component equals the chosen speed.
+        private void VisionJog(int sx, int sy)
+        {
+            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            if (a == null) { _status.Text = "Vision jog needs the camera-scale calibration first."; return; }
+
+            // Controls are tied to the camera's NATIVE (raw) orientation — the frame the
+            // calibration was measured in: screen right = +col, screen up = -row. The Invert
+            // toggle is a DISPLAY-only flip and deliberately does NOT change control direction.
+            double dCol = sx;
+            double dRow = -sy;
+
+            // User-frame motor velocity that produces that pixel motion (A = steps per pixel).
+            double vxUser = a.Xr * dRow + a.Xc * dCol;
+            double vyUser = a.Yr * dRow + a.Yc * dCol;
+
+            double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
+            if (m < 1e-9) { _status.Text = "Calibration is degenerate; recalibrate."; return; }
+
+            double speed = (double)_vSpeed.Value;
+            int vx = (int)Math.Round(vxUser / m * speed);
+            int vy = (int)Math.Round(vyUser / m * speed);
+            _owner!.VisionJogUser(vx, vy);
+            _status.Text = $"Vision jog: user-vel ({vx}, {vy}).";
+        }
+
         private void Teardown()
         {
+            _owner?.VisionStop();
             _cts?.Cancel();
             try { _grabTask?.Wait(500); } catch { /* best effort; camera streams so grab returns fast */ }
             _camera.Dispose();

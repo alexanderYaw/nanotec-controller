@@ -12,20 +12,25 @@ namespace MotorControlApp
     /// Separate from <see cref="WaferEdgeDetector"/>: this is the 2D-localisable feature used to
     /// calibrate the pixel→step affine. The ring's disk gives a robust, rotation-free 2D point
     /// (the wafer edge can't — a smooth arc only reveals motion along its normal, the aperture
-    /// problem). Method: segment the bright ring → close gaps → fill the dark centre into a
-    /// SOLID disk → keep the large round region → take its centroid. Filling first makes the
-    /// speckled/specular interior irrelevant: the centre is fixed by the outline, averaged over
-    /// thousands of pixels, so it's robust and effectively sub-pixel.
+    /// problem). Method: segment the bright ring → close gaps → fill the dark centre, then take
+    /// the INNER disk (the hole the ring encloses) and its centroid. The inner disk is
+    /// concentric with the ring, so the centroid is the same centre — but because the inner
+    /// circle is smaller it stays in frame (and unbiased) even when the OUTER perimeter clips,
+    /// so the mark can be driven to more extreme positions. The centroid averages over
+    /// thousands of pixels, so it's robust to the speckled/specular interior and sub-pixel.
     ///
     /// FIRST CUT: the thresholds are guesses and WILL need tuning against live frames — they're
     /// all exposed as properties. Pass the FULL-RESOLUTION frame; the input is never modified.
     /// </summary>
     public sealed class ReflectiveMarkDetector
     {
-        public double MinCircularity { get; set; } = 0.7;    // 1 = perfect circle; rejects irregular background blobs
-        public double MinArea { get; set; } = 5000;          // ignore specks/noise
+        // Lenient by default: the inner disk is the convex hull of the gap, which is always
+        // roughly round when valid, so loose gates mainly avoid false NEGATIVES (the
+        // "can't find it even with the full ring in frame" cases) without inviting false hits.
+        public double MinCircularity { get; set; } = 0.5;    // 1 = perfect circle; rejects irregular blobs
+        public double MinArea { get; set; } = 2000;          // ignore specks/noise
         public double MaxArea { get; set; } = 1e9;
-        public double ClosingRadius { get; set; } = 5;       // close gaps in the ring before filling
+        public double ClosingRadius { get; set; } = 8;       // bridge speckle gaps so the ring closes + fills
 
         /// <summary>Fiducial centre + nominal radius, in image pixels (HALCON row/column).</summary>
         public readonly record struct Mark(double Row, double Column, double Radius);
@@ -55,8 +60,21 @@ namespace MotorControlApp
                 // Bright ring → close its gaps → fill the dark centre → solid disk.
                 HOperatorSet.BinaryThreshold(gray, out HObject bright, "max_separability", "light", out HTuple _); temps.Add(bright);
                 HOperatorSet.ClosingCircle(bright, out HObject closed, ClosingRadius); temps.Add(closed);
+
+                // INNER disk, glow-proof. Fill the whole mark to a disk, then the dark band
+                // inside the ring (= `gap`) has the ring's INNER EDGE as its outer boundary.
+                // The centre glow only affects the gap's INNER boundary, which we ignore: the
+                // CONVEX HULL of the gap is the solid disk bounded by the ring's inner edge —
+                // correct whatever is in the centre, and clip-tolerant (inner edge stays in
+                // frame even when the outer perimeter runs off the edge).
                 HOperatorSet.FillUp(closed, out HObject filled); temps.Add(filled);
-                HOperatorSet.Connection(filled, out HObject conn); temps.Add(conn);
+                HOperatorSet.Difference(filled, closed, out HObject gap); temps.Add(gap);
+                HOperatorSet.Connection(gap, out HObject gapParts); temps.Add(gapParts);
+                HOperatorSet.CountObj(gapParts, out HTuple nGap);
+                if (nGap.I < 1) return false;
+                HOperatorSet.SelectShapeStd(gapParts, out HObject biggestGap, "max_area", 0); temps.Add(biggestGap);
+                HOperatorSet.ShapeTrans(biggestGap, out HObject innerDisk, "convex"); temps.Add(innerDisk);
+                HOperatorSet.Connection(innerDisk, out HObject conn); temps.Add(conn);
 
                 // Keep big, round regions only — rejects vignette/background blobs.
                 HTuple features = new HTuple("circularity").TupleConcat("area");
