@@ -64,6 +64,16 @@ namespace MotorControlApp
         private readonly Label _centreResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
         private (long X, long Y)? _chuckCentre;   // last computed/loaded centre (user frame)
 
+        // --- Rotate about crosshair: combine Θ + X/Y so the point under the crosshair stays
+        // pinned while the chuck turns. Relative ("Rotate by"), absolute ("Rotate to"), and the
+        // one-time handedness "Sign test". All gated/executed by FrmMain (serialized motion).
+        private readonly NumericUpDown _rotBy = new() { Minimum = -360, Maximum = 360, Value = 90, DecimalPlaces = 1, Increment = 5, Enabled = false };
+        private readonly Button _rotByBtn = new() { Text = "Rotate by°", Enabled = false };
+        private readonly NumericUpDown _rotTo = new() { Minimum = 0, Maximum = 360, Value = 0, DecimalPlaces = 1, Increment = 5, Enabled = false };
+        private readonly Button _rotToBtn = new() { Text = "Rotate to°", Enabled = false };
+        private readonly Label _signLabel = new() { AutoSize = true };
+        private readonly Button _signTestBtn = new() { Text = "Sign test", Enabled = false };
+
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
         private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
@@ -215,6 +225,34 @@ namespace MotorControlApp
             _centreResult.Size = new Size(228, 90);
             _centreResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
+            // ---- Rotate about crosshair (under the centre-find column) -----------
+            // Needs the camera-scale calibration + a chuck centre. "Sign test" fixes the
+            // image handedness once; "Rotate by/to" then pin the crosshair point while Θ turns.
+            var rotLabel = new Label { Text = "Rotate about crosshair", Location = new Point(1248, 490), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+
+            _rotBy.Location = new Point(1248, 516);
+            _rotBy.Size = new Size(100, 24);
+            _rotBy.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotByBtn.Location = new Point(1352, 514);
+            _rotByBtn.Size = new Size(124, 28);
+            _rotByBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotByBtn.Click += async (s, e) => await _owner!.RotateAboutCrosshairAsync((double)_rotBy.Value);
+
+            _rotTo.Location = new Point(1248, 546);
+            _rotTo.Size = new Size(100, 24);
+            _rotTo.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotToBtn.Location = new Point(1352, 544);
+            _rotToBtn.Size = new Size(124, 28);
+            _rotToBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotToBtn.Click += async (s, e) => await _owner!.RotateToAngleAsync((double)_rotTo.Value);
+
+            _signLabel.Location = new Point(1248, 580);
+            _signLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _signTestBtn.Location = new Point(1352, 576);
+            _signTestBtn.Size = new Size(124, 28);
+            _signTestBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _signTestBtn.Click += async (s, e) => await SignTestAsync();
+
             Controls.Add(liveLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
@@ -244,6 +282,14 @@ namespace MotorControlApp
             Controls.Add(_centreBtn);
             Controls.Add(_goCentreBtn);
             Controls.Add(_centreResult);
+            Controls.Add(rotLabel);
+            Controls.Add(_rotBy);
+            Controls.Add(_rotByBtn);
+            Controls.Add(_rotTo);
+            Controls.Add(_rotToBtn);
+            Controls.Add(_signLabel);
+            Controls.Add(_signTestBtn);
+            RefreshSignLabel();
 
             // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
             if (_owner?.Calibration.ChuckCenterX is long cxLoaded && _owner.Calibration.ChuckCenterY is long cyLoaded)
@@ -272,6 +318,8 @@ namespace MotorControlApp
             _edgeBtn.Enabled = true;
             _vSpeed.Enabled = true;
             _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = true;
+            _rotBy.Enabled = _rotByBtn.Enabled = true;
+            _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
             _status.Text = "Live.";
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
@@ -625,6 +673,42 @@ namespace MotorControlApp
             _status.Text = "Moving to chuck centre...";
             await _owner.MoveToAsync(cx.ToString(), cy.ToString(), "");
             _status.Text = "Go to centre: move issued (see main-window log).";
+        }
+
+        private void RefreshSignLabel()
+            => _signLabel.Text = _owner?.RotationSign is int s ? $"Handedness: {s:+0;-0}" : "Handedness: not set";
+
+        // Fixes the image handedness empirically: rotate a small angle about the crosshair with
+        // the current assumed sign, ask whether the crosshair point stayed pinned, then rotate
+        // back (same sign → exact restore) and persist the confirmed/flipped sign. If the point
+        // swung away instead of staying put, the sign was wrong and gets flipped.
+        private async Task SignTestAsync()
+        {
+            if (_owner == null) return;
+            const double testDeg = 6.0;
+            if (MessageBox.Show(this,
+                    $"Sign test rotates ~{testDeg}° about the crosshair and back.\r\n" +
+                    "Watch the point under the crosshair.\r\nProceed?",
+                    "Sign test", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
+            int assumed = _owner.RotationSign ?? +1;   // the sign used for BOTH the test and the restore
+            await _owner.RotateAboutCrosshairAsync(+testDeg);
+
+            DialogResult pinned = MessageBox.Show(this,
+                "Did the point under the crosshair STAY pinned?\r\n\r\n" +
+                "Yes = handedness correct\r\nNo = it swung away (will flip)",
+                "Sign test", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+            // Reversing with the SAME stored sign is the exact geometric inverse, so this returns
+            // to the start pose regardless of the answer. Do it BEFORE changing the sign.
+            await _owner.RotateAboutCrosshairAsync(-testDeg);
+
+            if (pinned == DialogResult.Cancel) { _status.Text = "Sign test cancelled (no change)."; return; }
+            int chosen = pinned == DialogResult.Yes ? assumed : -assumed;
+            _owner.SetRotationSign(chosen);
+            RefreshSignLabel();
+            _status.Text = $"Sign test done: handedness {chosen:+0;-0}.";
         }
 
         // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the

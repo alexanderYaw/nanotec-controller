@@ -23,6 +23,7 @@ namespace MotorControlApp
         private readonly OdIndex OD_Controlword  = new OdIndex(0x6040, 0x00);
         private readonly OdIndex OD_Statusword   = new OdIndex(0x6041, 0x00);
         private readonly OdIndex OD_ModesOfOp    = new OdIndex(0x6060, 0x00);
+        private readonly OdIndex OD_ModesDisplay = new OdIndex(0x6061, 0x00);
         private readonly OdIndex OD_PosActual    = new OdIndex(0x6064, 0x00);
         private readonly OdIndex OD_TargetVel    = new OdIndex(0x60FF, 0x00);
         private readonly OdIndex OD_HomeOffset   = new OdIndex(0x607C, 0x00);
@@ -138,6 +139,25 @@ namespace MotorControlApp
             return r.getResult();
         }
 
+        /// <summary>
+        /// Writes Modes of Operation (0x6060) and blocks until the Modes-of-Operation-Display
+        /// (0x6061) confirms the drive has actually switched, or the timeout elapses. The
+        /// switch can lag the write by a cycle; callers that trigger motion immediately after
+        /// must not race it. Best-effort on timeout (proceeds) so a drive that doesn't surface
+        /// 0x6061 still works — it just loses the guarantee.
+        /// </summary>
+        private void SetModeOfOperation(sbyte mode, string what)
+        {
+            Write(mode, OD_ModesOfOp, BITS_8, $"mode: {what}");
+            int waited = 0;
+            while (waited < STATE_TIMEOUT_MS)
+            {
+                if ((sbyte)Read(OD_ModesDisplay, "modes of operation display") == mode) return;
+                Thread.Sleep(POLL_STEP_MS);
+                waited += POLL_STEP_MS;
+            }
+        }
+
         /// <summary>Polls the statusword until <paramref name="predicate"/> holds or it times out.</summary>
         private long WaitForStatus(Func<long, bool> predicate, int timeoutMs, string what)
         {
@@ -227,7 +247,12 @@ namespace MotorControlApp
 
         private void Move(long position, int profileVelocity, bool relative)
         {
-            Write(MODE_PROFILE_POSITION, OD_ModesOfOp, BITS_8, "mode: profile position");
+            // Switch to Profile Position and WAIT for the drive to actually enter it (0x6061).
+            // The mode change is not instantaneous — on the rotary chuck it takes ~one cycle —
+            // and triggering the new-set-point edge (below) before the drive has left the
+            // previous mode makes it read the set-point as velocity-mode bits and ignore the
+            // move (the axis silently doesn't turn). Confirming the mode first fixes that.
+            SetModeOfOperation(MODE_PROFILE_POSITION, "profile position");
             Write(profileVelocity, OD_ProfileVelocity, BITS_32, "profile velocity");
             Write(position, OD_TargetPosition, BITS_32, "target position");
 

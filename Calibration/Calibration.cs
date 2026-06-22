@@ -58,6 +58,12 @@ namespace MotorControlApp
         public long? ChuckCenterX { get; set; }
         public long? ChuckCenterY { get; set; }
 
+        /// <summary>Image handedness of a positive Θ move: +1 or -1, or null until the
+        /// crosshair-rotation sign test fixes it. Not derivable from the translation-only
+        /// <see cref="PixelStep"/> affine — it depends on Θ's mounting and camera orientation,
+        /// so it is found empirically and persisted here.</summary>
+        public int? RotationSign { get; set; }
+
         /// <summary>Gets (creating if absent) the calibration record for an axis.</summary>
         public AxisCalibration For(AxisId id)
         {
