@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Text;
@@ -51,6 +52,18 @@ namespace MotorControlApp
         private readonly Button _vLeft = new() { Text = "◀", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
         private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
 
+        // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
+        private readonly ChuckEdgeDetector _edgeDetector = new();
+        private readonly List<(double X, double Y)> _edgePoints = new();   // user-frame step coords
+        private volatile bool _edgeRequested;
+        private readonly Button _edgeBtn = new() { Text = "Add Edge", Enabled = false };
+        private readonly Button _edgeClearBtn = new() { Text = "Clear Edges", Enabled = false };
+        private readonly Button _centreBtn = new() { Text = "Compute Centre", Enabled = false };
+        private readonly Button _goCentreBtn = new() { Text = "Go to Centre", Enabled = false };
+        private readonly TextBox _edgeList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
+        private readonly Label _centreResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
+        private (long X, long Y)? _chuckCentre;   // last computed/loaded centre (user frame)
+
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
         private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
@@ -68,8 +81,8 @@ namespace MotorControlApp
             Text = "Vision - live view";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
-            ClientSize = new Size(1240, 640);
-            MinimumSize = new Size(1100, 680);
+            ClientSize = new Size(1490, 640);
+            MinimumSize = new Size(1200, 680);
 
             var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
@@ -168,6 +181,40 @@ namespace MotorControlApp
             VisionPad(_vRight, 1136, 560, +1, 0);
             VisionPad(_vDown, 1090, 598, 0, -1);
 
+            // ---- Chuck centre-find column (far right) ----------------------------
+            // Jog so the chuck EDGE is in view, Add Edge (detects the edge point nearest the
+            // crosshair, converts to step space via the calibration). After >=3 around the rim,
+            // Compute Centre circle-fits them; Go to Centre drives there.
+            var centreLabel = new Label { Text = "Chuck centre-find", Location = new Point(1248, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+
+            _edgeBtn.Location = new Point(1248, 34);
+            _edgeBtn.Size = new Size(228, 30);
+            _edgeBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _edgeBtn.Click += (s, e) => RequestEdge();
+
+            _edgeClearBtn.Location = new Point(1248, 68);
+            _edgeClearBtn.Size = new Size(228, 26);
+            _edgeClearBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _edgeClearBtn.Click += (s, e) => ClearEdges();
+
+            _edgeList.Location = new Point(1248, 100);
+            _edgeList.Size = new Size(228, 210);
+            _edgeList.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+            _centreBtn.Location = new Point(1248, 316);
+            _centreBtn.Size = new Size(228, 32);
+            _centreBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _centreBtn.Click += (s, e) => ComputeCentre();
+
+            _goCentreBtn.Location = new Point(1248, 354);
+            _goCentreBtn.Size = new Size(228, 32);
+            _goCentreBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _goCentreBtn.Click += async (s, e) => await GoToCentreAsync();
+
+            _centreResult.Location = new Point(1248, 392);
+            _centreResult.Size = new Size(228, 90);
+            _centreResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
             Controls.Add(liveLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
@@ -190,6 +237,21 @@ namespace MotorControlApp
             Controls.Add(_vDown);
             Controls.Add(_vLeft);
             Controls.Add(_vRight);
+            Controls.Add(centreLabel);
+            Controls.Add(_edgeBtn);
+            Controls.Add(_edgeClearBtn);
+            Controls.Add(_edgeList);
+            Controls.Add(_centreBtn);
+            Controls.Add(_goCentreBtn);
+            Controls.Add(_centreResult);
+
+            // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
+            if (_owner?.Calibration.ChuckCenterX is long cxLoaded && _owner.Calibration.ChuckCenterY is long cyLoaded)
+            {
+                _chuckCentre = (cxLoaded, cyLoaded);
+                _goCentreBtn.Enabled = true;
+                _centreResult.Text = $"Saved centre:\r\nX={cxLoaded}  Y={cyLoaded}";
+            }
 
             Load += (s, e) => StartCamera();
             FormClosing += (s, e) => Teardown();
@@ -207,6 +269,7 @@ namespace MotorControlApp
             _viewH = Math.Max(1, _liveBox.Height);
             _captureBtn.Enabled = true;
             _sampleBtn.Enabled = true;
+            _edgeBtn.Enabled = true;
             _vSpeed.Enabled = true;
             _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = true;
             _status.Text = "Live.";
@@ -261,6 +324,30 @@ namespace MotorControlApp
                     {
                         bool f = found; ReflectiveMarkDetector.Mark m = mark; Bitmap r = raw;
                         try { BeginInvoke(new Action(() => OnSampleGrabbed(f, m, r))); }
+                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
+                    }
+                }
+
+                // Centre-find edge: detect the chuck edge nearest the crosshair (raw frame
+                // centre), on the raw frame. Crosshair = frame centre in raw pixels.
+                if (_edgeRequested)
+                {
+                    _edgeRequested = false;
+                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                    bool found;
+                    ChuckEdgeDetector.EdgePoint edge;
+                    try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
+                    catch (HOperatorException) { found = false; edge = default; }
+
+                    Bitmap? raw = null;
+                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
+                    catch (HOperatorException) { raw = null; }
+                    if (raw != null)
+                    {
+                        bool f = found; ChuckEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
+                        double cr = crossRow, cc = crossCol;
+                        try { BeginInvoke(new Action(() => OnEdgeGrabbed(f, ed, cr, cc, r))); }
                         catch (InvalidOperationException) { raw.Dispose(); }   // closing
                     }
                 }
@@ -419,6 +506,125 @@ namespace MotorControlApp
                 $"dX/drow={a.Xr:F3}  dX/dcol={a.Xc:F3}\r\n" +
                 $"dY/drow={a.Yr:F3}  dY/dcol={a.Yc:F3}";
             _status.Text = "Calibration computed and saved to calibration.json.";
+        }
+
+        // ---- Chuck centre-find --------------------------------------------------------
+
+        private void RequestEdge()
+        {
+            if (!_camera.IsOpen) return;
+            _edgeRequested = true;
+            _status.Text = "Detecting chuck edge...";
+        }
+
+        // UI thread: GrabLoop found (or not) the chuck-edge point nearest the crosshair. Convert
+        // it to step space via the calibration and store it: E = M + A·(p_crosshair − p_edge),
+        // the motor position that would bring this edge point onto the crosshair (user frame).
+        private void OnEdgeGrabbed(bool found, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol, Bitmap raw)
+        {
+            if (IsDisposed) { raw.Dispose(); return; }
+
+            if (!found)
+            {
+                ShowCaptured(raw);
+                _status.Text = "Edge: chuck edge NOT found — reframe so the edge crosses the view (tune in HDevelop).";
+                return;
+            }
+            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            if (a == null)
+            {
+                ShowCaptured(raw);
+                _status.Text = "Edge: needs the camera-scale calibration first.";
+                return;
+            }
+            if (!_owner!.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
+            {
+                ShowCaptured(raw);
+                _status.Text = "Edge: motor position unavailable — connect & enable.";
+                return;
+            }
+
+            double dRow = crossRow - edge.Row, dCol = crossCol - edge.Column;
+            double ex = mx + a.Xr * dRow + a.Xc * dCol;
+            double ey = my + a.Yr * dRow + a.Yc * dCol;
+            _edgePoints.Add((ex, ey));
+
+            DrawEdgeOverlay(raw, edge, crossRow, crossCol);
+            ShowCaptured(raw);
+            RefreshEdgeUi();
+            _status.Text = $"Edge {_edgePoints.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
+        }
+
+        // Draws the frame-centre crosshair (green) and the detected edge point (yellow circle).
+        private static void DrawEdgeOverlay(Bitmap bmp, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol)
+        {
+            using var g = Graphics.FromImage(bmp);
+            float w = Math.Max(2f, bmp.Width / 400f), half = bmp.Width / 30f, rad = bmp.Width / 60f;
+            using (var cpen = new Pen(Color.Lime, w))
+            {
+                g.DrawLine(cpen, (float)crossCol, (float)crossRow - half, (float)crossCol, (float)crossRow + half);
+                g.DrawLine(cpen, (float)crossCol - half, (float)crossRow, (float)crossCol + half, (float)crossRow);
+            }
+            using var epen = new Pen(Color.Yellow, w);
+            g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
+        }
+
+        private void ClearEdges()
+        {
+            _edgePoints.Clear();
+            RefreshEdgeUi();
+            _status.Text = "Edge points cleared.";
+        }
+
+        private void RefreshEdgeUi()
+        {
+            var sb = new StringBuilder();
+            int i = 1;
+            foreach ((double X, double Y) p in _edgePoints)
+                sb.AppendLine($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
+            _edgeList.Text = sb.ToString();
+            _centreBtn.Enabled = _edgePoints.Count >= 3;
+            _edgeClearBtn.Enabled = _edgePoints.Count > 0;
+        }
+
+        // Circle-fits the edge points (step space); the centre is the motor position that puts
+        // the chuck centre on the crosshair. Persists it to the shared store.
+        private void ComputeCentre()
+        {
+            if (!CircleFit.TryFit(_edgePoints, out CircleFit.Result fit, out string? err))
+            {
+                _centreResult.Text = "Fit failed:\r\n" + err;
+                return;
+            }
+            long cx = (long)Math.Round(fit.CenterX), cy = (long)Math.Round(fit.CenterY);
+            _chuckCentre = (cx, cy);
+            if (_owner != null)
+            {
+                _owner.Calibration.ChuckCenterX = cx;
+                _owner.Calibration.ChuckCenterY = cy;
+                try { _owner.Calibration.Save(); }
+                catch (Exception ex) { _centreResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
+            }
+            _goCentreBtn.Enabled = true;
+            _centreResult.Text =
+                $"Centre (N={_edgePoints.Count}):\r\nX={cx}  Y={cy}\r\n" +
+                $"R={fit.Radius:F0}  fit RMS={fit.RmsError:F0} steps";
+            _status.Text = "Chuck centre computed and saved.";
+        }
+
+        // Drives the table so the chuck centre lands on the view centre. Absolute move via
+        // FrmMain.MoveToAsync (bounds-checked, Y-frame handled). Confirms first — auto move.
+        private async Task GoToCentreAsync()
+        {
+            if (_owner == null || _chuckCentre == null) return;
+            long cx = _chuckCentre.Value.X, cy = _chuckCentre.Value.Y;
+            DialogResult ans = MessageBox.Show(this,
+                $"Move the chuck centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
+                "Go to Centre", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (ans != DialogResult.Yes) return;
+            _status.Text = "Moving to chuck centre...";
+            await _owner.MoveToAsync(cx.ToString(), cy.ToString(), "");
+            _status.Text = "Go to centre: move issued (see main-window log).";
         }
 
         // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the

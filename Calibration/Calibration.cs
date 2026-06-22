@@ -53,6 +53,11 @@ namespace MotorControlApp
         /// <summary>Camera-scale calibration (pixel→step), or null until calibrated.</summary>
         public PixelStepAffine? PixelStep { get; set; }
 
+        /// <summary>Chuck centre in motor steps (USER frame), or null until found. The motor
+        /// position that puts the chuck centre under the crosshair / view centre.</summary>
+        public long? ChuckCenterX { get; set; }
+        public long? ChuckCenterY { get; set; }
+
         /// <summary>Gets (creating if absent) the calibration record for an axis.</summary>
         public AxisCalibration For(AxisId id)
         {
