@@ -28,29 +28,36 @@ namespace MotorControlApp
         /// </summary>
         public static Bitmap ToBitmap(HObject image, int maxWidth, int maxHeight)
         {
-            // Normalise to 8-bit so cameras delivering e.g. uint16 still display sensibly.
-            HOperatorSet.ConvertImageType(image, out HObject img8, "byte");
-            HObject work = img8;
+            // Downscale the NATIVE frame FIRST, then convert to 8-bit — so the type conversion and
+            // the managed pixel copy run on the small image, not the full sensor frame. Only the
+            // shrink touches full resolution. (Doing the convert first wasted CPU on every pixel
+            // the downscale was about to throw away — the live view's main per-frame cost.)
+            HObject? scaled = null;
+            HObject? img8 = null;
             try
             {
+                HObject work = image;
                 if (maxWidth > 0 && maxHeight > 0)
                 {
-                    HOperatorSet.GetImageSize(img8, out HTuple w, out HTuple h);
+                    HOperatorSet.GetImageSize(image, out HTuple w, out HTuple h);
                     if (w.I > maxWidth || h.I > maxHeight)
                     {
                         double f = Math.Min((double)maxWidth / w.I, (double)maxHeight / h.I);
                         int nw = Math.Max(1, (int)(w.I * f)), nh = Math.Max(1, (int)(h.I * f));
-                        HOperatorSet.ZoomImageSize(img8, out HObject scaled, nw, nh, "constant");
+                        HOperatorSet.ZoomImageSize(image, out scaled, nw, nh, "constant");
                         work = scaled;
                     }
                 }
-                HOperatorSet.CountChannels(work, out HTuple channels);
-                return channels.I >= 3 ? FromRgb(work) : FromGray(work);
+
+                // Normalise to 8-bit so cameras delivering e.g. uint16 still display sensibly.
+                HOperatorSet.ConvertImageType(work, out img8, "byte");
+                HOperatorSet.CountChannels(img8, out HTuple channels);
+                return channels.I >= 3 ? FromRgb(img8) : FromGray(img8);
             }
             finally
             {
-                if (!ReferenceEquals(work, img8)) work.Dispose();
-                img8.Dispose();
+                img8?.Dispose();
+                scaled?.Dispose();
             }
         }
 

@@ -247,35 +247,43 @@ namespace MotorControlApp
 
         private void Move(long position, int profileVelocity, bool relative)
         {
+            StartMove(position, profileVelocity, relative);
+            FinishSetpoint();
+        }
+
+        private void StartMove(long position, int profileVelocity, bool relative)
+        {
             // Switch to Profile Position and WAIT for the drive to actually enter it (0x6061).
             // The mode change is not instantaneous — on the rotary chuck it takes ~one cycle —
-            // and triggering the new-set-point edge (below) before the drive has left the
-            // previous mode makes it read the set-point as velocity-mode bits and ignore the
-            // move (the axis silently doesn't turn). Confirming the mode first fixes that.
+            // and triggering the new-set-point edge before the drive has left the previous mode
+            // makes it read the set-point as velocity-mode bits and ignore the move (the axis
+            // silently doesn't turn). Confirming the mode first fixes that.
             SetModeOfOperation(MODE_PROFILE_POSITION, "profile position");
             Write(profileVelocity, OD_ProfileVelocity, BITS_32, "profile velocity");
             Write(position, OD_TargetPosition, BITS_32, "target position");
 
-            // The drive latches a new move on the RISING edge of controlword bit 4.
-            // Ensure the bit is low, then set it (with change-immediately + abs/rel),
-            // so a fresh move is always triggered even if bit 4 was left high.
+            // Ensure bit 4 is low, then set it (with change-immediately + abs/rel) so a fresh
+            // move is always triggered even if bit 4 was left high.
             Write(CW_ENABLE_OPERATION, OD_Controlword, BITS_16, "controlword: clear set-point");
             Write(relative ? CW_PP_NEWSETPOINT_REL : CW_PP_NEWSETPOINT_ABS,
                   OD_Controlword, BITS_16, "controlword: new set-point");
+        }
 
-            // SAFETY: wait for the drive to ACKNOWLEDGE the new set-point (statusword bit
-            // 12) before returning. Accepting a set-point also CLEARS Target-Reached, so
-            // this is what stops a following WaitForMotionComplete from latching onto the
-            // PREVIOUS move's stale Target-Reached bit and reporting "done" before the axis
-            // has even started — the failure that could let X/Y traverse while Z is still
-            // down in Home All. If this firmware never raises bit 12, the wait still elapses
-            // long enough (up to STATE_TIMEOUT_MS) for the soft master to accept the
-            // set-point and clear Target-Reached, so completion is still measured fresh.
+        /// <summary>
+        /// Completes a latched move: waits for the drive to ACKNOWLEDGE the new set-point
+        /// (statusword bit 12), then drops bit 4 so the next move can latch. Accepting a set-point
+        /// CLEARS Target-Reached, so this is what stops a following <see cref="WaitForMotionComplete"/>
+        /// from latching onto the PREVIOUS move's stale Target-Reached and reporting "done" before
+        /// the axis has started. If the firmware never raises bit 12, the wait still elapses long
+        /// enough for the set-point to be accepted and Target-Reached cleared.
+        /// </summary>
+        private void FinishSetpoint()
+        {
             try { WaitForStatus(s => (s & SW_SETPOINT_ACK) != 0, STATE_TIMEOUT_MS, "set-point acknowledge"); }
             catch (ChuckException) { /* bit 12 not surfaced; the elapsed wait is the settle */ }
 
-            // Drop the new-set-point bit so the drive clears the acknowledge and can latch
-            // the next move. The move itself continues (change-immediately was set above).
+            // Drop the new-set-point bit so the drive clears the acknowledge and can latch the
+            // next move. The move itself continues (change-immediately was set above).
             Write(CW_ENABLE_OPERATION, OD_Controlword, BITS_16, "controlword: release set-point");
         }
 

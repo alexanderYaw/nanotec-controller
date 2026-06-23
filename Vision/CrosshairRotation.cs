@@ -27,6 +27,10 @@ namespace MotorControlApp
         /// from the start angle, keeps the point under the crosshair fixed. <paramref name="startX"/>/
         /// <paramref name="startY"/> are the ORIGINAL position the rotation began from (pass S₀ on every
         /// incremental step so error never accumulates). Returns false if the affine is degenerate.
+        ///
+        /// Uses the camera affine A: ΔS = A·(R(φ)−I)·A⁻¹·(S−C). A carries BOTH the per-axis scale
+        /// AND the camera↔stage orientation, so the correction cross-couples X and Y correctly —
+        /// which a bare steps/mm ratio cannot (it assumes the image axes line up with the stage).
         /// </summary>
         public static bool TryXyTarget(
             PixelStepAffine a,
@@ -54,28 +58,21 @@ namespace MotorControlApp
 
             // ΔS = A·(r' − r); target = S + ΔS.
             double dRow = rowP - row, dCol = colP - col;
-            double deltaX = a.Xr * dRow + a.Xc * dCol;
-            double deltaY = a.Yr * dRow + a.Yc * dCol;
-
-            targetX = startX + (long)Math.Round(deltaX);
-            targetY = startY + (long)Math.Round(deltaY);
+            targetX = startX + (long)Math.Round(a.Xr * dRow + a.Xc * dCol);
+            targetY = startY + (long)Math.Round(a.Yr * dRow + a.Yc * dCol);
             return true;
         }
 
         /// <summary>
         /// Motor encoder ticks per ONE full CHUCK revolution. The chuck turns through a gear
-        /// reduction, so this is NOT the motor's 40000/rev: measured ~19893 ticks for 30° of
-        /// chuck → 238716 ticks/rev (≈5.97:1 reduction). Crosshair rotation must command in
-        /// CHUCK degrees, so it scales with this, not the motor constant.
+        /// reduction, so this is NOT the motor's 40000/rev: measured 29580 steps for 30° →
+        /// 354960 ticks/rev (≈8.87:1 reduction).
         /// </summary>
-        public const long ChuckTicksPerRev = 238716;
+        public const long ChuckTicksPerRev = 354960;
 
-        /// <summary>Motor ticks to rotate the CHUCK by <paramref name="degrees"/> (through the gear).</summary>
-        public static long DegreesToChuckTicks(double degrees)
-            => (long)Math.Round(degrees / 360.0 * ChuckTicksPerRev);
-
-        /// <summary>Motor ticks for a MOTOR-shaft degree increment (40000/rev). Diagnostic use only.</summary>
-        public static long DegreesToTicks(double degrees)
-            => (long)Math.Round(degrees / 360.0 * ChuckController.ENCODER_TICKS_PER_REV);
+        /// <summary>Motor ticks to rotate the CHUCK by <paramref name="degrees"/> (through the gear),
+        /// given the measured/assumed <paramref name="ticksPerRev"/>.</summary>
+        public static long DegreesToChuckTicks(double degrees, long ticksPerRev)
+            => (long)Math.Round(degrees / 360.0 * ticksPerRev);
     }
 }
