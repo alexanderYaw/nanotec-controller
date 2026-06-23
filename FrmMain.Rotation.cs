@@ -31,6 +31,9 @@ namespace MotorControlApp
         private const int ROTATE_SETTLE_MS = 1500;
         private const int ROTATE_MAX_MS = 180000;
 
+        // Set true (StopHoldRotate) to end a hold-to-rotate; the hold loop checks it each tick.
+        private volatile bool _holdRotateStop;
+
         /// <summary>Rotation needs the drives enabled/idle AND a full calibration (affine +
         /// chuck centre). The sign may still be unset — the test run is how it gets fixed.</summary>
         internal bool CanRotate =>
@@ -177,7 +180,85 @@ namespace MotorControlApp
             _busy = false; RestartTimers(); RefreshButtons();
         }
 
-        // X/Y follow velocity (signed, RAW frame) from a position error in steps: dead-band → 0,
+        /// <summary>
+        /// HOLD-to-rotate about the crosshair: Θ jogs continuously in <paramref name="direction"/>
+        /// (+1/−1) while X/Y follows to pin the crosshair, until <see cref="StopHoldRotate"/> is
+        /// called (button released). Same controller as <see cref="RotateAboutCrosshairAsync"/> but
+        /// with no target angle. Always stops all three on exit. Call from a button MouseDown.
+        /// </summary>
+        internal async Task HoldRotateAsync(int direction)
+        {
+            if (!CanRotate)
+            {
+                AppendLog("Rotate: needs drives enabled, the camera-scale calibration, and a chuck centre.");
+                return;
+            }
+            if (_busy || direction == 0) return;
+
+            PixelStepAffine a = _calib.PixelStep!;
+            long cx = _calib.ChuckCenterX!.Value, cy = _calib.ChuckCenterY!.Value;
+            int sign = _calib.RotationSign ?? +1;
+            if (!_calib.RotationSign.HasValue)
+                AppendLog("Rotate: handedness not calibrated — assuming +1 (run the sign test to confirm).");
+            if (!TryCurrentUser(AxisId.X, out _) || !TryCurrentUser(AxisId.Y, out _))
+            {
+                AppendLog("Rotate: X/Y position not available yet.");
+                return;
+            }
+
+            double radPerTick = 2.0 * Math.PI / CrosshairRotation.ChuckTicksPerRev;
+            int thetaDir = Math.Sign(direction);
+
+            _holdRotateStop = false;
+            _busy = true; RefreshButtons();
+            AppendLog($"Rotate {(thetaDir > 0 ? "⟳" : "⟲")} about crosshair (hold; centre X={cx:N0} Y={cy:N0}, sign {sign:+0;-0})...");
+            bool ok = await RunDriveOp(() =>
+            {
+                _motion!.RecoverIfQuickStopped(AxisId.Theta);
+                _motion.RecoverIfQuickStopped(AxisId.X);
+                _motion.RecoverIfQuickStopped(AxisId.Y);
+
+                long s0x = _motion.GetStatus(AxisId.X).Position;       // live start pose (USER frame)
+                long s0y = -_motion.GetStatus(AxisId.Y).Position;
+                long thetaStart = _motion.GetStatus(AxisId.Theta).Position;
+                _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_SPEED);   // Θ runs until released
+                try
+                {
+                    while (!_holdRotateStop)
+                    {
+                        // Actual angle Θ has swept since the press; X/Y pins the crosshair for it.
+                        double angleRad = radPerTick * (_motion.GetStatus(AxisId.Theta).Position - thetaStart);
+                        if (!CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, angleRad, sign, out long txUser, out long tyUser))
+                            throw new ChuckException("calibration affine is degenerate — recalibrate the camera scale.");
+                        RejectIfOutOfTravel(AxisId.X, txUser);
+                        RejectIfOutOfTravel(AxisId.Y, -tyUser);
+
+                        long errX = txUser - _motion.GetStatus(AxisId.X).Position;
+                        long errY = tyUser - (-_motion.GetStatus(AxisId.Y).Position);
+                        if (Math.Abs(errX) > ROTATE_FOLLOW_MAXERR || Math.Abs(errY) > ROTATE_FOLLOW_MAXERR)
+                            throw new ChuckException($"X/Y fell too far behind Θ (err {errX:N0},{errY:N0}) — aborting. " +
+                                                     "Lower Θ speed, or the handedness/polarity is wrong.");
+                        CommandFollow(AxisId.X, FollowVel(errX));
+                        CommandFollow(AxisId.Y, FollowVel(errY));
+
+                        System.Threading.Thread.Sleep(ROTATE_FOLLOW_MS);
+                    }
+                }
+                finally
+                {
+                    try { _motion.Stop(AxisId.Theta); } catch (ChuckException) { }
+                    try { _motion.Stop(AxisId.X); } catch (ChuckException) { }
+                    try { _motion.Stop(AxisId.Y); } catch (ChuckException) { }
+                }
+            });
+            AppendLog(ok ? "Rotate (hold) stopped." : "Rotate (hold) FAILED — see error above.");
+            _busy = false; RestartTimers(); RefreshButtons();
+        }
+
+        /// <summary>Ends a <see cref="HoldRotateAsync"/> (call from the button MouseUp / on focus loss).</summary>
+        internal void StopHoldRotate() => _holdRotateStop = true;
+
+        // X/Y follow velocity (signed) from a position error in steps: dead-band → 0,
         // else proportional, clamped to [MinVel, Vmax]. Tune ROTATE_FOLLOW_GAIN/VMAX on hardware.
         private static int FollowVel(long errRaw)
         {

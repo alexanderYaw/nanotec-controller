@@ -73,6 +73,9 @@ namespace MotorControlApp
         private readonly Button _rotToBtn = new() { Text = "Rotate to°", Enabled = false };
         private readonly Label _signLabel = new() { AutoSize = true };
         private readonly Button _signTestBtn = new() { Text = "Sign test", Enabled = false };
+        // Hold-to-rotate: rotates about the crosshair while the button is held (like a jog button).
+        private readonly Button _rotHoldCcwBtn = new() { Text = "⟲ Hold", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _rotHoldCwBtn = new() { Text = "Hold ⟳", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
 
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
@@ -253,6 +256,20 @@ namespace MotorControlApp
             _signTestBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _signTestBtn.Click += async (s, e) => await SignTestAsync();
 
+            // Hold-to-rotate: MouseDown starts the compensated rotation in that direction, MouseUp
+            // (or focus loss) stops it. CCW = Θ direction −1, CW = +1 (swap visually if reversed).
+            _rotHoldCcwBtn.Location = new Point(1248, 608);
+            _rotHoldCcwBtn.Size = new Size(112, 30);
+            _rotHoldCcwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotHoldCcwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(-1); };
+            _rotHoldCcwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
+
+            _rotHoldCwBtn.Location = new Point(1364, 608);
+            _rotHoldCwBtn.Size = new Size(112, 30);
+            _rotHoldCwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotHoldCwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(+1); };
+            _rotHoldCwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
+
             Controls.Add(liveLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
@@ -289,6 +306,8 @@ namespace MotorControlApp
             Controls.Add(_rotToBtn);
             Controls.Add(_signLabel);
             Controls.Add(_signTestBtn);
+            Controls.Add(_rotHoldCcwBtn);
+            Controls.Add(_rotHoldCwBtn);
             RefreshSignLabel();
 
             // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
@@ -301,9 +320,9 @@ namespace MotorControlApp
 
             Load += (s, e) => StartCamera();
             FormClosing += (s, e) => Teardown();
-            // Safety: if this window loses focus mid-hold (e.g. alt-tab), stop the vision jog
-            // (a held button's MouseUp may not fire when focus is stolen).
-            Deactivate += (s, e) => _owner?.VisionStop();
+            // Safety: if this window loses focus mid-hold (e.g. alt-tab), stop the vision jog AND
+            // any hold-rotate (a held button's MouseUp may not fire when focus is stolen).
+            Deactivate += (s, e) => { _owner?.VisionStop(); _owner?.StopHoldRotate(); };
         }
 
         private void StartCamera()
@@ -320,6 +339,7 @@ namespace MotorControlApp
             _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = true;
             _rotBy.Enabled = _rotByBtn.Enabled = true;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
+            _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = true;
             _status.Text = "Live.";
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
