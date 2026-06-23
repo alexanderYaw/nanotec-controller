@@ -24,6 +24,23 @@ namespace MotorControlApp
     }
 
     /// <summary>
+    /// Pixel→motor-step affine from the camera-scale calibration: the steps each axis moves
+    /// per pixel of fiducial displacement. ΔX = Xr·Δrow + Xc·Δcol; ΔY = Yr·Δrow + Yc·Δcol.
+    /// Captures both scale and the camera↔stage rotation; offset is not stored (only
+    /// displacements are used). <see cref="ResidualSteps"/> is the calibration's RMS fit error.
+    /// </summary>
+    public sealed class PixelStepAffine
+    {
+        public double Xr { get; set; }
+        public double Xc { get; set; }
+        public double Yr { get; set; }
+        public double Yc { get; set; }
+        public int SampleCount { get; set; }
+        public double ResidualSteps { get; set; }
+        public string? Timestamp { get; set; }
+    }
+
+    /// <summary>
     /// Per-axis calibration persisted to a JSON file, so a defined home survives restarts.
     /// Theta is excluded by convention (the rotary chuck has no home). The home model is
     /// the caller's policy: X/Y use <see cref="AxisCalibration.Center"/>; Z uses its
@@ -32,6 +49,20 @@ namespace MotorControlApp
     public sealed class CalibrationStore
     {
         public Dictionary<AxisId, AxisCalibration> Axes { get; set; } = new();
+
+        /// <summary>Camera-scale calibration (pixel→step), or null until calibrated.</summary>
+        public PixelStepAffine? PixelStep { get; set; }
+
+        /// <summary>Chuck centre in motor steps (USER frame), or null until found. The motor
+        /// position that puts the chuck centre under the crosshair / view centre.</summary>
+        public long? ChuckCenterX { get; set; }
+        public long? ChuckCenterY { get; set; }
+
+        /// <summary>Image handedness of a positive Θ move: +1 or -1, or null until the
+        /// crosshair-rotation sign test fixes it. Not derivable from the translation-only
+        /// <see cref="PixelStep"/> affine — it depends on Θ's mounting and camera orientation,
+        /// so it is found empirically and persisted here.</summary>
+        public int? RotationSign { get; set; }
 
         /// <summary>Gets (creating if absent) the calibration record for an axis.</summary>
         public AxisCalibration For(AxisId id)

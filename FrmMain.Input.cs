@@ -82,6 +82,7 @@ namespace MotorControlApp
         /// </summary>
         private void ApplyJoy(AxisId id, int dir, bool fast)
         {
+            dir = InvertDir(id, dir);                       // movement-inversion toggle (X/Y/Θ)
             if (dir != 0 && IsJogBlocked(id, dir)) dir = 0; // soft limit -> treat as stop
             (int dir, bool fast) last = _lastJoy[id];
             if (last.dir == dir && (dir == 0 || last.fast == fast)) return; // unchanged
@@ -123,6 +124,7 @@ namespace MotorControlApp
 
         private void CommandVel(AxisId id, int v)
         {
+            if (InvertDir(id, 1) < 0) v = -v;                    // movement-inversion toggle (X/Y)
             if (v != 0 && IsJogBlocked(id, Math.Sign(v))) v = 0; // soft limit -> treat as stop
             if (v == 0) { _motion!.Stop(id); _cmdDir[id] = 0; }
             else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _cmdDir[id] = Math.Sign(v); }

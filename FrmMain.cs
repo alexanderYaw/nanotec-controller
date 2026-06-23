@@ -106,6 +106,7 @@ namespace MotorControlApp
             _calib = CalibrationStore.Load(out string? calibWarning);
             BuildAxisRows();
             BuildPositionButton();
+            BuildVisionButton();
             SetState(connected: false, busy: false, "Disconnected");
             if (calibWarning != null) AppendLog("WARN: " + calibWarning);
         }
@@ -167,6 +168,24 @@ namespace MotorControlApp
             Header("Θ", 292);
             Arrow("↻", 250, 56, AxisId.Theta, +1);   // clockwise
             Arrow("↺", 302, 56, AxisId.Theta, -1);   // counter-clockwise
+
+            // Movement-inversion toggle: flips X/Y/Θ jog direction for every manual control
+            // (d-pad, joystick, on-screen puck) so they match the inverted camera view. Z is
+            // unaffected. See InvertDir in FrmMain.Jog.cs.
+            var invertBtn = new Button
+            {
+                Text = "Invert X/Y/Θ: Off",
+                Location = new Point(372, 56),
+                Size = new Size(150, 36),
+                Font = new Font("Segoe UI", 9F),
+            };
+            invertBtn.Click += (s, e) =>
+            {
+                _invertMovement = !_invertMovement;
+                invertBtn.Text = _invertMovement ? "Invert X/Y/Θ: On" : "Invert X/Y/Θ: Off";
+                AppendLog($"Movement inversion {(_invertMovement ? "ON" : "OFF")} (X / Y / Θ).");
+            };
+            axesPanel.Controls.Add(invertBtn);
 
             // separator between the d-pad and the speed/position rows
             axesPanel.Controls.Add(new Panel

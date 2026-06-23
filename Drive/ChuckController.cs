@@ -23,6 +23,7 @@ namespace MotorControlApp
         private readonly OdIndex OD_Controlword  = new OdIndex(0x6040, 0x00);
         private readonly OdIndex OD_Statusword   = new OdIndex(0x6041, 0x00);
         private readonly OdIndex OD_ModesOfOp    = new OdIndex(0x6060, 0x00);
+        private readonly OdIndex OD_ModesDisplay = new OdIndex(0x6061, 0x00);
         private readonly OdIndex OD_PosActual    = new OdIndex(0x6064, 0x00);
         private readonly OdIndex OD_TargetVel    = new OdIndex(0x60FF, 0x00);
         private readonly OdIndex OD_HomeOffset   = new OdIndex(0x607C, 0x00);
@@ -138,6 +139,25 @@ namespace MotorControlApp
             return r.getResult();
         }
 
+        /// <summary>
+        /// Writes Modes of Operation (0x6060) and blocks until the Modes-of-Operation-Display
+        /// (0x6061) confirms the drive has actually switched, or the timeout elapses. The
+        /// switch can lag the write by a cycle; callers that trigger motion immediately after
+        /// must not race it. Best-effort on timeout (proceeds) so a drive that doesn't surface
+        /// 0x6061 still works — it just loses the guarantee.
+        /// </summary>
+        private void SetModeOfOperation(sbyte mode, string what)
+        {
+            Write(mode, OD_ModesOfOp, BITS_8, $"mode: {what}");
+            int waited = 0;
+            while (waited < STATE_TIMEOUT_MS)
+            {
+                if ((sbyte)Read(OD_ModesDisplay, "modes of operation display") == mode) return;
+                Thread.Sleep(POLL_STEP_MS);
+                waited += POLL_STEP_MS;
+            }
+        }
+
         /// <summary>Polls the statusword until <paramref name="predicate"/> holds or it times out.</summary>
         private long WaitForStatus(Func<long, bool> predicate, int timeoutMs, string what)
         {
@@ -227,30 +247,43 @@ namespace MotorControlApp
 
         private void Move(long position, int profileVelocity, bool relative)
         {
-            Write(MODE_PROFILE_POSITION, OD_ModesOfOp, BITS_8, "mode: profile position");
+            StartMove(position, profileVelocity, relative);
+            FinishSetpoint();
+        }
+
+        private void StartMove(long position, int profileVelocity, bool relative)
+        {
+            // Switch to Profile Position and WAIT for the drive to actually enter it (0x6061).
+            // The mode change is not instantaneous — on the rotary chuck it takes ~one cycle —
+            // and triggering the new-set-point edge before the drive has left the previous mode
+            // makes it read the set-point as velocity-mode bits and ignore the move (the axis
+            // silently doesn't turn). Confirming the mode first fixes that.
+            SetModeOfOperation(MODE_PROFILE_POSITION, "profile position");
             Write(profileVelocity, OD_ProfileVelocity, BITS_32, "profile velocity");
             Write(position, OD_TargetPosition, BITS_32, "target position");
 
-            // The drive latches a new move on the RISING edge of controlword bit 4.
-            // Ensure the bit is low, then set it (with change-immediately + abs/rel),
-            // so a fresh move is always triggered even if bit 4 was left high.
+            // Ensure bit 4 is low, then set it (with change-immediately + abs/rel) so a fresh
+            // move is always triggered even if bit 4 was left high.
             Write(CW_ENABLE_OPERATION, OD_Controlword, BITS_16, "controlword: clear set-point");
             Write(relative ? CW_PP_NEWSETPOINT_REL : CW_PP_NEWSETPOINT_ABS,
                   OD_Controlword, BITS_16, "controlword: new set-point");
+        }
 
-            // SAFETY: wait for the drive to ACKNOWLEDGE the new set-point (statusword bit
-            // 12) before returning. Accepting a set-point also CLEARS Target-Reached, so
-            // this is what stops a following WaitForMotionComplete from latching onto the
-            // PREVIOUS move's stale Target-Reached bit and reporting "done" before the axis
-            // has even started — the failure that could let X/Y traverse while Z is still
-            // down in Home All. If this firmware never raises bit 12, the wait still elapses
-            // long enough (up to STATE_TIMEOUT_MS) for the soft master to accept the
-            // set-point and clear Target-Reached, so completion is still measured fresh.
+        /// <summary>
+        /// Completes a latched move: waits for the drive to ACKNOWLEDGE the new set-point
+        /// (statusword bit 12), then drops bit 4 so the next move can latch. Accepting a set-point
+        /// CLEARS Target-Reached, so this is what stops a following <see cref="WaitForMotionComplete"/>
+        /// from latching onto the PREVIOUS move's stale Target-Reached and reporting "done" before
+        /// the axis has started. If the firmware never raises bit 12, the wait still elapses long
+        /// enough for the set-point to be accepted and Target-Reached cleared.
+        /// </summary>
+        private void FinishSetpoint()
+        {
             try { WaitForStatus(s => (s & SW_SETPOINT_ACK) != 0, STATE_TIMEOUT_MS, "set-point acknowledge"); }
             catch (ChuckException) { /* bit 12 not surfaced; the elapsed wait is the settle */ }
 
-            // Drop the new-set-point bit so the drive clears the acknowledge and can latch
-            // the next move. The move itself continues (change-immediately was set above).
+            // Drop the new-set-point bit so the drive clears the acknowledge and can latch the
+            // next move. The move itself continues (change-immediately was set above).
             Write(CW_ENABLE_OPERATION, OD_Controlword, BITS_16, "controlword: release set-point");
         }
 

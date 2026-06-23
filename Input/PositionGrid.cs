@@ -157,6 +157,16 @@ namespace MotorControlApp
                 using var brush = new SolidBrush(Color.FromArgb(40, 110, 200));
                 g.FillEllipse(brush, p.X - 5, p.Y - 5, 10, 10);
             }
+
+            // Locked during a move (host sets Enabled = false): dim the plot and say so.
+            // The live dot keeps updating underneath, so motion is still visible.
+            if (!Enabled)
+            {
+                using var veil = new SolidBrush(Color.FromArgb(140, 245, 245, 245));
+                g.FillRectangle(veil, ClientRectangle);
+                TextRenderer.DrawText(g, "Moving…", Font, ClientRectangle, Color.DimGray,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
         }
 
         private void DrawLabels(Graphics g, RectangleF plot)

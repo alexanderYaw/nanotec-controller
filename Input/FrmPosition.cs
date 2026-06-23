@@ -100,7 +100,23 @@ namespace MotorControlApp
                 _grid.SetTarget(x, y);
         }
 
-        private async Task DoGo() => await _owner.MoveToAsync(_x.Text, _y.Text, _z.Text);
+        private async Task DoGo()
+        {
+            // Lock target entry while the chuck moves so the user can't stage a new
+            // target mid-motion; the Go button is gated separately via CanMoveCalibration
+            // in RefreshFromOwner. Re-enabled in finally even if the move throws.
+            SetInputsEnabled(false);
+            try { await _owner.MoveToAsync(_x.Text, _y.Text, _z.Text); }
+            finally { if (!IsDisposed) SetInputsEnabled(true); }
+        }
+
+        private void SetInputsEnabled(bool on)
+        {
+            _grid.Enabled = on;
+            _x.Enabled = on;
+            _y.Enabled = on;
+            _z.Enabled = on;
+        }
 
         private void RefreshFromOwner()
         {
