@@ -13,7 +13,7 @@ namespace MotorControlApp
     public partial class FrmMain
     {
         // Θ jog velocity during a rotation (drive units; matches Theta's jog default).
-        private const int ROTATE_THETA_SPEED = 400;
+        private const int ROTATE_THETA_SPEED = 1600;
         // X/Y position-follow loop: period, proportional gain (velocity units per step of error),
         // velocity clamp, smallest commanded velocity, and the dead-band under which an axis is
         // stopped. GAIN/VMAX likely need tuning on hardware (units aren't mm/deg yet).
@@ -22,7 +22,7 @@ namespace MotorControlApp
         // travels ~K·V·dt steps per tick, so a gain above ~1/(K·dt) ("deadbeat") oscillates. Start
         // well below that and raise it until X/Y just keeps up with Θ without overshooting.
         private const double ROTATE_FOLLOW_GAIN = 3.0;
-        private const int ROTATE_FOLLOW_VMAX = 800;   // X/Y follow speed cap (velocity units)
+        private const int ROTATE_FOLLOW_VMAX = 3200;   // X/Y follow speed cap (velocity units)
         private const int ROTATE_FOLLOW_MINVEL = 40;
         private const long ROTATE_FOLLOW_DEADBAND = 15;
         // Safety: if X/Y fall this far behind Θ, abort (can't keep up, or wrong handedness/polarity
