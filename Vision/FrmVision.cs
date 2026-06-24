@@ -47,10 +47,29 @@ namespace MotorControlApp
         // Drift-corrected "vision jog": commands X+Y together (via the calibration) so the
         // on-screen motion is purely horizontal/vertical. Hold-to-jog like the main d-pad.
         private readonly NumericUpDown _vSpeed = new() { Minimum = 0, Maximum = 6000, Value = 1000, Increment = 100, Enabled = false };
-        private readonly Button _vUp = new() { Text = "▲", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
-        private readonly Button _vDown = new() { Text = "▼", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
-        private readonly Button _vLeft = new() { Text = "◀", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
-        private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 12F), Enabled = false };
+        // Analog joystick for the drift-corrected jog: drag the puck (angle + distance) → the
+        // owner is commanded the drift-corrected X/Y velocity scaled by the deflection. Polled on
+        // a timer (the pad only reports state), send-on-change so an idle/centred puck is silent.
+        private readonly JoystickPad _vPad = new() { Enabled = false };
+        private readonly System.Windows.Forms.Timer _vPadTimer = new() { Interval = 50 };
+        private int _vLastVx, _vLastVy;
+        // Discrete d-pad alongside the puck (pure-axis jog at the full Speed setting).
+        private readonly Button _vUp = new() { Text = "▲", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _vDown = new() { Text = "▼", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _vLeft = new() { Text = "◀", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+
+        // --- Wafer centre-find: capture >=3 wafer-rim points (step space), circle-fit, go to centre.
+        // Same flow as the chuck centre-find but with WaferEdgeDetector and a separate stored centre.
+        private readonly WaferEdgeDetector _waferDetector = new();
+        private readonly List<(double X, double Y)> _waferPoints = new();   // user-frame step coords
+        private volatile bool _waferRequested;
+        private readonly Button _waferEdgeBtn = new() { Text = "Add Wafer Edge", Enabled = false };
+        private readonly Button _waferClearBtn = new() { Text = "Clear", Enabled = false };
+        private readonly Button _waferCentreBtn = new() { Text = "Compute Centre", Enabled = false };
+        private readonly Button _waferGoBtn = new() { Text = "Go to Centre", Enabled = false };
+        private readonly Label _waferResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
+        private (long X, long Y)? _waferCentre;
 
         // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
         private readonly ChuckEdgeDetector _edgeDetector = new();
@@ -142,6 +161,41 @@ namespace MotorControlApp
             _status.Location = new Point(524, 496);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
+            // ---- Wafer centre-find (bottom strip) --------------------------------
+            // Jog so the wafer EDGE crosses the crosshair, Add Wafer Edge at several spots around the
+            // rim (detects via WaferEdgeDetector, converts to step space), then Compute Centre
+            // circle-fits them. Mirrors the chuck centre-find; the result overlays on the captured pane.
+            var waferLabel = new Label { Text = "Wafer centre-find", Location = new Point(12, 528), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+
+            _waferEdgeBtn.Location = new Point(12, 550);
+            _waferEdgeBtn.Size = new Size(128, 30);
+            _waferEdgeBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _waferEdgeBtn.Click += (s, e) =>
+            {
+                if (!_camera.IsOpen) return;
+                _waferRequested = true;
+                _status.Text = "Detecting wafer edge...";
+            };
+
+            _waferClearBtn.Location = new Point(146, 550);
+            _waferClearBtn.Size = new Size(56, 30);
+            _waferClearBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _waferClearBtn.Click += (s, e) => ClearWaferPoints();
+
+            _waferCentreBtn.Location = new Point(208, 550);
+            _waferCentreBtn.Size = new Size(128, 30);
+            _waferCentreBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _waferCentreBtn.Click += (s, e) => ComputeWaferCentre();
+
+            _waferGoBtn.Location = new Point(342, 550);
+            _waferGoBtn.Size = new Size(108, 30);
+            _waferGoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _waferGoBtn.Click += async (s, e) => await GoToWaferCentreAsync();
+
+            _waferResult.Location = new Point(458, 528);
+            _waferResult.Size = new Size(232, 52);
+            _waferResult.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
             // ---- Camera-scale calibration column (right) -------------------------
             // Manual workflow: jog the table (main window) to keep the ring in view, then
             // Add Sample — that records (motor X,Y) + the detected ring centre (row,col).
@@ -173,26 +227,32 @@ namespace MotorControlApp
             _calibResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
             // ---- Drift-corrected vision jog (uses the calibration) ---------------
-            // Each press drives X+Y together so the live view moves purely along one screen
-            // axis. Accounts for the display Invert state. Hold-to-jog (MouseDown/MouseUp).
+            // Drag the joystick puck: X+Y are driven together so the live view moves along the
+            // puck direction, with speed proportional to deflection × the Speed control. Spring-
+            // return puck → release = stop. Polled on _vPadTimer (send-on-change).
             var vLabel = new Label { Text = "Vision jog (drift-corrected)", Location = new Point(1000, 470), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
             var vSpeedLabel = new Label { Text = "Speed:", Location = new Point(1000, 496), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
             _vSpeed.Location = new Point(1060, 493);
             _vSpeed.Size = new Size(80, 24);
             _vSpeed.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            void VisionPad(Button b, int x, int y, int sx, int sy)
+            _vPad.Location = new Point(1000, 510);
+            _vPad.Size = new Size(112, 112);
+            _vPad.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _vPadTimer.Tick += (s, e) => VisionPadTick();
+
+            void VisionPadBtn(Button b, int x, int y, int sx, int sy)
             {
                 b.Location = new Point(x, y);
-                b.Size = new Size(46, 36);
+                b.Size = new Size(36, 32);
                 b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
                 b.MouseDown += (s, e) => VisionJog(sx, sy);
                 b.MouseUp += (s, e) => _owner?.VisionStop();
             }
-            VisionPad(_vUp, 1090, 522, 0, +1);
-            VisionPad(_vLeft, 1044, 560, -1, 0);
-            VisionPad(_vRight, 1136, 560, +1, 0);
-            VisionPad(_vDown, 1090, 598, 0, -1);
+            VisionPadBtn(_vUp, 1160, 514, 0, +1);
+            VisionPadBtn(_vLeft, 1124, 548, -1, 0);
+            VisionPadBtn(_vRight, 1196, 548, +1, 0);
+            VisionPadBtn(_vDown, 1160, 582, 0, -1);
 
             // ---- Chuck centre-find column (far right) ----------------------------
             // Jog so the chuck EDGE is in view, Add Edge (detects the edge point nearest the
@@ -288,10 +348,17 @@ namespace MotorControlApp
             Controls.Add(vLabel);
             Controls.Add(vSpeedLabel);
             Controls.Add(_vSpeed);
+            Controls.Add(_vPad);
             Controls.Add(_vUp);
             Controls.Add(_vDown);
             Controls.Add(_vLeft);
             Controls.Add(_vRight);
+            Controls.Add(waferLabel);
+            Controls.Add(_waferEdgeBtn);
+            Controls.Add(_waferClearBtn);
+            Controls.Add(_waferCentreBtn);
+            Controls.Add(_waferGoBtn);
+            Controls.Add(_waferResult);
             Controls.Add(centreLabel);
             Controls.Add(_edgeBtn);
             Controls.Add(_edgeClearBtn);
@@ -317,6 +384,13 @@ namespace MotorControlApp
                 _goCentreBtn.Enabled = true;
                 _centreResult.Text = $"Saved centre:\r\nX={cxLoaded}  Y={cyLoaded}";
             }
+            // Likewise the saved wafer centre.
+            if (_owner?.Calibration.WaferCenterX is long wxLoaded && _owner.Calibration.WaferCenterY is long wyLoaded)
+            {
+                _waferCentre = (wxLoaded, wyLoaded);
+                _waferGoBtn.Enabled = true;
+                _waferResult.Text = $"Saved wafer centre:\r\nX={wxLoaded}  Y={wyLoaded}";
+            }
 
             Load += (s, e) => StartCamera();
             FormClosing += (s, e) => Teardown();
@@ -335,7 +409,10 @@ namespace MotorControlApp
             _captureBtn.Enabled = true;
             _sampleBtn.Enabled = true;
             _edgeBtn.Enabled = true;
+            _waferEdgeBtn.Enabled = true;
             _vSpeed.Enabled = true;
+            _vPad.Enabled = true;
+            _vPadTimer.Start();
             _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = true;
             _rotBy.Enabled = _rotByBtn.Enabled = true;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
@@ -416,6 +493,40 @@ namespace MotorControlApp
                         bool f = found; ChuckEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
                         double cr = crossRow, cc = crossCol;
                         try { BeginInvoke(new Action(() => OnEdgeGrabbed(f, ed, cr, cc, r))); }
+                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
+                    }
+                }
+
+                // Wafer-edge test: detect the wafer rim nearest the crosshair on the raw frame and
+                // extract the detected boundary (for overlay), so the thresholds can be tuned live.
+                if (_waferRequested)
+                {
+                    _waferRequested = false;
+                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                    bool found;
+                    WaferEdgeDetector.EdgePoint edge;
+                    double[] cRows = Array.Empty<double>(), cCols = Array.Empty<double>();
+                    try
+                    {
+                        found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
+                        if (found && contour != null)
+                        {
+                            try { HOperatorSet.GetContourXld(contour, out HTuple rows, out HTuple cols); cRows = rows.ToDArr(); cCols = cols.ToDArr(); }
+                            catch (HOperatorException) { /* keep the point even if the contour read fails */ }
+                        }
+                        contour?.Dispose();
+                    }
+                    catch (HOperatorException) { found = false; edge = default; }
+
+                    Bitmap? raw = null;
+                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
+                    catch (HOperatorException) { raw = null; }
+                    if (raw != null)
+                    {
+                        bool f = found; WaferEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
+                        double cr = crossRow, cc = crossCol; double[] rr = cRows, cc2 = cCols;
+                        try { BeginInvoke(new Action(() => OnWaferGrabbed(f, ed, rr, cc2, cr, cc, r))); }
                         catch (InvalidOperationException) { raw.Dispose(); }   // closing
                     }
                 }
@@ -637,6 +748,113 @@ namespace MotorControlApp
             g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
         }
 
+        // UI thread: a wafer-rim point was (or wasn't) found. On success convert it to step space
+        // (E = M + A·(p_cross − p_edge), the motor position that brings this rim point to the
+        // crosshair — same maths as the chuck edge), add it to the wafer set, and overlay the
+        // detected boundary (cyan) + the rim point (yellow) on the captured pane. (cRows/cCols px.)
+        private void OnWaferGrabbed(bool found, WaferEdgeDetector.EdgePoint edge,
+                                    double[] cRows, double[] cCols, double crossRow, double crossCol, Bitmap raw)
+        {
+            if (IsDisposed) { raw.Dispose(); return; }
+            if (!found)
+            {
+                ShowCaptured(raw);
+                _status.Text = "Wafer edge NOT found — adjust lighting or tune WaferEdgeDetector (WaferIsBrighter / radii).";
+                return;
+            }
+            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            if (a == null)
+            {
+                ShowCaptured(raw);
+                _status.Text = "Wafer edge: needs the camera-scale calibration first.";
+                return;
+            }
+            if (!_owner!.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
+            {
+                ShowCaptured(raw);
+                _status.Text = "Wafer edge: motor position unavailable — connect & enable.";
+                return;
+            }
+
+            double dRow = crossRow - edge.Row, dCol = crossCol - edge.Column;
+            double ex = mx + a.Xr * dRow + a.Xc * dCol;
+            double ey = my + a.Yr * dRow + a.Yc * dCol;
+            _waferPoints.Add((ex, ey));
+
+            using (var g = Graphics.FromImage(raw))
+            {
+                float w = Math.Max(2f, raw.Width / 400f), half = raw.Width / 30f, rad = raw.Width / 60f;
+                using (var cpen = new Pen(Color.Lime, w))
+                {
+                    g.DrawLine(cpen, (float)crossCol, (float)crossRow - half, (float)crossCol, (float)crossRow + half);
+                    g.DrawLine(cpen, (float)crossCol - half, (float)crossRow, (float)crossCol + half, (float)crossRow);
+                }
+                if (cRows.Length >= 2)
+                {
+                    var pts = new PointF[cRows.Length];
+                    for (int k = 0; k < cRows.Length; k++) pts[k] = new PointF((float)cCols[k], (float)cRows[k]);
+                    using var lpen = new Pen(Color.Cyan, w);
+                    g.DrawLines(lpen, pts);
+                }
+                using var epen = new Pen(Color.Yellow, w * 1.5f);
+                g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
+            }
+
+            ShowCaptured(raw);
+            RefreshWaferUi();
+            _status.Text = $"Wafer edge {_waferPoints.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
+        }
+
+        private void ClearWaferPoints()
+        {
+            _waferPoints.Clear();
+            RefreshWaferUi();
+            _status.Text = "Wafer edge points cleared.";
+        }
+
+        private void RefreshWaferUi()
+        {
+            _waferCentreBtn.Enabled = _waferPoints.Count >= 3;
+            _waferClearBtn.Enabled = _waferPoints.Count > 0;
+        }
+
+        // Circle-fits the wafer rim points (step space); the centre is the motor position that puts
+        // the wafer centre on the crosshair. Persists it to the shared store (separate from chuck).
+        private void ComputeWaferCentre()
+        {
+            if (!CircleFit.TryFit(_waferPoints, out CircleFit.Result fit, out string? err))
+            {
+                _waferResult.Text = "Fit failed:\r\n" + err;
+                return;
+            }
+            long cx = (long)Math.Round(fit.CenterX), cy = (long)Math.Round(fit.CenterY);
+            _waferCentre = (cx, cy);
+            if (_owner != null)
+            {
+                _owner.Calibration.WaferCenterX = cx;
+                _owner.Calibration.WaferCenterY = cy;
+                try { _owner.Calibration.Save(); }
+                catch (Exception ex) { _waferResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
+            }
+            _waferGoBtn.Enabled = true;
+            _waferResult.Text = $"Wafer (N={_waferPoints.Count}): X={cx} Y={cy}\r\nR={fit.Radius:F0}  RMS={fit.RmsError:F0} steps";
+            _status.Text = "Wafer centre computed and saved.";
+        }
+
+        // Drives the table so the wafer centre lands on the view centre (same path as Go to Centre).
+        private async Task GoToWaferCentreAsync()
+        {
+            if (_owner == null || _waferCentre == null) return;
+            long cx = _waferCentre.Value.X, cy = _waferCentre.Value.Y;
+            DialogResult ans = MessageBox.Show(this,
+                $"Move the wafer centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
+                "Go to Wafer Centre", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (ans != DialogResult.Yes) return;
+            _status.Text = "Moving to wafer centre...";
+            await _owner.MoveToAsync(cx.ToString(), cy.ToString(), "");
+            _status.Text = "Go to wafer centre: move issued (see main-window log).";
+        }
+
         private void ClearEdges()
         {
             _edgePoints.Clear();
@@ -770,37 +988,60 @@ namespace MotorControlApp
             catch (InvalidOperationException) { /* closing */ }
         }
 
-        // Drift-corrected jog: convert a desired SCREEN direction (sx: right+, sy: up+) into a
-        // motor command via the calibration so the on-screen motion is pure along that axis.
-        // Screen->raw-pixel mapping accounts for the 180° display Invert; the motor vector is
-        // A·(Δrow,Δcol), scaled so the larger component equals the chosen speed.
+        // Polls the joystick puck and commands a drift-corrected jog: the puck's screen direction
+        // (x right+, y up+) is mapped through the calibration so the on-screen motion is along that
+        // direction, and the speed scales with the puck's deflection (× the Speed control). The
+        // puck is tied to the camera's NATIVE (raw) orientation — screen right = +col, up = −row;
+        // the display Invert toggle is display-only and deliberately does NOT change control sense.
+        // Send-on-change so a centred puck commands a single Stop and then stays silent.
+        private void VisionPadTick()
+        {
+            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            PointF v = _vPad.Vector;
+            double vmag = Math.Min(1.0, Math.Sqrt(v.X * v.X + v.Y * v.Y));
+
+            int vx = 0, vy = 0;
+            if (a != null && vmag >= 0.05)   // small dead-zone around centre
+            {
+                double dCol = v.X, dRow = -v.Y;
+                double vxUser = a.Xr * dRow + a.Xc * dCol;   // steps/pixel · pixel direction
+                double vyUser = a.Yr * dRow + a.Yc * dCol;
+                double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
+                if (m >= 1e-9)
+                {
+                    double speed = vmag * (double)_vSpeed.Value;   // deflection scales the speed
+                    vx = (int)Math.Round(vxUser / m * speed);
+                    vy = (int)Math.Round(vyUser / m * speed);
+                }
+            }
+
+            if (vx == _vLastVx && vy == _vLastVy) return;   // send-on-change
+            _vLastVx = vx; _vLastVy = vy;
+            if (vx == 0 && vy == 0) _owner?.VisionStop();
+            else _owner?.VisionJogUser(vx, vy);
+        }
+
+        // Discrete d-pad jog: a pure SCREEN direction (sx right+, sy up+) at the full Speed setting,
+        // drift-corrected through the calibration. Coexists with the puck — the puck's send-on-change
+        // poll stays silent while the puck is centred, so it won't cancel a button jog. MouseUp stops.
         private void VisionJog(int sx, int sy)
         {
             PixelStepAffine? a = _owner?.Calibration.PixelStep;
             if (a == null) { _status.Text = "Vision jog needs the camera-scale calibration first."; return; }
 
-            // Controls are tied to the camera's NATIVE (raw) orientation — the frame the
-            // calibration was measured in: screen right = +col, screen up = -row. The Invert
-            // toggle is a DISPLAY-only flip and deliberately does NOT change control direction.
-            double dCol = sx;
-            double dRow = -sy;
-
-            // User-frame motor velocity that produces that pixel motion (A = steps per pixel).
+            double dCol = sx, dRow = -sy;   // screen right = +col, up = −row (native frame)
             double vxUser = a.Xr * dRow + a.Xc * dCol;
             double vyUser = a.Yr * dRow + a.Yc * dCol;
-
             double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
             if (m < 1e-9) { _status.Text = "Calibration is degenerate; recalibrate."; return; }
 
             double speed = (double)_vSpeed.Value;
-            int vx = (int)Math.Round(vxUser / m * speed);
-            int vy = (int)Math.Round(vyUser / m * speed);
-            _owner!.VisionJogUser(vx, vy);
-            _status.Text = $"Vision jog: user-vel ({vx}, {vy}).";
+            _owner!.VisionJogUser((int)Math.Round(vxUser / m * speed), (int)Math.Round(vyUser / m * speed));
         }
 
         private void Teardown()
         {
+            _vPadTimer.Stop();
             _owner?.VisionStop();
             _cts?.Cancel();
             try { _grabTask?.Wait(500); } catch { /* best effort; camera streams so grab returns fast */ }

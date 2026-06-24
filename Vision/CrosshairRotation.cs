@@ -65,10 +65,10 @@ namespace MotorControlApp
 
         /// <summary>
         /// Motor encoder ticks per ONE full CHUCK revolution. The chuck turns through a gear
-        /// reduction, so this is NOT the motor's 40000/rev: measured 29580 steps for 30° →
-        /// 354960 ticks/rev (≈8.87:1 reduction).
+        /// reduction, so this is NOT the motor's 40000/rev. Measured over multiple full
+        /// revolutions: 359859 ticks/rev (≈9:1 reduction).
         /// </summary>
-        public const long ChuckTicksPerRev = 354960;
+        public const long ChuckTicksPerRev = 359859;
 
         /// <summary>Motor ticks to rotate the CHUCK by <paramref name="degrees"/> (through the gear),
         /// given the measured/assumed <paramref name="ticksPerRev"/>.</summary>
