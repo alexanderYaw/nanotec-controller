@@ -33,7 +33,7 @@ namespace MotorControlApp
         private readonly Button _invertBtn = new() { Text = "Invert: On" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
 
-        // --- Camera-scale calibration (manual jog + capture; owner supplies motor position) --
+        // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly FrmMain? _owner;
         private readonly ReflectiveMarkDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
