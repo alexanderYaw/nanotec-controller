@@ -58,6 +58,11 @@ namespace MotorControlApp
         public long? ChuckCenterX { get; set; }
         public long? ChuckCenterY { get; set; }
 
+        /// <summary>Wafer centre in motor steps (USER frame), or null until found — same meaning as
+        /// the chuck centre but circle-fit from WAFER rim points. Kept separate from the chuck centre.</summary>
+        public long? WaferCenterX { get; set; }
+        public long? WaferCenterY { get; set; }
+
         /// <summary>Image handedness of a positive Θ move: +1 or -1, or null until the
         /// crosshair-rotation sign test fixes it. Not derivable from the translation-only
         /// <see cref="PixelStep"/> affine — it depends on Θ's mounting and camera orientation,

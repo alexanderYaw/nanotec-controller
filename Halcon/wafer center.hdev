@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.11.1.0">
+<procedure name="main">
+<interface/>
+<body>
+<l>dev_update_off ()</l>
+<l>list_image_files ('./wafer edge images', 'default', 'recursive', ImageFiles)</l>
+<l>read_image (Image1, ImageFiles[0])</l>
+<l>get_image_size (Image1, Width, Height)</l>
+<l>dev_open_window_fit_image (Image1, 0, 0, 400, 400, WindowHandle1)</l>
+<l>X:=[]</l>
+<l>Y:=[]</l>
+<l>i := 0</l>
+<l>for Index := 0 to |ImageFiles|-1 by 1</l>
+<l>    read_image (Image, ImageFiles[Index])</l>
+<c></c>
+<l>    auto_threshold (Image, Regions, 5)</l>
+<l>    fill_up (Regions, RegionFillUp)</l>
+<l>    connection (RegionFillUp, ConnectedRegions)</l>
+<l>    select_shape (ConnectedRegions, SelectedRegions1, 'area', 'and', 1e5, 1e7)</l>
+<l>    select_shape (SelectedRegions1, SelectedRegions, 'inner_radius', 'and', 95, 150)</l>
+<c>    </c>
+<c>    </c>
+<l>    select_gray (SelectedRegions, Image, SelectedRegions2, 'mean', 'and', 0, 90)</l>
+<l>    closing_circle (SelectedRegions2, RegionClosing, 35)</l>
+<l>    dilation_circle (RegionClosing, RegionDilation, 55)</l>
+<l>    dev_display (Image)</l>
+<l>    dev_display (RegionDilation)</l>
+<l>    reduce_domain (Image, RegionDilation, ImageReduced)</l>
+<l>    edges_sub_pix (ImageReduced, Edges, 'canny', 10, 20, 40)</l>
+<l>    segment_contours_xld (Edges, ContoursSplit, 'lines', 5, 100, 2)</l>
+<l>    select_contours_xld (ContoursSplit, SelectedContours, 'contour_length', 2e3, 1e7, -0.5, 0.5)</l>
+<c></c>
+<l>    sort_contours_xld (SelectedContours, SortedContours, 'character', 'true', 'row')</l>
+<l>    count_obj (SortedContours, Number)</l>
+<l>    select_obj (SortedContours, ObjectSelected, Number)</l>
+<c>    </c>
+<l>    dev_display (Image)</l>
+<l>    dev_display (ObjectSelected)</l>
+<l>    area_center_points_xld (ObjectSelected, Area, Row, Column)</l>
+<l>    gen_cross_contour_xld (Cross, Row, Column, 500, 180)</l>
+<l>    dev_display (Cross)</l>
+<l>    X[i] := Row</l>
+<l>    Y[i] := Column</l>
+<l>    i := i+1</l>
+<l>    stop ()</l>
+<l>endfor</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>

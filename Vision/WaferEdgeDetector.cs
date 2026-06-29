@@ -5,49 +5,40 @@ using HalconDotNet;
 namespace MotorControlApp
 {
     /// <summary>
-    /// Stage B: locates a single sub-pixel point on the wafer edge in ONE camera frame.
+    /// Locates the wafer EDGE point nearest a reference pixel by BRIGHTNESS. In the live scene
+    /// (see Desktop/images/wafer_edge.png) the lit wafer reads clearly BRIGHTER than the
+    /// off-wafer background, with the bevel a bright diagonal — so the rim is the boundary of the
+    /// bright region. Threshold the bright side, keep its largest connected blob (filling the
+    /// dies/droplets/texture inside it), and return the boundary point NEAREST the crosshair — a
+    /// true point on the rim, which the centre-find needs.
     ///
-    /// This is a direct port of the op-chain in <c>Halcon/wafer center.cs</c> (its
-    /// <c>action()</c> body), lifted out of the HDevelop harness that wrapped it:
-    ///  - reads a LIVE <see cref="HObject"/> frame instead of looping over image files;
-    ///  - runs headlessly — no <c>open_window</c>/<c>disp_obj</c> (HALCON's HWindow can't
-    ///    load in this net10 app, see [[toolchain]]); the caller overlays the returned
-    ///    contour on its own PictureBox if it wants to show the edge;
-    ///  - returns the result instead of accumulating it into tuples.
-    ///
-    /// The region/edge pipeline (auto_threshold → … → edges_sub_pix → select_contours) is the
-    /// original; the final stage was changed from area_center_points_xld to "the edge point
-    /// NEAREST a reference pixel" (the rim point by the crosshair), which is a true point on the
-    /// rim and is what the centre-find needs. The thresholds are the sample-image originals and
-    /// WILL need retuning for the live chuck-edge arc (tune in HDevelop, like the mark).
+    /// Same shape as <see cref="ChuckEdgeDetector"/>, which separates the two sides by FOCUS
+    /// instead; use that one when the two sides are equally bright but differ in sharpness.
+    /// Thresholding is auto-adaptive (max_separability) so it tracks exposure; the morphology
+    /// radii / min-area are the levers that may need light tuning for the live arc.
     ///
     /// Pass the FULL-RESOLUTION frame (not the downscaled live-view bitmap) for accuracy.
     /// </summary>
     public sealed class WaferEdgeDetector
     {
-        // --- Tunables (defaults = the constants from wafer center.cs) ------------------
-        public double AreaMin { get; set; } = 1e5;
-        public double AreaMax { get; set; } = 1e7;
-        public double InnerRadiusMin { get; set; } = 95;
-        public double InnerRadiusMax { get; set; } = 150;
-        public double GrayMeanMin { get; set; } = 0;
-        public double GrayMeanMax { get; set; } = 90;
-        public double ClosingRadius { get; set; } = 35;
-        public double DilationRadius { get; set; } = 55;
-        public double CannyAlpha { get; set; } = 10;   // edges_sub_pix smoothing
-        public double CannyLow { get; set; } = 20;
-        public double CannyHigh { get; set; } = 40;
-        public double MinContourLength { get; set; } = 2e3;   // drop short/noise edge fragments
+        /// <summary>True when the wafer reads BRIGHTER than the background (the usual case here);
+        /// set false if your lighting makes the wafer the darker side.</summary>
+        public bool WaferIsBrighter { get; set; } = true;
 
-        /// <summary>A sub-pixel point on the wafer edge, in image pixels (HALCON row/column).</summary>
+        /// <summary>Opening radius to erase background speckle / fine texture before selecting the blob.</summary>
+        public double CleanRadius { get; set; } = 7;
+
+        /// <summary>Closing radius to bridge gaps inside the wafer region (dies, droplets, the bevel
+        /// reading a different brightness) so it forms ONE solid blob whose border is the clean rim.</summary>
+        public double CloseRadius { get; set; } = 21;
+
+        /// <summary>Ignore regions smaller than this (px²) — drops stray bright blobs that aren't the wafer.</summary>
+        public double MinArea { get; set; } = 5e4;
+
+        /// <summary>A point on the wafer edge, in image pixels (HALCON row/column).</summary>
         public readonly record struct EdgePoint(double Row, double Column);
 
-        /// <summary>
-        /// Runs detection and disposes the contour internally. Use this when you only need
-        /// the point (e.g. centre-find), not an overlay. <paramref name="crossRow"/>/<paramref
-        /// name="crossCol"/> are the reference (crosshair) pixel; the returned point is the
-        /// detected edge point NEAREST that reference.
-        /// </summary>
+        /// <summary>Detects and disposes the contour internally. Returns the edge point nearest the crosshair.</summary>
         public bool TryDetect(HObject image, double crossRow, double crossCol, out EdgePoint point)
         {
             bool ok = TryDetect(image, crossRow, crossCol, out point, out HObject? contour);
@@ -56,51 +47,46 @@ namespace MotorControlApp
         }
 
         /// <summary>
-        /// Detects the wafer-edge point nearest the reference pixel (<paramref name="crossRow"/>,
-        /// <paramref name="crossCol"/>) — i.e. the rim point closest to the crosshair, which is a
-        /// genuine point ON the rim (unlike the arc centroid, which sits inside it). On success
-        /// also returns the edge <paramref name="contour"/> it lies on (XLD) for overlay — the
-        /// CALLER OWNS it and must Dispose it. Returns false if no edge is found or a HALCON op
+        /// Detects the wafer-edge point nearest (<paramref name="crossRow"/>, <paramref name="crossCol"/>).
+        /// On success also returns the boundary <paramref name="contour"/> the point lies on (XLD) for
+        /// overlay — CALLER OWNS it and must Dispose it. Returns false if nothing is found or a HALCON op
         /// fails; the input frame is never modified.
         /// </summary>
         public bool TryDetect(HObject image, double crossRow, double crossCol, out EdgePoint point, out HObject? contour)
         {
             point = default;
             contour = null;
-            var temps = new List<HObject>();   // every intermediate; disposed in finally
+            var temps = new List<HObject>();
             try
             {
                 HObject gray = Preprocess(image); temps.Add(gray);
 
-                HOperatorSet.AutoThreshold(gray, out HObject regions, 5); temps.Add(regions);
-                HOperatorSet.FillUp(regions, out HObject filled); temps.Add(filled);
-                HOperatorSet.Connection(filled, out HObject connected); temps.Add(connected);
-                HOperatorSet.SelectShape(connected, out HObject byArea, "area", "and", AreaMin, AreaMax); temps.Add(byArea);
-                HOperatorSet.SelectShape(byArea, out HObject byRadius, "inner_radius", "and", InnerRadiusMin, InnerRadiusMax); temps.Add(byRadius);
-                HOperatorSet.SelectGray(byRadius, gray, out HObject byGray, "mean", "and", GrayMeanMin, GrayMeanMax); temps.Add(byGray);
+                // Bright wafer vs dark background → auto-threshold the brighter (or darker) side.
+                HOperatorSet.BinaryThreshold(gray, out HObject wafer, "max_separability",
+                    WaferIsBrighter ? "light" : "dark", out HTuple _); temps.Add(wafer);
 
-                // Nothing survived the wafer-region selection → no edge to look for.
-                HOperatorSet.CountObj(byGray, out HTuple regionCount);
+                // Clean speckle, then close gaps inside the wafer so it's one solid blob, then fill.
+                HOperatorSet.OpeningCircle(wafer, out HObject opened, CleanRadius); temps.Add(opened);
+                HOperatorSet.ClosingCircle(opened, out HObject closed, CloseRadius); temps.Add(closed);
+                HOperatorSet.FillUp(closed, out HObject filled); temps.Add(filled);
+                HOperatorSet.Connection(filled, out HObject conn); temps.Add(conn);
+                HOperatorSet.SelectShape(conn, out HObject byArea, "area", "and", MinArea, 1e9); temps.Add(byArea);
+
+                HOperatorSet.CountObj(byArea, out HTuple regionCount);
                 if (regionCount.I < 1) return false;
+                HOperatorSet.SelectShapeStd(byArea, out HObject biggest, "max_area", 0); temps.Add(biggest);
 
-                HOperatorSet.ClosingCircle(byGray, out HObject closed, ClosingRadius); temps.Add(closed);
-                HOperatorSet.DilationCircle(closed, out HObject dilated, DilationRadius); temps.Add(dilated);
-                HOperatorSet.ReduceDomain(gray, dilated, out HObject reduced); temps.Add(reduced);
-                HOperatorSet.EdgesSubPix(reduced, out HObject edges, "canny", CannyAlpha, CannyLow, CannyHigh); temps.Add(edges);
-                HOperatorSet.SegmentContoursXld(edges, out HObject split, "lines", 5, 100, 2); temps.Add(split);
-                HOperatorSet.SelectContoursXld(split, out HObject longContours, "contour_length", MinContourLength, 1e7, -0.5, 0.5); temps.Add(longContours);
-
-                HOperatorSet.CountObj(longContours, out HTuple number);
+                // Boundary of the wafer region = the rim (+ any frame-border segments, which are
+                // far from the crosshair and so are never the nearest point).
+                HOperatorSet.GenContourRegionXld(biggest, out HObject boundary, "border"); temps.Add(boundary);
+                HOperatorSet.CountObj(boundary, out HTuple number);
                 if (number.I < 1) return false;
 
-                // Find the sub-pixel edge point NEAREST the crosshair, scanning every surviving
-                // contour. That point lies on the rim (the rim's closest approach to the
-                // reference), which is what the centre-find needs — not the arc centroid.
                 double bestD2 = double.MaxValue, bestRow = 0, bestCol = 0;
                 int bestIdx = -1;
                 for (int i = 1; i <= number.I; i++)
                 {
-                    HOperatorSet.SelectObj(longContours, out HObject one, i);
+                    HOperatorSet.SelectObj(boundary, out HObject one, i);
                     try
                     {
                         HOperatorSet.GetContourXld(one, out HTuple rows, out HTuple cols);
@@ -117,8 +103,8 @@ namespace MotorControlApp
                 if (bestIdx < 0) return false;
 
                 point = new EdgePoint(bestRow, bestCol);
-                HOperatorSet.SelectObj(longContours, out HObject chosen, bestIdx);
-                contour = chosen;   // the contour the nearest point lies on; caller disposes
+                HOperatorSet.SelectObj(boundary, out HObject chosen, bestIdx);
+                contour = chosen;   // the boundary the nearest point lies on; caller disposes
                 return true;
             }
             catch (HOperatorException)
@@ -133,17 +119,16 @@ namespace MotorControlApp
             }
         }
 
-        // Returns an independent single-channel byte image. Colour frames are reduced to gray;
-        // any pixel type is normalised to byte so the byte-range thresholds (gray 0..90, canny
-        // 10/20/40) mean what they did on the sample images. The input frame is not modified.
+        // Independent single-channel byte image; red channel for the red-lit scene (matches
+        // ChuckEdgeDetector). The input frame is never modified.
         private static HObject Preprocess(HObject image)
         {
             HOperatorSet.CountChannels(image, out HTuple channels);
             if (channels.I >= 3)
             {
-                HOperatorSet.Rgb1ToGray(image, out HObject gray);
-                try { HOperatorSet.ConvertImageType(gray, out HObject gray8, "byte"); return gray8; }
-                finally { gray.Dispose(); }
+                HOperatorSet.AccessChannel(image, out HObject red, 1);
+                try { HOperatorSet.ConvertImageType(red, out HObject red8, "byte"); return red8; }
+                finally { red.Dispose(); }
             }
             HOperatorSet.ConvertImageType(image, out HObject byteImg, "byte");
             return byteImg;

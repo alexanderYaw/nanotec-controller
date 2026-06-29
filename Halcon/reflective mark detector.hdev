@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.11.2.0">
+<procedure name="main">
+<interface/>
+<body>
+<c>* Reflective-mark detector</c>
+<c>* dev_display + stop() after each stage.</c>
+<c>* Press Run; it pauses at each stop() - press Run again to advance.</c>
+<c>* ClosingRadius: Upper limit for gap to be bridged (pixels)</c>
+<c>* MinCircularity: Set minimum "roundness" for an area to be considered a circle</c>
+<l>ClosingRadius := 8</l>
+<l>MinCircularity := 0.5</l>
+<l>MinArea := 2000</l>
+<l>MaxArea := 1e9</l>
+<c>* Load a test frame - loads image from a specified path.</c>
+<l>dev_update_off ()</l>
+<l>dev_close_window ()</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/Halcon/ImageDirectory/capture_20260618_151318_560.png')</l>
+<l>get_image_size (Image, Width, Height)</l>
+<l>dev_open_window (0, 0, 600, 450, 'black', WindowHandle)</l>
+<l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
+<l>dev_set_part (0, 0, Height - 1, Width - 1)</l>
+<l>dev_display (Image)</l>
+<l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Preprocess: red channel as byte (markers are red-lit).</c>
+<l>count_channels (Image, Channels)</l>
+<l>if (Channels &gt;= 3)</l>
+<l>    access_channel (Image, Single, 1)</l>
+<l>else</l>
+<l>    copy_image (Image, Single)</l>
+<l>endif</l>
+<l>convert_image_type (Single, GrayByte, 'byte')</l>
+<l>dev_display (GrayByte)</l>
+<l>disp_message (WindowHandle, '1: red channel (byte)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Segment the bright ring.</c>
+<l>binary_threshold (GrayByte, Bright, 'max_separability', 'light', UsedThreshold)</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_draw ('margin')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Bright)</l>
+<l>disp_message (WindowHandle, '2: binary_threshold light (used=' + UsedThreshold + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Close ring gaps, fill the mark to a disk, take the dark band inside (the gap). The</c>
+<c>* ring's INNER EDGE is that band's outer boundary, so its CONVEX HULL is the solid</c>
+<c>* inner disk - glow-proof (ignores the centre) and clip-tolerant.</c>
+<l>closing_circle (Bright, Closed, ClosingRadius)</l>
+<l>fill_up (Closed, Filled)</l>
+<l>difference (Filled, Closed, Gap)</l>
+<l>connection (Gap, GapParts)</l>
+<l>select_shape_std (GapParts, BiggestGap, 'max_area', 0)</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (BiggestGap)</l>
+<l>disp_message (WindowHandle, '3: dark gap inside ring (a donut is fine here)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>shape_trans (BiggestGap, Hole, 'convex')</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_display (Hole)</l>
+<l>disp_message (WindowHandle, '4: convex hull = SOLID inner disk', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* DIAGNOSTIC: inspect the largest inner region BEFORE filtering, so we can see exactly</c>
+<c>* why it is (or isn't) accepted. Read the area + circularity in the message.</c>
+<l>connection (Hole, Connected)</l>
+<l>count_obj (Connected, NumParts)</l>
+<l>if (NumParts &lt; 1)</l>
+<l>    dev_display (GrayByte)</l>
+<l>    disp_message (WindowHandle, 'step 5: NO inner region at all - ring not closed / no hole. Raise ClosingRadius, or check steps 2-4.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>select_shape_std (Connected, Biggest, 'max_area', 0)</l>
+<l>area_center (Biggest, BigArea, BigRow, BigCol)</l>
+<l>circularity (Biggest, BigCirc)</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_display (Biggest)</l>
+<l>disp_message (WindowHandle, '5: biggest inner: area=' + BigArea + '  circ=' + BigCirc$'.2f' + '   (need area&gt;=' + MinArea + ', circ&gt;=' + MinCircularity + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>select_shape (Connected, Round, ['circularity','area'], 'and', [MinCircularity,MinArea], [1.0,MaxArea])</l>
+<l>count_obj (Round, Count)</l>
+<l>if (Count &lt; 1)</l>
+<l>    dev_display (GrayByte)</l>
+<l>    disp_message (WindowHandle, 'NO MARK: biggest inner failed the test (area=' + BigArea + ', circ=' + BigCirc$'.2f' + '). Loosen whichever it missed.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>select_shape_std (Round, Best, 'max_area', 0)</l>
+<l>area_center (Best, Area, Row, Column)</l>
+<l>Radius := sqrt(Area / 3.14159265358979)</l>
+<c>* Result overlay.</c>
+<l>gen_contour_region_xld (Best, Border, 'border')</l>
+<l>gen_cross_contour_xld (Cross, Row, Column, 60, 0.785398)</l>
+<l>dev_display (Image)</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_set_color ('red')</l>
+<l>dev_display (Border)</l>
+<l>dev_set_color ('yellow')</l>
+<l>dev_display (Cross)</l>
+<l>disp_message (WindowHandle, 'centre = (' + Row$'.1f' + ', ' + Column$'.1f' + ')  r=' + Radius$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>
