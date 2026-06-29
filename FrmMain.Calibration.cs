@@ -111,7 +111,7 @@ namespace MotorControlApp
                 _motion!.RecoverIfQuickStopped(AxisId.Z);   // clear a quick stop so the move runs
                 _motion.MoveAbsolute(AxisId.Z, zT.Value, zSpd);
                 if (!_motion.WaitForMotionComplete(AxisId.Z, FIND_TIMEOUT_MS))
-                    throw new ChuckException("Z did not reach Home in time - aborting before X/Y move.");
+                    throw new DriveException("Z did not reach Home in time - aborting before X/Y move.");
                 // 2) X and Y together: issue both moves, then wait for both to finish.
                 _motion.RecoverIfQuickStopped(AxisId.X);
                 _motion.RecoverIfQuickStopped(AxisId.Y);
@@ -234,7 +234,7 @@ namespace MotorControlApp
             if (!CanCaptureCalibration) return;
             long pos;
             try { pos = _motion!.GetStatus(id).Position; }
-            catch (ChuckException ex) { AppendLog($"ERROR: read {id} position: {ex.Message}"); return; }
+            catch (DriveException ex) { AppendLog($"ERROR: read {id} position: {ex.Message}"); return; }
 
             AxisCalibration c = _calib.For(id);
             if (isHome) { c.Home = pos; AppendLog($"{id} Home set to {pos:N0}."); }
@@ -333,7 +333,7 @@ namespace MotorControlApp
                 _motion.Stop(id);
                 if ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) == 0) return;
             }
-            throw new ChuckException($"{id} starts on a limit switch and could not be backed off either way.");
+            throw new DriveException($"{id} starts on a limit switch and could not be backed off either way.");
         }
 
         // Jogs until a limit bit (0x60FD bit 0 or 1) that wasn't already set goes high,
@@ -357,7 +357,7 @@ namespace MotorControlApp
                 waited += FIND_POLL_MS;
             }
             _motion.Stop(id);
-            throw new ChuckException($"no limit detected within {FIND_TIMEOUT_MS / 1000}s");
+            throw new DriveException($"no limit detected within {FIND_TIMEOUT_MS / 1000}s");
         }
 
         // After a limit hit the drive is in Quick Stop Active; re-enable to Operation

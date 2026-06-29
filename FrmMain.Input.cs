@@ -101,7 +101,7 @@ namespace MotorControlApp
                     _cmdDir[id] = dir;
                 }
             }
-            catch (ChuckException ex) { AppendLog($"ERROR: joystick {id}: {ex.Message}"); }
+            catch (DriveException ex) { AppendLog($"ERROR: joystick {id}: {ex.Message}"); }
             _lastJoy[id] = (dir, fast);
         }
 
@@ -119,7 +119,7 @@ namespace MotorControlApp
                 if (vx != _lastVx) { CommandVel(AxisId.X, vx); _lastVx = vx; }
                 if (vy != _lastVy) { CommandVel(AxisId.Y, vy); _lastVy = vy; }
             }
-            catch (ChuckException ex) { AppendLog($"ERROR: on-screen jog: {ex.Message}"); }
+            catch (DriveException ex) { AppendLog($"ERROR: on-screen jog: {ex.Message}"); }
         }
 
         private void CommandVel(AxisId id, int v)
@@ -138,10 +138,10 @@ namespace MotorControlApp
                 foreach (AxisId id in _motion.Axes)
                 {
                     if (_lastJoy[id].dir != 0)
-                        try { _motion.Stop(id); } catch (ChuckException) { }
+                        try { _motion.Stop(id); } catch (DriveException) { }
                 }
-                if (_lastVx != 0) try { _motion.Stop(AxisId.X); } catch (ChuckException) { }
-                if (_lastVy != 0) try { _motion.Stop(AxisId.Y); } catch (ChuckException) { }
+                if (_lastVx != 0) try { _motion.Stop(AxisId.X); } catch (DriveException) { }
+                if (_lastVy != 0) try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
             }
             ResetJoy();
         }

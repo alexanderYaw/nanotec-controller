@@ -305,7 +305,7 @@ namespace MotorControlApp
                 {
                     if (_motion != null && _drivesEnabled) _motion.DisableAll();
                 }
-                catch (ChuckException) { /* already closing */ }
+                catch (DriveException) { /* already closing */ }
                 _connection.Disconnect(_log);
             }
         }

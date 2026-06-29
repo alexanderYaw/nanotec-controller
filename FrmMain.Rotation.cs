@@ -70,7 +70,7 @@ namespace MotorControlApp
             }
             double current;
             try { current = _motion!.GetStatus(AxisId.Theta).AngleDegrees; }
-            catch (ChuckException ex) { AppendLog($"Rotate: read Θ failed: {ex.Message}"); return; }
+            catch (DriveException ex) { AppendLog($"Rotate: read Θ failed: {ex.Message}"); return; }
 
             // Shortest signed delta into (-180, +180].
             double delta = (targetDegrees - current) % 360.0;
@@ -142,7 +142,7 @@ namespace MotorControlApp
                         // X/Y target that pins the crosshair for the angle Θ has ACTUALLY reached.
                         if (!CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, deltaRad * frac, sign,
                                                            out long txUser, out long tyUser))
-                            throw new ChuckException("calibration affine is degenerate — recalibrate the camera scale.");
+                            throw new DriveException("calibration affine is degenerate — recalibrate the camera scale.");
                         RejectIfOutOfTravel(AxisId.X, txUser);    // X: user == raw
                         RejectIfOutOfTravel(AxisId.Y, -tyUser);   // Y: raw == −user
 
@@ -159,7 +159,7 @@ namespace MotorControlApp
                         if (elapsed >= ROTATE_XY_DELAY_MS || thetaDone)
                         {
                             if (Math.Abs(errX) > ROTATE_FOLLOW_MAXERR || Math.Abs(errY) > ROTATE_FOLLOW_MAXERR)
-                                throw new ChuckException($"X/Y fell too far behind Θ (err {errX:N0},{errY:N0}) — aborting. " +
+                                throw new DriveException($"X/Y fell too far behind Θ (err {errX:N0},{errY:N0}) — aborting. " +
                                                          "Lower Θ speed, or the handedness/polarity is wrong.");
 
                             CommandFollow(AxisId.X, FollowVel(errX));
@@ -179,9 +179,9 @@ namespace MotorControlApp
                 }
                 finally
                 {
-                    try { _motion.Stop(AxisId.Theta); } catch (ChuckException) { }
-                    try { _motion.Stop(AxisId.X); } catch (ChuckException) { }
-                    try { _motion.Stop(AxisId.Y); } catch (ChuckException) { }
+                    try { _motion.Stop(AxisId.Theta); } catch (DriveException) { }
+                    try { _motion.Stop(AxisId.X); } catch (DriveException) { }
+                    try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
                 }
                 thetaEnd = _motion.GetStatus(AxisId.Theta).Position;
             });
@@ -251,7 +251,7 @@ namespace MotorControlApp
                         // Actual angle Θ has swept since the press; X/Y pins the crosshair for it.
                         double angleRad = radPerTick * (_motion.GetStatus(AxisId.Theta).Position - thetaStart);
                         if (!CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, angleRad, sign, out long txUser, out long tyUser))
-                            throw new ChuckException("calibration affine is degenerate — recalibrate the camera scale.");
+                            throw new DriveException("calibration affine is degenerate — recalibrate the camera scale.");
                         RejectIfOutOfTravel(AxisId.X, txUser);
                         RejectIfOutOfTravel(AxisId.Y, -tyUser);
 
@@ -263,7 +263,7 @@ namespace MotorControlApp
                         if (elapsed >= ROTATE_XY_DELAY_MS || releasing)
                         {
                             if (Math.Abs(errX) > ROTATE_FOLLOW_MAXERR || Math.Abs(errY) > ROTATE_FOLLOW_MAXERR)
-                                throw new ChuckException($"X/Y fell too far behind Θ (err {errX:N0},{errY:N0}) — aborting. " +
+                                throw new DriveException($"X/Y fell too far behind Θ (err {errX:N0},{errY:N0}) — aborting. " +
                                                          "Lower Θ speed, or the handedness/polarity is wrong.");
                             CommandFollow(AxisId.X, FollowVel(errX));
                             CommandFollow(AxisId.Y, FollowVel(errY));
@@ -281,9 +281,9 @@ namespace MotorControlApp
                 }
                 finally
                 {
-                    try { _motion.Stop(AxisId.Theta); } catch (ChuckException) { }
-                    try { _motion.Stop(AxisId.X); } catch (ChuckException) { }
-                    try { _motion.Stop(AxisId.Y); } catch (ChuckException) { }
+                    try { _motion.Stop(AxisId.Theta); } catch (DriveException) { }
+                    try { _motion.Stop(AxisId.X); } catch (DriveException) { }
+                    try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
                 }
             });
             AppendLog(ok ? "Rotate (hold) stopped." : "Rotate (hold) FAILED — see error above.");
@@ -317,9 +317,9 @@ namespace MotorControlApp
         {
             AxisCalibration c = _calib.For(id);
             if (c.Min.HasValue && rawTarget < c.Min.Value)
-                throw new ChuckException($"{id} target {rawTarget:N0} < Min {c.Min.Value:N0} — rotation needs more travel than available.");
+                throw new DriveException($"{id} target {rawTarget:N0} < Min {c.Min.Value:N0} — rotation needs more travel than available.");
             if (c.Max.HasValue && rawTarget > c.Max.Value)
-                throw new ChuckException($"{id} target {rawTarget:N0} > Max {c.Max.Value:N0} — rotation needs more travel than available.");
+                throw new DriveException($"{id} target {rawTarget:N0} > Max {c.Max.Value:N0} — rotation needs more travel than available.");
         }
     }
 }

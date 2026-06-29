@@ -44,7 +44,7 @@ namespace MotorControlApp
                 _cmdDir[id] = direction;
                 AppendLog($"Jog {id} {(direction > 0 ? "+" : "−")} at {speed}.");
             }
-            catch (ChuckException ex)
+            catch (DriveException ex)
             {
                 AppendLog($"ERROR: jog {id} failed: {ex.Message}");
             }
@@ -54,7 +54,7 @@ namespace MotorControlApp
         {
             if (_motion == null) return;
             try { _motion.Stop(id); _cmdDir[id] = 0; }
-            catch (ChuckException ex) { AppendLog($"ERROR: stop {id} failed: {ex.Message}"); }
+            catch (DriveException ex) { AppendLog($"ERROR: stop {id} failed: {ex.Message}"); }
         }
 
         /// <summary>
@@ -75,7 +75,7 @@ namespace MotorControlApp
             {
                 foreach (AxisId id in _motion.Axes)
                 {
-                    ChuckController.ChuckStatus st = _motion.GetStatus(id);
+                    AxisDriver.AxisStatus st = _motion.GetStatus(id);
                     _lastPos[id] = st.Position;   // cache raw; Position Map reads it in the user frame
                     long shown = (id == AxisId.Y) ? -st.Position : st.Position;   // invert Y for more intuitive readout
                     _axisRows[id].Status.Text = $"{shown,12:N0}   {st.State}{(st.HasFault ? "  [Fault]" : "")}";
@@ -83,7 +83,7 @@ namespace MotorControlApp
                 }
                 _statusFailures = 0;
             }
-            catch (ChuckException ex)
+            catch (DriveException ex)
             {
                 _statusFailures++;
                 if (_statusFailures >= MAX_CONSECUTIVE_READ_FAILURES)
@@ -117,7 +117,7 @@ namespace MotorControlApp
 
             if ((outMax && delta > 0) || (outMin && delta < 0))
             {
-                try { _motion!.Stop(id); } catch (ChuckException) { }
+                try { _motion!.Stop(id); } catch (DriveException) { }
                 // Refuse further jogs in the SAME command direction that pushed it out, so a
                 // held/re-pressed control can't re-lurch past the limit each poll. Reversing
                 // (back into range) clears the block below.

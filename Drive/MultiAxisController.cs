@@ -15,7 +15,7 @@ namespace MotorControlApp
     /// </summary>
     public sealed class MultiAxisController
     {
-        private readonly Dictionary<AxisId, ChuckController> _axes = new();
+        private readonly Dictionary<AxisId, AxisDriver> _axes = new();
 
         /// <summary>
         /// Builds a controller per axis from the connection's handles.
@@ -34,7 +34,7 @@ namespace MotorControlApp
                         $"Axis {cfg.Id} ('{cfg.Name}') maps to bus position {cfg.BusPosition}, " +
                         $"but only {connection.Handles.Count} drive(s) are connected.");
 
-                _axes[cfg.Id] = new ChuckController(
+                _axes[cfg.Id] = new AxisDriver(
                     connection.Accessor, connection.Handles[cfg.BusPosition], cfg);
             }
         }
@@ -44,24 +44,24 @@ namespace MotorControlApp
         public bool Has(AxisId id) => _axes.ContainsKey(id);
 
         /// <summary>Direct access to a single axis (e.g. for homing or status).</summary>
-        public ChuckController this[AxisId id] => _axes[id];
+        public AxisDriver this[AxisId id] => _axes[id];
 
         // --- Enable / disable -----------------------------------------------------
 
         /// <summary>Enables every axis (walks each through the CiA 402 state machine).</summary>
         public void EnableAll()
         {
-            foreach (ChuckController axis in _axes.Values)
+            foreach (AxisDriver axis in _axes.Values)
                 axis.EnableDrive(true);
         }
 
         /// <summary>Stops then disables every axis. Best-effort: never throws.</summary>
         public void DisableAll()
         {
-            foreach (ChuckController axis in _axes.Values)
+            foreach (AxisDriver axis in _axes.Values)
             {
-                try { axis.StopManualJog(); } catch (ChuckException) { }
-                try { axis.EnableDrive(false); } catch (ChuckException) { }
+                try { axis.StopManualJog(); } catch (DriveException) { }
+                try { axis.EnableDrive(false); } catch (DriveException) { }
             }
         }
 
@@ -74,7 +74,7 @@ namespace MotorControlApp
         /// </summary>
         public bool RecoverIfQuickStopped(AxisId id)
         {
-            ChuckController axis = _axes[id];
+            AxisDriver axis = _axes[id];
             if (!axis.IsQuickStopped()) return false;
             axis.EnableDrive(true);
             return true;
@@ -89,7 +89,7 @@ namespace MotorControlApp
         /// </summary>
         public void JogAt(AxisId id, int direction, int speed)
         {
-            ChuckController axis = _axes[id];
+            AxisDriver axis = _axes[id];
             if (direction == 0) { axis.StopManualJog(); return; }
             int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
             axis.StartManualJog(speed * sign);
@@ -100,9 +100,9 @@ namespace MotorControlApp
         /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>
         public void StopAll()
         {
-            foreach (ChuckController axis in _axes.Values)
+            foreach (AxisDriver axis in _axes.Values)
             {
-                try { axis.StopManualJog(); } catch (ChuckException) { }
+                try { axis.StopManualJog(); } catch (DriveException) { }
             }
         }
 
@@ -119,7 +119,7 @@ namespace MotorControlApp
 
         // --- Status ----------------------------------------------------------------
 
-        public ChuckController.ChuckStatus GetStatus(AxisId id) => _axes[id].GetStatus();
+        public AxisDriver.AxisStatus GetStatus(AxisId id) => _axes[id].GetStatus();
 
         /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
         public long GetDigitalInputs(AxisId id) => _axes[id].ReadDigitalInputs();

@@ -69,7 +69,7 @@ namespace MotorControlApp
                 if (v == 0) { _motion!.Stop(id); _cmdDir[id] = 0; }
                 else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _cmdDir[id] = Math.Sign(v); }
             }
-            catch (ChuckException ex) { AppendLog($"ERROR: vision jog {id}: {ex.Message}"); }
+            catch (DriveException ex) { AppendLog($"ERROR: vision jog {id}: {ex.Message}"); }
         }
     }
 }
