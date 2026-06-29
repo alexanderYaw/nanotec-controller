@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.11.2.0">
+<procedure name="main">
+<interface/>
+<body>
+<l>* Chuck-edge detector (FOCUS/TEXTURE based) - HDevelop tuning script.</l>
+<l>* The two sides are nearly the same colour, so brightness can't separate them. The</l>
+<l>* discriminator is FOCUS: the in-focus side is full of sharp texture (high local detail),</l>
+<l>* the out-of-focus side is smooth/blurry. We build a "focus energy" map (bright = in focus),</l>
+<l>* threshold it to split the two sides, and take the boundary = the chuck edge.</l>
+<l>* Step with Run (F5); it pauses at each stop().</l>
+<l>SobelWidth := 3</l>
+<l>EnergyWindow := 41</l>
+<l>CleanRadius := 5</l>
+<l>dev_update_off ()</l>
+<l>dev_close_window ()</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/Edge_sample1.png')</l>
+<l>get_image_size (Image, Width, Height)</l>
+<l>dev_open_window (0, 0, 750, 500, 'black', WindowHandle)</l>
+<l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
+<l>dev_set_part (0, 0, Height - 1, Width - 1)</l>
+<l>dev_display (Image)</l>
+<l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>* 1. Red channel (the markers/illumination are red).</l>
+<l>count_channels (Image, Channels)</l>
+<l>if (Channels &gt;= 3)</l>
+<l>    access_channel (Image, Gray, 1)</l>
+<l>else</l>
+<l>    copy_image (Image, Gray)</l>
+<l>endif</l>
+<l>dev_display (Gray)</l>
+<l>disp_message (WindowHandle, '1: red channel', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>* 2. Focus-energy map: gradient magnitude (high where sharp), smoothed over a window.</l>
+<l>*    Bright = in focus, dark = blurry. This is the key step - tune EnergyWindow so the two</l>
+<l>*    sides come out as cleanly different brightnesses.</l>
+<l>sobel_amp (Gray, Amp, 'sum_abs', SobelWidth)</l>
+<l>mean_image (Amp, Energy, EnergyWindow, EnergyWindow)</l>
+<l>dev_display (Energy)</l>
+<l>disp_message (WindowHandle, '2: focus energy (bright=in focus, dark=blurry)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>* 3. Auto-threshold the energy map: keep the bright (in-focus) side.</l>
+<l>binary_threshold (Energy, Sharp, 'max_separability', 'light', UsedThreshold)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('margin')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Sharp)</l>
+<l>disp_message (WindowHandle, '3: in-focus region (energy threshold=' + UsedThreshold + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>* 4. Clean specks, fill, keep the largest region.</l>
+<l>opening_circle (Sharp, Opened, CleanRadius)</l>
+<l>fill_up (Opened, Filled)</l>
+<l>connection (Filled, Conn)</l>
+<l>select_shape_std (Conn, Biggest, 'max_area', 0)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_display (Biggest)</l>
+<l>disp_message (WindowHandle, '4: largest in-focus region', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>* 5. The chuck edge = the boundary of that region (ignore the segments that run along the</l>
+<l>*    frame border; the centre-find only uses the boundary point nearest the crosshair).</l>
+<l>gen_contour_region_xld (Biggest, Boundary, 'border')</l>
+<l>dev_display (Image)</l>
+<l>dev_set_color ('red')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_display (Boundary)</l>
+<l>disp_message (WindowHandle, '5: chuck edge = region boundary', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>

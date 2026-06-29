@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.11.1.0">
+<procedure name="main">
+<interface/>
+<body>
+<l>read_image (Image, 'printer_chip/printer_chip_01')</l>
+<c></c>
+<l>get_image_size (Image, Width, Height)</l>
+<l>X_Cen := Width/2</l>
+<l>Y_Cen := Height/2</l>
+<c></c>
+<c></c>
+<l>gen_circle_contour_xld (ContCircle, Y_Cen, X_Cen, 300, 0, 6.28318, 'positive', 1)</l>
+<c></c>
+<l>get_contour_xld (ContCircle, Row, Col)</l>
+<c></c>
+<l>x1 := Row[10]</l>
+<l>y1 := Col[10]</l>
+<l>gen_cross_contour_xld (Cross1, x1, y1, 50, 0.785398)</l>
+<c></c>
+<l>x2 := Row[500]</l>
+<l>y2 := Col[500]</l>
+<l>gen_cross_contour_xld (Cross2, x2, y2, 50, 0.785398)</l>
+<c></c>
+<l>x3 := Row[1200]</l>
+<l>y3 := Col[1200]</l>
+<l>gen_cross_contour_xld (Cross3, x3, y3, 50, 0.785398)</l>
+<c></c>
+<l>x0 := Y_Cen</l>
+<l>y0 := X_Cen</l>
+<c></c>
+<l>Find_Radius (x0, x1, y0, y1, OA)</l>
+<l>Find_Radius (x0, x2, y0, y2, OB)</l>
+<l>Find_Radius (x0, x3, y0, y3, OC)</l>
+<c></c>
+<l>equation (x1, y1, x2, y2, x0, y0, EqL, EqR)</l>
+<l>equation (x1, y1, x3, y3, x0, y0, EqL, EqR)</l>
+<c></c>
+<c></c>
+<l>circle_center_calculation (x1, y1, x2, y2, x3, y3, x0_cal, y0_cal)</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+<procedure name="Find_Radius">
+<interface>
+<ic>
+<par name="a" base_type="ctrl" dimension="0"/>
+<par name="b" base_type="ctrl" dimension="0"/>
+<par name="c" base_type="ctrl" dimension="0"/>
+<par name="d" base_type="ctrl" dimension="0"/>
+</ic>
+<oc>
+<par name="Radius" base_type="ctrl" dimension="0"/>
+</oc>
+</interface>
+<body>
+<l>Radius := sqrt((a-b)*(a-b)+(c-d)*(c-d))</l>
+<l>return ()</l>
+</body>
+<docu id="Find_Radius">
+<parameters>
+<parameter id="Radius"/>
+<parameter id="a"/>
+<parameter id="b"/>
+<parameter id="c"/>
+<parameter id="d"/>
+</parameters>
+</docu>
+</procedure>
+<procedure name="equation">
+<interface>
+<ic>
+<par name="x1" base_type="ctrl" dimension="0"/>
+<par name="y1" base_type="ctrl" dimension="0"/>
+<par name="x2" base_type="ctrl" dimension="0"/>
+<par name="y2" base_type="ctrl" dimension="0"/>
+<par name="x0" base_type="ctrl" dimension="0"/>
+<par name="y0" base_type="ctrl" dimension="0"/>
+</ic>
+<oc>
+<par name="EqL" base_type="ctrl" dimension="0"/>
+<par name="EqR" base_type="ctrl" dimension="0"/>
+</oc>
+</interface>
+<body>
+<l>EqL := ((x1*x1)+(y1*y1))-((x2*x2)+(y2*y2))/2</l>
+<l>EqR := x0*(x1-x2)+y0*(y1-y2)</l>
+<l>return ()</l>
+</body>
+<docu id="equation">
+<parameters>
+<parameter id="EqL"/>
+<parameter id="EqR"/>
+<parameter id="x0"/>
+<parameter id="x1"/>
+<parameter id="x2"/>
+<parameter id="y0"/>
+<parameter id="y1"/>
+<parameter id="y2"/>
+</parameters>
+</docu>
+</procedure>
+<procedure name="circle_center_calculation">
+<interface>
+<ic>
+<par name="x1" base_type="ctrl" dimension="0"/>
+<par name="y1" base_type="ctrl" dimension="0"/>
+<par name="x2" base_type="ctrl" dimension="0"/>
+<par name="y2" base_type="ctrl" dimension="0"/>
+<par name="x3" base_type="ctrl" dimension="0"/>
+<par name="y3" base_type="ctrl" dimension="0"/>
+</ic>
+<oc>
+<par name="x0_cal" base_type="ctrl" dimension="0"/>
+<par name="y0_cal" base_type="ctrl" dimension="0"/>
+</oc>
+</interface>
+<body>
+<l>create_matrix (3, 4, 0, MatrixID)</l>
+<l>set_value_matrix (MatrixID, 0, 0, (x1*x1)+(y1*y1))</l>
+<l>set_value_matrix (MatrixID, 0, 1, x1)</l>
+<l>set_value_matrix (MatrixID, 0, 2, y1)</l>
+<l>set_value_matrix (MatrixID, 0, 3, 1)</l>
+<c></c>
+<l>set_value_matrix (MatrixID, 1, 0, (x2*x2)+(y2*y2))</l>
+<l>set_value_matrix (MatrixID, 1, 1, x2)</l>
+<l>set_value_matrix (MatrixID, 1, 2, y2)</l>
+<l>set_value_matrix (MatrixID, 1, 3, 1)</l>
+<c></c>
+<l>set_value_matrix (MatrixID, 2, 0, (x3*x3)+(y3*y3))</l>
+<l>set_value_matrix (MatrixID, 2, 1, x3)</l>
+<l>set_value_matrix (MatrixID, 2, 2, y3)</l>
+<l>set_value_matrix (MatrixID, 2, 3, 1)</l>
+<c></c>
+<l>create_matrix (3, 3, 0, M12)</l>
+<l>set_value_matrix (M12, 0, 0, (x1*x1)+(y1*y1))</l>
+<l>set_value_matrix (M12, 0, 1, y1)</l>
+<l>set_value_matrix (M12, 0, 2, 1)</l>
+<c></c>
+<l>set_value_matrix (M12, 1, 0, (x2*x2)+(y2*y2))</l>
+<l>set_value_matrix (M12, 1, 1, y2)</l>
+<l>set_value_matrix (M12, 1, 2, 1)</l>
+<c></c>
+<l>set_value_matrix (M12, 2, 0, (x3*x3)+(y3*y3))</l>
+<l>set_value_matrix (M12, 2, 1, y3)</l>
+<l>set_value_matrix (M12, 2, 2, 1)</l>
+<c></c>
+<l>create_matrix (3, 3, 0, M13)</l>
+<l>set_value_matrix (M13, 0, 0, (x1*x1)+(y1*y1))</l>
+<l>set_value_matrix (M13, 0, 1, x1)</l>
+<l>set_value_matrix (M13, 0, 2, 1)</l>
+<c></c>
+<l>set_value_matrix (M13, 1, 0, (x2*x2)+(y2*y2))</l>
+<l>set_value_matrix (M13, 1, 1, x2)</l>
+<l>set_value_matrix (M13, 1, 2, 1)</l>
+<c></c>
+<l>set_value_matrix (M13, 2, 0, (x3*x3)+(y3*y3))</l>
+<l>set_value_matrix (M13, 2, 1, x3)</l>
+<l>set_value_matrix (M13, 2, 2, 1)</l>
+<c></c>
+<l>create_matrix (3, 3, 0, M11)</l>
+<l>set_value_matrix (M11, 0, 0, x1)</l>
+<l>set_value_matrix (M11, 0, 1, y1)</l>
+<l>set_value_matrix (M11, 0, 2, 1)</l>
+<c></c>
+<l>set_value_matrix (M11, 1, 0, x2)</l>
+<l>set_value_matrix (M11, 1, 1, y2)</l>
+<l>set_value_matrix (M11, 1, 2, 1)</l>
+<c></c>
+<l>set_value_matrix (M11, 2, 0, x3)</l>
+<l>set_value_matrix (M11, 2, 1, y3)</l>
+<l>set_value_matrix (M11, 2, 2, 1)</l>
+<c></c>
+<l>determinant_matrix (M12, 'general', M12_det)</l>
+<l>determinant_matrix (M11, 'general', M11_det)</l>
+<l>x0_cal := (M12_det/M11_det)/2</l>
+<c></c>
+<l>determinant_matrix (M13, 'general', M13_det)</l>
+<c></c>
+<l>y0_cal := -(M13_det/M11_det)/2</l>
+<l>return ()</l>
+</body>
+<docu id="circle_center_calculation">
+<parameters>
+<parameter id="x0_cal"/>
+<parameter id="x1"/>
+<parameter id="x2"/>
+<parameter id="x3"/>
+<parameter id="y0_cal"/>
+<parameter id="y1"/>
+<parameter id="y2"/>
+<parameter id="y3"/>
+</parameters>
+</docu>
+</procedure>
+</hdevelop>
