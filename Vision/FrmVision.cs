@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -37,7 +38,6 @@ namespace MotorControlApp
         private readonly FrmMain? _owner;
         private readonly ReflectiveMarkDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
-        private volatile bool _sampleRequested;     // UI asked GrabLoop for a calibration sample
         private readonly Button _sampleBtn = new() { Text = "Add Sample", Enabled = false };
         private readonly Button _computeBtn = new() { Text = "Compute && Save A", Enabled = false };
         private readonly Button _clearBtn = new() { Text = "Clear", Enabled = false };
@@ -63,7 +63,6 @@ namespace MotorControlApp
         // Same flow as the chuck centre-find but with WaferEdgeDetector and a separate stored centre.
         private readonly WaferEdgeDetector _waferDetector = new();
         private readonly CentreFinder _waferFinder = new();   // accumulates wafer rim points (user-frame steps)
-        private volatile bool _waferRequested;
         private readonly Button _waferEdgeBtn = new() { Text = "Add Wafer Edge", Enabled = false };
         private readonly Button _waferClearBtn = new() { Text = "Clear", Enabled = false };
         private readonly Button _waferCentreBtn = new() { Text = "Compute Centre", Enabled = false };
@@ -74,7 +73,6 @@ namespace MotorControlApp
         // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
         private readonly ChuckEdgeDetector _edgeDetector = new();
         private readonly CentreFinder _chuckFinder = new();   // accumulates chuck edge points (user-frame steps)
-        private volatile bool _edgeRequested;
         private readonly Button _edgeBtn = new() { Text = "Add Edge", Enabled = false };
         private readonly Button _edgeClearBtn = new() { Text = "Clear Edges", Enabled = false };
         private readonly Button _centreBtn = new() { Text = "Compute Centre", Enabled = false };
@@ -98,7 +96,11 @@ namespace MotorControlApp
 
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
-        private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
+
+        // One-shot jobs to run against the next grabbed frame, on the grab thread (replaces the
+        // per-feature "request" flags). The UI enqueues; GrabLoop drains them while the frame is
+        // alive. Each job runs its own detection + bitmap conversion and marshals to the UI.
+        private readonly ConcurrentQueue<Action<HObject>> _frameJobs = new();
 
         private Task? _grabTask;
         private CancellationTokenSource? _cts;
@@ -173,7 +175,26 @@ namespace MotorControlApp
             _waferEdgeBtn.Click += (s, e) =>
             {
                 if (!_camera.IsOpen) return;
-                _waferRequested = true;
+                RequestFrame(frame =>
+                {
+                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                    bool found;
+                    WaferEdgeDetector.EdgePoint edge;
+                    double[] cRows = Array.Empty<double>(), cCols = Array.Empty<double>();
+                    try
+                    {
+                        found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
+                        if (found && contour != null)
+                        {
+                            try { HOperatorSet.GetContourXld(contour, out HTuple rows, out HTuple cols); cRows = rows.ToDArr(); cCols = cols.ToDArr(); }
+                            catch (HOperatorException) { /* keep the point even if the contour read fails */ }
+                        }
+                        contour?.Dispose();
+                    }
+                    catch (HOperatorException) { found = false; edge = default; }
+                    PostFrameBitmap(frame, flip: false, raw => OnWaferGrabbed(found, edge, cRows, cCols, crossRow, crossCol, raw));
+                });
                 _status.Text = "Detecting wafer edge...";
             };
 
@@ -433,102 +454,14 @@ namespace MotorControlApp
                 try { frame = _camera.GrabImage(); }
                 catch (HOperatorException ex) { PostStatus("Live grab stopped: " + ex.Message); return; }
 
-                // Full-resolution capture: convert this frame at native size (no downscale)
-                // before it's disposed. Done here, not on the UI thread, so we never touch the
-                // HALCON acquisition handle from two threads.
-                if (_captureRequested)
+                // Run any queued one-shot jobs (capture / calibration sample / chuck or wafer edge)
+                // against THIS frame, on the grab thread, so the HALCON acquisition handle stays
+                // single-threaded. A job that throws is skipped (the user can retry); each job does
+                // its own detection + bitmap conversion and marshals the result to the UI.
+                while (_frameJobs.TryDequeue(out Action<HObject>? job))
                 {
-                    _captureRequested = false;
-                    Bitmap? full = null;
-                    try { full = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { full = null; }   // skip; user can retry
-                    if (full != null)
-                    {
-                        if (_invertView) full.RotateFlip(RotateFlipType.Rotate180FlipNone);
-                        try { BeginInvoke(new Action(() => SetCaptured(full))); }
-                        catch (InvalidOperationException) { full.Dispose(); }   // closing
-                    }
-                }
-
-                // Calibration sample: detect the fiducial on the RAW frame (no flip — pixel
-                // coords must be consistent), and hand a raw full-res bitmap to the UI so the
-                // user can confirm the detection. Done here so the HALCON handle stays single-
-                // threaded, like the capture path above.
-                if (_sampleRequested)
-                {
-                    _sampleRequested = false;
-                    bool found;
-                    ReflectiveMarkDetector.Mark mark;
-                    try { found = _markDetector.TryDetect(frame, out mark); }
-                    catch (HOperatorException) { found = false; mark = default; }
-
-                    Bitmap? raw = null;
-                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { raw = null; }
-                    if (raw != null)
-                    {
-                        bool f = found; ReflectiveMarkDetector.Mark m = mark; Bitmap r = raw;
-                        try { BeginInvoke(new Action(() => OnSampleGrabbed(f, m, r))); }
-                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
-                    }
-                }
-
-                // Centre-find edge: detect the chuck edge nearest the crosshair (raw frame
-                // centre), on the raw frame. Crosshair = frame centre in raw pixels.
-                if (_edgeRequested)
-                {
-                    _edgeRequested = false;
-                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
-                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
-                    bool found;
-                    ChuckEdgeDetector.EdgePoint edge;
-                    try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
-                    catch (HOperatorException) { found = false; edge = default; }
-
-                    Bitmap? raw = null;
-                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { raw = null; }
-                    if (raw != null)
-                    {
-                        bool f = found; ChuckEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
-                        double cr = crossRow, cc = crossCol;
-                        try { BeginInvoke(new Action(() => OnEdgeGrabbed(f, ed, cr, cc, r))); }
-                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
-                    }
-                }
-
-                // Wafer-edge test: detect the wafer rim nearest the crosshair on the raw frame and
-                // extract the detected boundary (for overlay), so the thresholds can be tuned live.
-                if (_waferRequested)
-                {
-                    _waferRequested = false;
-                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
-                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
-                    bool found;
-                    WaferEdgeDetector.EdgePoint edge;
-                    double[] cRows = Array.Empty<double>(), cCols = Array.Empty<double>();
-                    try
-                    {
-                        found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
-                        if (found && contour != null)
-                        {
-                            try { HOperatorSet.GetContourXld(contour, out HTuple rows, out HTuple cols); cRows = rows.ToDArr(); cCols = cols.ToDArr(); }
-                            catch (HOperatorException) { /* keep the point even if the contour read fails */ }
-                        }
-                        contour?.Dispose();
-                    }
-                    catch (HOperatorException) { found = false; edge = default; }
-
-                    Bitmap? raw = null;
-                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { raw = null; }
-                    if (raw != null)
-                    {
-                        bool f = found; WaferEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
-                        double cr = crossRow, cc = crossCol; double[] rr = cRows, cc2 = cCols;
-                        try { BeginInvoke(new Action(() => OnWaferGrabbed(f, ed, rr, cc2, cr, cc, r))); }
-                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
-                    }
+                    try { job(frame); }
+                    catch (HOperatorException) { /* detection failed on this frame; user can retry */ }
                 }
 
                 Bitmap bmp;
@@ -570,11 +503,28 @@ namespace MotorControlApp
             if (!ReferenceEquals(old, next)) old?.Dispose();
         }
 
+        // Enqueues a unit of work to run against the next grabbed frame, on the grab thread.
+        private void RequestFrame(Action<HObject> job) => _frameJobs.Enqueue(job);
+
+        // Grab-thread helper: convert the live frame to a full-res bitmap (optionally 180°-flipped),
+        // then hand it to a UI callback that takes ownership. Skips silently if the frame can't be
+        // converted (user can retry); disposes the bitmap if the window is already closing. Mirrors
+        // the old per-request tail so capture / sample / edge / wafer share one convert+marshal path.
+        private void PostFrameBitmap(HObject frame, bool flip, Action<Bitmap> onUi)
+        {
+            Bitmap bmp;
+            try { bmp = HalconBitmap.ToBitmap(frame, 0, 0); }
+            catch (HOperatorException) { return; }   // skip; user can retry
+            if (flip) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
+            try { BeginInvoke(new Action(() => onUi(bmp))); }
+            catch (InvalidOperationException) { bmp.Dispose(); }   // closing
+        }
+
         // Asks GrabLoop to convert the next frame at full resolution; SetCaptured shows it.
         private void CaptureFrame()
         {
             if (!_camera.IsOpen) return;
-            _captureRequested = true;
+            RequestFrame(frame => PostFrameBitmap(frame, _invertView, full => SetCaptured(full)));
             _status.Text = "Capturing full-resolution frame...";
         }
 
@@ -604,7 +554,14 @@ namespace MotorControlApp
         private void RequestSample()
         {
             if (!_camera.IsOpen) return;
-            _sampleRequested = true;
+            RequestFrame(frame =>
+            {
+                bool found;
+                ReflectiveMarkDetector.Mark mark;
+                try { found = _markDetector.TryDetect(frame, out mark); }
+                catch (HOperatorException) { found = false; mark = default; }
+                PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
+            });
             _status.Text = "Sampling: detecting fiducial...";
         }
 
@@ -692,7 +649,16 @@ namespace MotorControlApp
         private void RequestEdge()
         {
             if (!_camera.IsOpen) return;
-            _edgeRequested = true;
+            RequestFrame(frame =>
+            {
+                HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                bool found;
+                ChuckEdgeDetector.EdgePoint edge;
+                try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
+                catch (HOperatorException) { found = false; edge = default; }
+                PostFrameBitmap(frame, flip: false, raw => OnEdgeGrabbed(found, edge, crossRow, crossCol, raw));
+            });
             _status.Text = "Detecting chuck edge...";
         }
 
