@@ -599,8 +599,9 @@ namespace MotorControlApp
         {
             using var g = Graphics.FromImage(bmp);
             float cx = (float)mark.Column, cy = (float)mark.Row, r = (float)mark.Radius;
-            using var pen = new Pen(Color.Lime, Math.Max(2f, bmp.Width / 400f));
-            g.DrawEllipse(pen, cx - r, cy - r, 2 * r, 2 * r);
+            float w = VisionOverlay.PenWidth(bmp.Width);
+            VisionOverlay.DrawPoint(g, mark.Row, mark.Column, r, Color.Lime, w);
+            using var pen = new Pen(Color.Lime, w);   // centre cross sized to the fiducial radius
             g.DrawLine(pen, cx - r, cy, cx + r, cy);
             g.DrawLine(pen, cx, cy - r, cx, cy + r);
         }
@@ -701,14 +702,9 @@ namespace MotorControlApp
         private static void DrawEdgeOverlay(Bitmap bmp, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol)
         {
             using var g = Graphics.FromImage(bmp);
-            float w = Math.Max(2f, bmp.Width / 400f), half = bmp.Width / 30f, rad = bmp.Width / 60f;
-            using (var cpen = new Pen(Color.Lime, w))
-            {
-                g.DrawLine(cpen, (float)crossCol, (float)crossRow - half, (float)crossCol, (float)crossRow + half);
-                g.DrawLine(cpen, (float)crossCol - half, (float)crossRow, (float)crossCol + half, (float)crossRow);
-            }
-            using var epen = new Pen(Color.Yellow, w);
-            g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
+            float w = VisionOverlay.PenWidth(bmp.Width), rad = bmp.Width / 60f;
+            VisionOverlay.DrawCrosshair(g, bmp.Width, crossRow, crossCol, Color.Lime);
+            VisionOverlay.DrawPoint(g, edge.Row, edge.Column, rad, Color.Yellow, w);
         }
 
         // UI thread: a wafer-rim point was (or wasn't) found. On success convert it to step space
@@ -743,21 +739,10 @@ namespace MotorControlApp
 
             using (var g = Graphics.FromImage(raw))
             {
-                float w = Math.Max(2f, raw.Width / 400f), half = raw.Width / 30f, rad = raw.Width / 60f;
-                using (var cpen = new Pen(Color.Lime, w))
-                {
-                    g.DrawLine(cpen, (float)crossCol, (float)crossRow - half, (float)crossCol, (float)crossRow + half);
-                    g.DrawLine(cpen, (float)crossCol - half, (float)crossRow, (float)crossCol + half, (float)crossRow);
-                }
-                if (cRows.Length >= 2)
-                {
-                    var pts = new PointF[cRows.Length];
-                    for (int k = 0; k < cRows.Length; k++) pts[k] = new PointF((float)cCols[k], (float)cRows[k]);
-                    using var lpen = new Pen(Color.Cyan, w);
-                    g.DrawLines(lpen, pts);
-                }
-                using var epen = new Pen(Color.Yellow, w * 1.5f);
-                g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
+                float w = VisionOverlay.PenWidth(raw.Width), rad = raw.Width / 60f;
+                VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
+                VisionOverlay.DrawContour(g, cRows, cCols, Color.Cyan, w);
+                VisionOverlay.DrawPoint(g, edge.Row, edge.Column, rad, Color.Yellow, w * 1.5f);
             }
 
             ShowCaptured(raw);
@@ -960,18 +945,7 @@ namespace MotorControlApp
 
             int vx = 0, vy = 0;
             if (a != null && vmag >= 0.05)   // small dead-zone around centre
-            {
-                double dCol = v.X, dRow = -v.Y;
-                double vxUser = a.Xr * dRow + a.Xc * dCol;   // steps/pixel · pixel direction
-                double vyUser = a.Yr * dRow + a.Yc * dCol;
-                double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
-                if (m >= 1e-9)
-                {
-                    double speed = vmag * (double)_vSpeed.Value;   // deflection scales the speed
-                    vx = (int)Math.Round(vxUser / m * speed);
-                    vy = (int)Math.Round(vyUser / m * speed);
-                }
-            }
+                VisionJogMath.TryUserVelocity(a, v.X, -v.Y, vmag * (double)_vSpeed.Value, out vx, out vy);   // deflection scales speed
 
             if (vx == _vLastVx && vy == _vLastVy) return;   // send-on-change
             _vLastVx = vx; _vLastVy = vy;
@@ -987,14 +961,13 @@ namespace MotorControlApp
             PixelStepAffine? a = _owner?.Calibration.PixelStep;
             if (a == null) { _status.Text = "Vision jog needs the camera-scale calibration first."; return; }
 
-            double dCol = sx, dRow = -sy;   // screen right = +col, up = −row (native frame)
-            double vxUser = a.Xr * dRow + a.Xc * dCol;
-            double vyUser = a.Yr * dRow + a.Yc * dCol;
-            double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
-            if (m < 1e-9) { _status.Text = "Calibration is degenerate; recalibrate."; return; }
-
-            double speed = (double)_vSpeed.Value;
-            _owner!.VisionJogUser((int)Math.Round(vxUser / m * speed), (int)Math.Round(vyUser / m * speed));
+            // screen right = +col, up = −row (native frame)
+            if (!VisionJogMath.TryUserVelocity(a, sx, -sy, (double)_vSpeed.Value, out int vx, out int vy))
+            {
+                _status.Text = "Calibration is degenerate; recalibrate.";
+                return;
+            }
+            _owner!.VisionJogUser(vx, vy);
         }
 
         private void Teardown()
