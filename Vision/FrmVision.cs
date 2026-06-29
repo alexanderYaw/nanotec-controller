@@ -62,7 +62,7 @@ namespace MotorControlApp
         // --- Wafer centre-find: capture >=3 wafer-rim points (step space), circle-fit, go to centre.
         // Same flow as the chuck centre-find but with WaferEdgeDetector and a separate stored centre.
         private readonly WaferEdgeDetector _waferDetector = new();
-        private readonly List<(double X, double Y)> _waferPoints = new();   // user-frame step coords
+        private readonly CentreFinder _waferFinder = new();   // accumulates wafer rim points (user-frame steps)
         private volatile bool _waferRequested;
         private readonly Button _waferEdgeBtn = new() { Text = "Add Wafer Edge", Enabled = false };
         private readonly Button _waferClearBtn = new() { Text = "Clear", Enabled = false };
@@ -73,7 +73,7 @@ namespace MotorControlApp
 
         // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
         private readonly ChuckEdgeDetector _edgeDetector = new();
-        private readonly List<(double X, double Y)> _edgePoints = new();   // user-frame step coords
+        private readonly CentreFinder _chuckFinder = new();   // accumulates chuck edge points (user-frame steps)
         private volatile bool _edgeRequested;
         private readonly Button _edgeBtn = new() { Text = "Add Edge", Enabled = false };
         private readonly Button _edgeClearBtn = new() { Text = "Clear Edges", Enabled = false };
@@ -723,15 +723,12 @@ namespace MotorControlApp
                 return;
             }
 
-            double dRow = crossRow - edge.Row, dCol = crossCol - edge.Column;
-            double ex = mx + a.Xr * dRow + a.Xc * dCol;
-            double ey = my + a.Yr * dRow + a.Yc * dCol;
-            _edgePoints.Add((ex, ey));
+            var (ex, ey) = _chuckFinder.Add(edge.Row, edge.Column, crossRow, crossCol, a, mx, my);
 
             DrawEdgeOverlay(raw, edge, crossRow, crossCol);
             ShowCaptured(raw);
             RefreshEdgeUi();
-            _status.Text = $"Edge {_edgePoints.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
+            _status.Text = $"Edge {_chuckFinder.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
         }
 
         // Draws the frame-centre crosshair (green) and the detected edge point (yellow circle).
@@ -776,10 +773,7 @@ namespace MotorControlApp
                 return;
             }
 
-            double dRow = crossRow - edge.Row, dCol = crossCol - edge.Column;
-            double ex = mx + a.Xr * dRow + a.Xc * dCol;
-            double ey = my + a.Yr * dRow + a.Yc * dCol;
-            _waferPoints.Add((ex, ey));
+            var (ex, ey) = _waferFinder.Add(edge.Row, edge.Column, crossRow, crossCol, a, mx, my);
 
             using (var g = Graphics.FromImage(raw))
             {
@@ -802,32 +796,31 @@ namespace MotorControlApp
 
             ShowCaptured(raw);
             RefreshWaferUi();
-            _status.Text = $"Wafer edge {_waferPoints.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
+            _status.Text = $"Wafer edge {_waferFinder.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
         }
 
         private void ClearWaferPoints()
         {
-            _waferPoints.Clear();
+            _waferFinder.Clear();
             RefreshWaferUi();
             _status.Text = "Wafer edge points cleared.";
         }
 
         private void RefreshWaferUi()
         {
-            _waferCentreBtn.Enabled = _waferPoints.Count >= 3;
-            _waferClearBtn.Enabled = _waferPoints.Count > 0;
+            _waferCentreBtn.Enabled = _waferFinder.Count >= 3;
+            _waferClearBtn.Enabled = _waferFinder.Count > 0;
         }
 
         // Circle-fits the wafer rim points (step space); the centre is the motor position that puts
         // the wafer centre on the crosshair. Persists it to the shared store (separate from chuck).
         private void ComputeWaferCentre()
         {
-            if (!CircleFit.TryFit(_waferPoints, out CircleFit.Result fit, out string? err))
+            if (!_waferFinder.TryComputeCentre(out long cx, out long cy, out CircleFit.Result fit, out string? err))
             {
                 _waferResult.Text = "Fit failed:\r\n" + err;
                 return;
             }
-            long cx = (long)Math.Round(fit.CenterX), cy = (long)Math.Round(fit.CenterY);
             _waferCentre = (cx, cy);
             if (_owner != null)
             {
@@ -837,7 +830,7 @@ namespace MotorControlApp
                 catch (Exception ex) { _waferResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
             }
             _waferGoBtn.Enabled = true;
-            _waferResult.Text = $"Wafer (N={_waferPoints.Count}): X={cx} Y={cy}\r\nR={fit.Radius:F0}  RMS={fit.RmsError:F0} steps";
+            _waferResult.Text = $"Wafer (N={_waferFinder.Count}): X={cx} Y={cy}\r\nR={fit.Radius:F0}  RMS={fit.RmsError:F0} steps";
             _status.Text = "Wafer centre computed and saved.";
         }
 
@@ -857,7 +850,7 @@ namespace MotorControlApp
 
         private void ClearEdges()
         {
-            _edgePoints.Clear();
+            _chuckFinder.Clear();
             RefreshEdgeUi();
             _status.Text = "Edge points cleared.";
         }
@@ -866,23 +859,22 @@ namespace MotorControlApp
         {
             var sb = new StringBuilder();
             int i = 1;
-            foreach ((double X, double Y) p in _edgePoints)
+            foreach ((double X, double Y) p in _chuckFinder.Points)
                 sb.AppendLine($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
             _edgeList.Text = sb.ToString();
-            _centreBtn.Enabled = _edgePoints.Count >= 3;
-            _edgeClearBtn.Enabled = _edgePoints.Count > 0;
+            _centreBtn.Enabled = _chuckFinder.Count >= 3;
+            _edgeClearBtn.Enabled = _chuckFinder.Count > 0;
         }
 
         // Circle-fits the edge points (step space); the centre is the motor position that puts
         // the chuck centre on the crosshair. Persists it to the shared store.
         private void ComputeCentre()
         {
-            if (!CircleFit.TryFit(_edgePoints, out CircleFit.Result fit, out string? err))
+            if (!_chuckFinder.TryComputeCentre(out long cx, out long cy, out CircleFit.Result fit, out string? err))
             {
                 _centreResult.Text = "Fit failed:\r\n" + err;
                 return;
             }
-            long cx = (long)Math.Round(fit.CenterX), cy = (long)Math.Round(fit.CenterY);
             _chuckCentre = (cx, cy);
             if (_owner != null)
             {
@@ -893,7 +885,7 @@ namespace MotorControlApp
             }
             _goCentreBtn.Enabled = true;
             _centreResult.Text =
-                $"Centre (N={_edgePoints.Count}):\r\nX={cx}  Y={cy}\r\n" +
+                $"Centre (N={_chuckFinder.Count}):\r\nX={cx}  Y={cy}\r\n" +
                 $"R={fit.Radius:F0}  fit RMS={fit.RmsError:F0} steps";
             _status.Text = "Chuck centre computed and saved.";
         }
