@@ -15,14 +15,14 @@ Nanotec EtherCAT drives (X, Y, Z, Θ) through **NanoLib 1.4.0** over **EtherCAT 
 ```mermaid
 flowchart TB
     subgraph UI["UI / input"]
-        F["FrmMain (partials: .cs · .Connection · .Jog · .Input · .Calibration · .Params · .Designer)"]
-        W["FrmCalibration · FrmParams · FrmPosition · PositionGrid · BusPicker · JoystickPad · Joystick (USB)"]
+        F["FrmMain (partials: .cs · .Connection · .Jog · .Input · .Calibration · .Params · .Rotation · .Vision · .Designer)"]
+        W["FrmCalibration · FrmParams · FrmPosition · FrmVision · PositionGrid · BusPicker · JoystickPad · Joystick (USB)"]
     end
     subgraph API["Shared motion API"]
         M["MultiAxisController<br/>EnableAll/DisableAll · JogAt/Stop/StopAll · MoveAbsolute/Relative · WaitForMotionComplete"]
     end
     subgraph AXIS["Per-axis CiA 402"]
-        C["ChuckController (one per drive)<br/>checked Read/Write · state machine · jog · profile-position · digital inputs"]
+        C["AxisDriver (one per drive)<br/>checked Read/Write · state machine · jog · profile-position · digital inputs"]
     end
     subgraph LINK["Link"]
         L["MultiAxisConnection (scan/connect all)<br/>NanoLib accessor + device handles"]
@@ -37,8 +37,9 @@ flowchart TB
 commands motion through `MultiAxisController` — **never** a drive directly. That keeps
 direction inversion, the single-channel serialization, and the API surface in one place.
 
-> `ChuckController` is a legacy name; it models *any* axis (the chuck is just Θ). A rename
-> to `AxisController` is pending; its `ChuckStatus`/`ChuckException` types leak the old name.
+> `AxisDriver` models *any* axis (the chuck is just Θ). It was formerly named
+> `ChuckController` (with `ChuckStatus`/`ChuckException`); the rename to the axis-neutral
+> `AxisDriver`/`AxisStatus`/`DriveException` is done.
 
 ### Type model (class diagram)
 
@@ -68,22 +69,22 @@ classDiagram
         +Disconnect(log)
     }
     class MultiAxisController {
-        -Dictionary~AxisId, ChuckController~ _axes
+        -Dictionary~AxisId, AxisDriver~ _axes
         +EnableAll() / DisableAll()
         +JogAt(id, dir, speed) / Stop / StopAll
         +MoveAbsolute/Relative(id, pos, vel)
         +WaitForMotionComplete(id, ms) bool
-        +GetStatus(id) ChuckStatus
+        +GetStatus(id) AxisStatus
         +RecoverIfQuickStopped(id) bool
     }
-    class ChuckController {
+    class AxisDriver {
         -NanoLibAccessor _accessor
         -DeviceHandle _deviceHandle
         +AxisConfig Config
         +EnableDrive(bool)
         +StartManualJog/StopManualJog
         +MoveAbsolute/Relative + WaitForMotionComplete
-        +GetStatus() ChuckStatus
+        +GetStatus() AxisStatus
         +ReadDigitalInputs() / IsQuickStopped()
     }
     class AxisConfig {
@@ -123,9 +124,9 @@ classDiagram
     FrmMain "1" o-- "0..1" MultiAxisController : after Connect
     FrmMain "1" *-- "1" CalibrationStore : owns
     FrmMain ..> FrmPosition : opens
-    MultiAxisController "1" *-- "4" ChuckController : _axes
+    MultiAxisController "1" *-- "4" AxisDriver : _axes
     MultiAxisController ..> MultiAxisConnection : built from Handles
-    ChuckController "1" --> "1" AxisConfig : Config
+    AxisDriver "1" --> "1" AxisConfig : Config
     CalibrationStore "1" *-- "0..3" AxisCalibration : Axes
     AxisConfig --> AxisId
     FrmPosition "1" *-- "1" PositionGrid : grid
@@ -135,7 +136,7 @@ classDiagram
 ### Runtime objects (object diagram)
 
 A snapshot once connected, showing the composition that makes the **single-channel**
-contract real: every `ChuckController` shares the **one** `NanoLibAccessor`, so all SDO
+contract real: every `AxisDriver` shares the **one** `NanoLibAccessor`, so all SDO
 access must be serialized (see §10). Each controller is bound to its drive by
 **bus position** (all NodeIDs are 1).
 
@@ -157,10 +158,10 @@ flowchart TB
     conn --> H2["Handles[2] : DeviceHandle (bus 2)"]
     conn --> H3["Handles[3] : DeviceHandle (bus 3)"]
 
-    mac -->|AxisId.X| cX["X : ChuckController"]
-    mac -->|AxisId.Y| cY["Y : ChuckController"]
-    mac -->|AxisId.Z| cZ["Z : ChuckController"]
-    mac -->|AxisId.Theta| cT["Theta : ChuckController"]
+    mac -->|AxisId.X| cX["X : AxisDriver"]
+    mac -->|AxisId.Y| cY["Y : AxisDriver"]
+    mac -->|AxisId.Z| cZ["Z : AxisDriver"]
+    mac -->|AxisId.Theta| cT["Theta : AxisDriver"]
 
     cX --> H0
     cY --> H1
@@ -178,9 +179,10 @@ flowchart TB
 
 | Folder | Files | Role |
 |---|---|---|
-| **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `ChuckController.cs`, `MultiAxisController.cs`, `DriveDiagnostics.cs`, `NanotecConnection.cs` | The motion stack: types, link, per-axis CiA 402, shared API, diagnostics. (`NanotecConnection` is the unused single-axis legacy link.) |
+| **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `DriveDiagnostics.cs`, `NanotecConnection.cs` | The motion stack: types, link, per-axis CiA 402, shared API, diagnostics. (`NanotecConnection` is the unused single-axis legacy link.) |
 | **`Input/`** | `Joystick.cs`, `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | USB (winmm) reader, the on-screen analog puck, and the Position Map grid control + its window. |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits/home store and its UI window. |
+| **`Vision/`** | `VisionCamera.cs`, `HalconBitmap.cs`, `FrmVision.cs`, detectors (`ReflectiveMarkDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `CircleFit.cs`, `CrosshairRotation.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | HALCON camera + live-view window, the edge/fiducial detectors, and the (HALCON-free) calibration / centre-find / rotation maths plus the overlay-drawing and jog-velocity helpers. |
 | **root** | `FrmMain.*`, `BusPicker.cs`, `Program.cs` | The main window (split into partials) plus the entry point. |
 
 The project is **SDK-style with implicit globbing**, so folder placement doesn't affect
@@ -198,6 +200,11 @@ full mutual access to every field and method:
 * `FrmMain.Input.cs` — USB + on-screen joystick polling and mapping.
 * `FrmMain.Calibration.cs` — Home All, Move To, limit capture/find, Go Home, plus the
   Position Map window's data feed (position cache + USER-frame accessors + open-button).
+* `FrmMain.Params.cs` — the per-axis parameter read-out (`Read Params`) console.
+* `FrmMain.Rotation.cs` — rotate-about-crosshair: the continuous Θ + X/Y follow loop
+  (`RotateAboutCrosshairAsync`, `RotateToAngleAsync`, `HoldRotateAsync`) and the handedness sign.
+* `FrmMain.Vision.cs` — opens `FrmVision`; the drift-corrected vision-jog entry points
+  (`VisionJogUser`/`VisionStop`) the vision window calls into.
 * `FrmMain.Designer.cs` — designer-generated layout.
 
 ---
@@ -243,14 +250,14 @@ All four drives report **EtherCAT NodeID 1**, so an axis is identified by its **
 
 ---
 
-## 5. Per-axis controller (`Drive/ChuckController.cs`)
+## 5. Per-axis controller (`Drive/AxisDriver.cs`)
 
 One instance per drive (accessor + device handle + `AxisConfig`). It owns the CiA 402
 object-dictionary access for that axis.
 
 ### Checked primitives
 `Write()` and `Read()` wrap `accessor.writeNumber/readNumber`, inspect the `Result`, and
-throw a **`ChuckException`** on any error instead of letting NanoLib return a silent `0`.
+throw a **`DriveException`** on any error instead of letting NanoLib return a silent `0`.
 All `Result*` objects are disposed with `using`.
 
 ### The signed-read quirk (important)
@@ -268,7 +275,7 @@ negative 32-bit writes already work, e.g. reverse jog via a negative 0x60FF.)
 
 ### `WaitForStatus`
 Polls the statusword (0x6041) until a predicate holds or it times out, throwing a
-`ChuckException` that includes the last statusword for diagnosis. Used for every state
+`DriveException` that includes the last statusword for diagnosis. Used for every state
 transition.
 
 ---
@@ -336,7 +343,7 @@ so completion is still fresh.
 
 ## 9. Shared motion API (`Drive/MultiAxisController.cs`)
 
-Builds one `ChuckController` per `AxisConfig`, mapping `BusPosition → handle`. It **throws in
+Builds one `AxisDriver` per `AxisConfig`, mapping `BusPosition → handle`. It **throws in
 the constructor** if a config points at a bus position that wasn't connected, so a miscount is
 caught at build time, not as a null move later.
 
@@ -694,9 +701,11 @@ red channel → sobel_amp (sharp=high) → mean_image (focus energy, bright=in f
 ### B. Collecting rim points in step space (`FrmVision.cs`, "Add Edge")
 
 The operator jogs the chuck so the **edge crosses the crosshair** at one spot on the rim, then
-clicks **Add Edge** (`_edgeRequested`). On the next grab-loop tick the detector runs against the
-live frame with the crosshair at the **frame centre** (`crossRow = h/2`, `crossCol = w/2`).
-`OnEdgeGrabbed` then converts the detected pixel point to step space via the stored affine:
+clicks **Add Edge**, which enqueues a one-shot job on the grab thread (the shared `_frameJobs`
+dispatcher — see the live-view note below). On the next grab-loop tick the detector runs against
+the live frame with the crosshair at the **frame centre** (`crossRow = h/2`, `crossCol = w/2`).
+`OnEdgeGrabbed` then hands the detected pixel point to the chuck `CentreFinder` (`_chuckFinder`),
+whose `Add(...)` converts it to step space via the stored affine:
 
 ```
 E = M + A·(p_cross − p_edge)
@@ -704,12 +713,19 @@ E = M + A·(p_cross − p_edge)
 
 where `M` is the motor `(X, Y)` at capture and `A` is the steps-per-pixel matrix (§15 A). `E`
 is the motor position that *would* bring this rim point onto the crosshair — a true point on the
-chuck rim expressed in **user-frame steps**. It's appended to `_edgePoints`. Repeat at several
+chuck rim expressed in **user-frame steps**. `CentreFinder` accumulates it. Repeat at several
 spots **spread around the rim** (≥3).
 
-### C. The circle fit (`CircleFit.cs`, "Compute Centre")
+> **Frame-request dispatcher.** Capture, calibration sample, and both edge detections all run
+> their HALCON work on the grab thread (the acquisition handle is single-threaded). Each "request"
+> button enqueues an `Action<HObject>` onto `_frameJobs`; `GrabLoop` drains the queue against the
+> live frame, then each job marshals its bitmap + result back to the UI via `PostFrameBitmap`.
 
-`CircleFit.TryFit` is an algebraic least-squares (**Kåsa**) circle fit: it centres the data for
+### C. The circle fit (`CentreFinder` → `CircleFit.cs`, "Compute Centre")
+
+**Compute Centre** calls `CentreFinder.TryComputeCentre`, a thin wrapper that runs `CircleFit.TryFit`
+over the accumulated points and rounds the result to whole steps. `CircleFit.TryFit` is an
+algebraic least-squares (**Kåsa**) circle fit: it centres the data for
 conditioning, solves the 3×3 normal equations by Gaussian elimination with partial pivoting, and
 returns centre, radius, and **RMS residual** (distance of the points from the fitted circle, in
 steps — small = the points really lie on a circle, a clean fit). It is exact for 3 non-collinear
@@ -719,6 +735,7 @@ spanning requirement as the affine fit (§15 A).
 
 The fitted centre is the motor position that puts the **chuck centre on the crosshair**. It's
 stored in `_chuckCentre`, written to `Calibration.ChuckCenterX/Y`, and `Save()`d (§13);
+the persistence and overlays stay in `FrmVision`, while the point-math + fit live in `CentreFinder`;
 **Go to Centre** then confirms and calls `MoveToAsync(cx, cy)` (bounds-checked, Y-frame handled —
 §13). A saved centre is reloaded on open so Go to Centre survives restarts.
 
@@ -726,8 +743,10 @@ stored in `_chuckCentre`, written to `Calibration.ChuckCenterX/Y`, and `Save()`d
 > circle-centre via matrix determinants; `CircleFit` generalises that to a least-squares fit over
 > *N* points so noisy captures average out.
 
-> **Wafer centre-find** mirrors this exactly (`WaferEdgeDetector` + a separate stored centre and
-> its own `_waferPoints`), differing only in the edge detector and that it keeps its own result.
+> **Wafer centre-find** mirrors this exactly — its own `CentreFinder` (`_waferFinder`) +
+> `WaferEdgeDetector` + a separate stored centre — differing only in the edge detector, the
+> cyan rim overlay, and that it keeps its own result. The shared point/fit logic is the single
+> `CentreFinder` class used by both.
 
 ---
 
@@ -787,9 +806,9 @@ Intended workflow: read → power-cycle → read → compare to confirm NV persi
 * **Units unverified** — positions/velocities are raw drive units; the factor-group decode
   (0x60A8/0x60A9 + gear/feed/velocity factors) is not yet wired into a mm/deg conversion.
 * **Set-point-acknowledge (bit 12)** behaviour on these drives is unconfirmed (see §8).
-* **`ChuckController` rename** to `AxisController` is pending; `AngleDegrees`/`TicksToAngle`
-  (chuck-specific, `ENCODER_TICKS_PER_REV = 40000` unverified) are effectively dead for the
-  linear axes.
+* **Chuck-angle members leak onto every axis** — `AxisDriver.AngleDegrees`/`TicksToAngle`/
+  `GetActualChuckAngle` (chuck-specific, `ENCODER_TICKS_PER_REV = 40000` unverified) exist on all
+  four instances but are effectively dead for the linear axes.
 * **Partial bring-up** isn't supported: a missing drive aborts the whole connect (the
   connection layer's "partial works" comment overstates what `MultiAxisController` allows).
 
@@ -812,7 +831,7 @@ sequenceDiagram
     participant C as MultiAxisConnection
     participant A as NanoLibAccessor
     participant M as MultiAxisController
-    participant D as ChuckController (×4)
+    participant D as AxisDriver (×4)
 
     U->>F: Connect
     F->>C: ListBuses(log)
@@ -829,7 +848,7 @@ sequenceDiagram
     C-->>F: true, Handles[0..3]
     F->>M: new(connection, TableAxes.Default)
     loop each AxisConfig
-        M->>D: new ChuckController(accessor, Handles[busPos], cfg)
+        M->>D: new AxisDriver(accessor, Handles[busPos], cfg)
     end
     Note over F,D: Connected & DISABLED — no motion yet
 
@@ -856,8 +875,8 @@ sequenceDiagram
     actor U as Operator
     participant F as FrmMain.Calibration
     participant M as MultiAxisController
-    participant Z as ChuckController(Z)
-    participant XY as ChuckController(X / Y)
+    participant Z as AxisDriver(Z)
+    participant XY as AxisDriver(X / Y)
     participant A as drive (CW / SW)
 
     U->>F: Home All
@@ -881,7 +900,7 @@ sequenceDiagram
         F->>M: MoveAbsolute(X, …) + MoveAbsolute(Y, …)
         F->>M: WaitForMotionComplete(X) + (Y)
     else Z timed out
-        Z-->>F: throw ChuckException
+        Z-->>F: throw DriveException
         Note over F: abort — X/Y never traverse while Z is still down
     end
 ```
@@ -899,7 +918,7 @@ sequenceDiagram
     participant FC as FrmCalibration
     participant F as FrmMain.Calibration
     participant M as MultiAxisController
-    participant Y as ChuckController(Y)
+    participant Y as AxisDriver(Y)
 
     U->>FC: Find Limits (Y)
     FC->>F: FindLimitsAsync(Y)

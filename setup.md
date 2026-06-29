@@ -182,7 +182,7 @@ A connected-but-faulted drive will refuse to enable. The example's
 
 ### (Separate) Layer 4 — CiA 402 drive state (is the *motor* ready?)
 This is **not** "connection" — it's readiness to move, handled by
-`ChuckController.EnableDrive`. Even fully connected + OPERATIONAL, the motor
+`AxisDriver.EnableDrive`. Even fully connected + OPERATIONAL, the motor
 won't move until the statusword reaches **Operation Enabled** (`& 0x6F == 0x27`).
 
 **Bottom line — "fully connected" =** Layer 1 `Connected` **+** Layer 2 identity
