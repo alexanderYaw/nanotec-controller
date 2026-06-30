@@ -1,7 +1,7 @@
 using System;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — per-axis hold-to-jog buttons, the live status poll, and the soft-limit
     // guard (stop-when-jogging-past-a-stored-limit + the same-direction jog block).

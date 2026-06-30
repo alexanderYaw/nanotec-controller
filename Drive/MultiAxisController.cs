@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// The shared motion API for the inspection table. One per-axis controller is

@@ -2,7 +2,7 @@ using System;
 using System.Threading;
 using Nlc; // NanoLib namespace
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Raised when a NanoLib operation reports an error or the drive fails to

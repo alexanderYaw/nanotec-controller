@@ -1,4 +1,4 @@
-namespace MotorControlApp
+namespace NanotecController
 {
     partial class FrmMain
     {

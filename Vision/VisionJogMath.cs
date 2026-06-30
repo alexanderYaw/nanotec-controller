@@ -1,6 +1,6 @@
 using System;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Drift-corrected vision-jog maths: maps a SCREEN-space jog direction through the pixel→step

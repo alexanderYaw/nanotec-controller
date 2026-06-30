@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using Nlc;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>One object's value read back from a drive (or the error if it failed).</summary>
     public readonly record struct ParameterReadout(

@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Multi-axis motion GUI for the inspection table (X, Y, Z, Θ). Connects to all
@@ -20,13 +20,16 @@ namespace MotorControlApp
     /// Layout lives in FrmMain.Designer.cs; the four axis rows are built in code from
     /// <see cref="TableAxes.Default"/> since they're identical and data-driven. The
     /// behaviour is split across partial files by concern:
-    ///   • FrmMain.Connection.cs  — connect/disconnect, enable/disable, param readout
+    ///   • FrmMain.Connection.cs  — connect/disconnect, enable/disable
     ///   • FrmMain.Jog.cs         — per-axis jog buttons, status poll, soft-limit guard
     ///   • FrmMain.Input.cs       — USB + on-screen joystick input mapping
-    ///   • FrmMain.Calibration.cs — Home All, Move To, limit capture/find, Go Home
+    ///   • FrmMain.Calibration.cs — Home All, Move To, limit capture/find, Go Home, Position Map feed
+    ///   • FrmMain.Params.cs      — drive-parameter read/write/save-to-NV (the FrmParams window's host)
+    ///   • FrmMain.Rotation.cs    — rotate-about-crosshair (Θ + X/Y follow loop) and the handedness sign
+    ///   • FrmMain.Vision.cs      — opens FrmVision; the drift-corrected vision-jog entry points
     /// This file holds shared state, the ctor, UI scaffolding, and lifecycle.
     /// </summary>
-    public partial class FrmMain : Form
+    public partial class FrmMain : Form, IMotionHost
     {
         private readonly MultiAxisConnection _connection = new();
         private readonly Joystick _joystick = new();

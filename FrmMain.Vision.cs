@@ -2,7 +2,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — vision (camera) integration. Stage A: a standalone live-view test window.
     // The button is camera-only, so it stays enabled regardless of drive connection.
@@ -47,14 +47,14 @@ namespace MotorControlApp
         // Y velocity command evidently cancels it, so no second negation is needed here.)
         // NOTE: this also sets the ▲/▼ direction — verify ▲ moves up after changing it.
 
-        internal void VisionJogUser(int vxUser, int vyUser)
+        public void VisionJogUser(int vxUser, int vyUser)
         {
             if (_motion == null || !_drivesEnabled || _busy) return;
             CommandVisionAxis(AxisId.X, vxUser);
             CommandVisionAxis(AxisId.Y, vyUser);
         }
 
-        internal void VisionStop()
+        public void VisionStop()
         {
             if (_motion == null) return;
             CommandVisionAxis(AxisId.X, 0);

@@ -1,7 +1,7 @@
 using System;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Thin wrapper over the HALCON USB3Vision framegrabber: open once, grab frames on

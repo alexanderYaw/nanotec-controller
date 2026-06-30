@@ -1,7 +1,7 @@
 using System;
 using Nlc;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Encapsulates the EtherCAT bring-up sequence (scan → open → scan devices →

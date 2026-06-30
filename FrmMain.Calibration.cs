@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — owns all calibration motion and persistence (the FrmCalibration window is
     // pure UI that calls these internal methods): Home All, Move To, Set Min/Max/Home
@@ -60,7 +60,7 @@ namespace MotorControlApp
         }
 
         /// <summary>Current position of an axis in the USER frame (Y inverted), if polled yet.</summary>
-        internal bool TryCurrentUser(AxisId id, out long user)
+        public bool TryCurrentUser(AxisId id, out long user)
         {
             if (_lastPos.TryGetValue(id, out long raw)) { user = id == AxisId.Y ? -raw : raw; return true; }
             user = 0;
@@ -71,7 +71,7 @@ namespace MotorControlApp
         /// An axis's travel limits in the USER frame, or null if both ends aren't set. The Y
         /// negation flips min/max order, so they're re-sorted before returning.
         /// </summary>
-        internal (long min, long max)? UserLimits(AxisId id)
+        public (long min, long max)? UserLimits(AxisId id)
         {
             AxisCalibration c = _calib.For(id);
             if (!c.Min.HasValue || !c.Max.HasValue) return null;
@@ -85,7 +85,7 @@ namespace MotorControlApp
         /// waits for it, THEN moves X and Y to their homes simultaneously. Requires a home
         /// target for all three; aborts otherwise so X/Y never move before Z has retracted.
         /// </summary>
-        internal async Task HomeAllAsync()
+        public async Task HomeAllAsync()
         {
             if (!CanMoveCalibration) return;
             long? zT = HomeTargetFor(AxisId.Z);
@@ -130,7 +130,7 @@ namespace MotorControlApp
         /// limits and the WHOLE move is rejected if any is out of range. The entered axes
         /// move together. Coordinates are in the same drive units shown as Min/Max.
         /// </summary>
-        internal async Task MoveToAsync(string xText, string yText, string zText)
+        public async Task MoveToAsync(string xText, string yText, string zText)
         {
             if (!CanMoveCalibration) return;
 
@@ -194,27 +194,27 @@ namespace MotorControlApp
         }
 
         /// <summary>The shared per-axis limits/home store (read by the calibration window).</summary>
-        internal CalibrationStore Calibration => _calib;
+        public CalibrationStore Calibration => _calib;
 
         /// <summary>Reading a position needs the link up; capture is a UI-thread SDO read.</summary>
-        internal bool CanCaptureCalibration => _connection.IsConnected && !_busy && _motion != null;
+        public bool CanCaptureCalibration => _connection.IsConnected && !_busy && _motion != null;
 
         /// <summary>Motion (find / go-home) needs the drives enabled and idle.</summary>
-        internal bool CanMoveCalibration => _drivesEnabled && !_busy && _motion != null;
+        public bool CanMoveCalibration => _drivesEnabled && !_busy && _motion != null;
 
         /// <summary>Home target for an axis: centre of the limits for X/Y, explicit Home for Z.</summary>
-        internal long? HomeTargetFor(AxisId id)
+        public long? HomeTargetFor(AxisId id)
         {
             AxisCalibration c = _calib.For(id);
             return id == AxisId.Z ? c.Home : c.Center;
         }
 
-        internal void SetCalibrationMin(AxisId id) => CaptureInto(id, isMax: false, isHome: false);
-        internal void SetCalibrationMax(AxisId id) => CaptureInto(id, isMax: true, isHome: false);
-        internal void SetCalibrationHome(AxisId id) => CaptureInto(id, isMax: false, isHome: true);
+        public void SetCalibrationMin(AxisId id) => CaptureInto(id, isMax: false, isHome: false);
+        public void SetCalibrationMax(AxisId id) => CaptureInto(id, isMax: true, isHome: false);
+        public void SetCalibrationHome(AxisId id) => CaptureInto(id, isMax: false, isHome: true);
 
-        internal void ClearCalibrationMin(AxisId id) => ClearLimit(id, isMax: false);
-        internal void ClearCalibrationMax(AxisId id) => ClearLimit(id, isMax: true);
+        public void ClearCalibrationMin(AxisId id) => ClearLimit(id, isMax: false);
+        public void ClearCalibrationMax(AxisId id) => ClearLimit(id, isMax: true);
 
         // Removes a stored soft limit (sets it back to "none") and persists. Local edit only —
         // touches no drive. Also drops any soft-limit jog block for the axis, since the limit
@@ -244,7 +244,7 @@ namespace MotorControlApp
         }
 
         /// <summary>Moves an axis to its Home target (Profile Position) and waits for arrival.</summary>
-        internal async Task GoHomeAsync(AxisId id)
+        public async Task GoHomeAsync(AxisId id)
         {
             if (!CanMoveCalibration) return;
             long? target = HomeTargetFor(id);
@@ -277,7 +277,7 @@ namespace MotorControlApp
         /// the position at the edge, and taking the pair as Min/Max (Home = centre).
         /// Only Y is wired to this today (two working switches that quick-stop).
         /// </summary>
-        internal async Task FindLimitsAsync(AxisId id)
+        public async Task FindLimitsAsync(AxisId id)
         {
             if (!CanMoveCalibration) return;
             _busy = true; RefreshButtons();

@@ -1,7 +1,7 @@
 using System;
 using System.Drawing;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Shared GDI overlays drawn onto a full-resolution capture bitmap (HALCON row = y, col = x).

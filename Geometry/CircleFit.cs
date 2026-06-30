@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Least-squares circle fit (algebraic / Kåsa method) to ≥3 points in a plane. Used to find

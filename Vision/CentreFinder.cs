@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Accumulates rim points (USER-frame motor steps) and circle-fits them to a centre. Both the

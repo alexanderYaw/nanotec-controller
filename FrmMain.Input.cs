@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — manual input sources (USB joystick + on-screen puck) and how their state
     // is mapped onto axis jog commands (send-on-change). (Partial of FrmMain.)

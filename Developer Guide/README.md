@@ -5,8 +5,8 @@ instructions, see **UserGuide.md**.
 
 The app is a **.NET 10 (Windows) WinForms** program targeting **x64**, controlling four
 Nanotec EtherCAT drives (X, Y, Z, Θ) through **NanoLib 1.4.0** over **EtherCAT / CoE
-(CiA 402)** with an **Npcap soft master**. All code is in `namespace MotorControlApp`
-(the csproj `RootNamespace` differs but the code namespace is explicit).
+(CiA 402)** with an **Npcap soft master**. All code is in the single flat
+`namespace NanotecController` (matching the project, assembly, and csproj `RootNamespace`).
 
 ---
 
@@ -43,8 +43,11 @@ direction inversion, the single-channel serialization, and the API surface in on
 
 ### Type model (class diagram)
 
-The static structure of the motion stack and the tool windows. `FrmCalibration` and
-`FrmParams` follow the same **pure-UI-over-FrmMain** pattern shown here for `FrmPosition`.
+The static structure of the motion stack and the tool windows. All four tool windows
+(`FrmCalibration`, `FrmParams`, `FrmPosition`, `FrmVision`) follow the same **pure-UI** pattern:
+they take an **`IMotionHost`** (implemented only by `FrmMain`) and call back through it, so the
+windows never touch a drive directly and can be exercised against a fake. `IMotionHost` is the
+one place the owner surface is documented.
 
 ```mermaid
 classDiagram
@@ -182,8 +185,10 @@ flowchart TB
 | **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `DriveDiagnostics.cs`, `NanotecConnection.cs` | The motion stack: types, link, per-axis CiA 402, shared API, diagnostics. (`NanotecConnection` is the unused single-axis legacy link.) |
 | **`Input/`** | `Joystick.cs`, `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | USB (winmm) reader, the on-screen analog puck, and the Position Map grid control + its window. |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits/home store and its UI window. |
-| **`Vision/`** | `VisionCamera.cs`, `HalconBitmap.cs`, `FrmVision.cs`, detectors (`ReflectiveMarkDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `CircleFit.cs`, `CrosshairRotation.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | HALCON camera + live-view window, the edge/fiducial detectors, and the (HALCON-free) calibration / centre-find / rotation maths plus the overlay-drawing and jog-velocity helpers. |
-| **root** | `FrmMain.*`, `BusPicker.cs`, `Program.cs` | The main window (split into partials) plus the entry point. |
+| **`Vision/`** | `VisionCamera.cs`, `HalconBitmap.cs`, `FrmVision.cs`, detectors (`ReflectiveMarkDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | HALCON camera + live-view window, the edge/fiducial detectors, and the (HALCON-bound) calibration / centre-find vision logic plus the overlay-drawing and jog-velocity helpers. |
+| **`Geometry/`** | `CircleFit.cs`, `CrosshairRotation.cs` | HALCON-free maths: least-squares circle fit (centre-find) and the crosshair-pivot rotation geometry. |
+| **`Params/`** | `FrmParams.cs` | The drive-parameter read/write/save-to-NV window (its host logic is `FrmMain.Params.cs`). |
+| **root** | `FrmMain.*`, `IMotionHost.cs`, `BusPicker.cs`, `Program.cs` | The main window (split into partials), the owner-surface interface it implements, the bus-picker dialog, and the entry point. |
 
 The project is **SDK-style with implicit globbing**, so folder placement doesn't affect
 compilation, and all files share the one namespace (folders ≠ namespaces here).
@@ -548,7 +553,7 @@ red channel → threshold ring → close+fill → subtract ring → dark inner g
 
 ---
 
-## 15. Camera-scale calibration & crosshair-pivot rotation (`Vision/CameraCalibrator.cs`, `Vision/CrosshairRotation.cs`, `FrmMain.Rotation.cs`)
+## 15. Camera-scale calibration & crosshair-pivot rotation (`Vision/CameraCalibrator.cs`, `Geometry/CrosshairRotation.cs`, `FrmMain.Rotation.cs`)
 
 Two halves: (A) **fit** the pixel→step relationship from manually-captured fiducial samples,
 then (B) **use** it to rotate the chuck about the camera crosshair — driving X/Y so the point
@@ -644,7 +649,7 @@ Safety in the loop:
 
 ---
 
-## 16. Chuck centre-find — edge detection + circle fit (`Vision/ChuckEdgeDetector.cs`, `Vision/CircleFit.cs`, `Vision/FrmVision.cs`)
+## 16. Chuck centre-find — edge detection + circle fit (`Vision/ChuckEdgeDetector.cs`, `Geometry/CircleFit.cs`, `Vision/FrmVision.cs`)
 
 Finds the chuck's **mechanical centre in motor-step space**, so the table can drive that
 centre under the camera crosshair — and so it can serve as the **pivot** for crosshair-pinned

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Builds the pixel→step affine <see cref="PixelStepAffine"/> from manually-captured

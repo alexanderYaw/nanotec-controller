@@ -1,7 +1,7 @@
 using System;
 using System.Threading.Tasks;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — rotation ABOUT the camera crosshair. The Θ axis rotates the chuck about its
     // own mechanical centre; combining it with an X/Y shift (CrosshairRotation) makes the
@@ -40,16 +40,16 @@ namespace MotorControlApp
 
         /// <summary>Rotation needs the drives enabled/idle AND a full calibration (affine +
         /// chuck centre). The sign may still be unset — the test run is how it gets fixed.</summary>
-        internal bool CanRotate =>
+        public bool CanRotate =>
             CanMoveCalibration
             && _calib.PixelStep != null
             && _calib.ChuckCenterX.HasValue && _calib.ChuckCenterY.HasValue;
 
         /// <summary>The persisted image handedness, or null until the sign test has fixed it.</summary>
-        internal int? RotationSign => _calib.RotationSign;
+        public int? RotationSign => _calib.RotationSign;
 
         /// <summary>Stores the crosshair-rotation handedness (+1/-1) and persists it.</summary>
-        internal void SetRotationSign(int sign)
+        public void SetRotationSign(int sign)
         {
             _calib.RotationSign = Math.Sign(sign);
             TrySaveCalibration();
@@ -61,7 +61,7 @@ namespace MotorControlApp
         /// shortest path from the current Θ angle. Thin wrapper over
         /// <see cref="RotateAboutCrosshairAsync"/>.
         /// </summary>
-        internal async Task RotateToAngleAsync(double targetDegrees)
+        public async Task RotateToAngleAsync(double targetDegrees)
         {
             if (!CanRotate)
             {
@@ -87,7 +87,7 @@ namespace MotorControlApp
         /// handedness, or +1 if uncalibrated. Aborts cleanly if X/Y leave the stored travel limits
         /// or fall too far behind Θ; always stops all three on exit.
         /// </summary>
-        internal async Task RotateAboutCrosshairAsync(double deltaDegrees)
+        public async Task RotateAboutCrosshairAsync(double deltaDegrees)
         {
             if (!CanRotate)
             {
@@ -197,7 +197,7 @@ namespace MotorControlApp
         /// called (button released). Same controller as <see cref="RotateAboutCrosshairAsync"/> but
         /// with no target angle. Always stops all three on exit. Call from a button MouseDown.
         /// </summary>
-        internal async Task HoldRotateAsync(int direction)
+        public async Task HoldRotateAsync(int direction)
         {
             if (!CanRotate)
             {
@@ -291,7 +291,7 @@ namespace MotorControlApp
         }
 
         /// <summary>Ends a <see cref="HoldRotateAsync"/> (call from the button MouseUp / on focus loss).</summary>
-        internal void StopHoldRotate() => _holdRotateStop = true;
+        public void StopHoldRotate() => _holdRotateStop = true;
 
         // X/Y follow velocity (signed) from a position error in steps: dead-band → 0,
         // else proportional, clamped to [MinVel, Vmax]. Tune ROTATE_FOLLOW_GAIN/VMAX on hardware.

@@ -4,7 +4,7 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Converts a HALCON image (HObject) to a System.Drawing.Bitmap so it can be shown in a

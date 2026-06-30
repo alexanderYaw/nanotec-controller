@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Locates the wafer EDGE point nearest a reference pixel by BRIGHTNESS. In the live scene

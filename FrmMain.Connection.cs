@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — connection lifecycle: pick a bus and connect/disconnect all drives,
     // enable/disable them, and the read-only parameter sweep. (Partial of FrmMain.)

@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Stage A live-view test: opens the HALCON USB3Vision camera, streams frames into a
@@ -35,7 +35,7 @@ namespace MotorControlApp
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
-        private readonly FrmMain? _owner;
+        private readonly IMotionHost? _owner;
         private readonly ReflectiveMarkDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
         private readonly Button _sampleBtn = new() { Text = "Add Sample", Enabled = false };
@@ -109,7 +109,7 @@ namespace MotorControlApp
         private bool _displayQueued;        // a BeginInvoke(ShowPending) is already in flight
         private volatile int _viewW = 480, _viewH = 440;   // downscale target (live box size)
 
-        public FrmVision(FrmMain owner)
+        public FrmVision(IMotionHost owner)
         {
             _owner = owner;
             Text = "Vision - live view";
