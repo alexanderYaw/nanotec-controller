@@ -68,7 +68,7 @@ namespace NanotecController
                 {
                     AxisDriver.AxisStatus st = _motion.GetStatus(id);
                     _lastPos[id] = st.Position;   // cache raw; Position Map reads it in the user frame
-                    long shown = (id == AxisId.Y) ? -st.Position : st.Position;   // invert Y for more intuitive readout
+                    long shown = ToUser(id, st.Position);   // user frame (Y inverted) for an intuitive readout
                     _axisRows[id].Status.Text = $"{shown,12:N0}   {st.State}{(st.HasFault ? "  [Fault]" : "")}";
                     EnforceSoftLimits(id, st.Position);
                 }

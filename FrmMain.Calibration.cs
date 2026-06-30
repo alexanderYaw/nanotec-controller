@@ -59,10 +59,18 @@ namespace NanotecController
             _posWindow.BringToFront();
         }
 
+        // User frame ↔ raw drive frame. Y reads/enters inverted (user +Y = raw −Y) so the on-screen
+        // position is intuitive; every other axis is identity. SINGLE SOURCE of the Y-sign convention.
+        // The one deliberate exception is the vision-jog Y command (FrmMain.Vision.cs), whose sign is
+        // empirical. Both directions are the same negation (an involution); the two names document, at
+        // each call site, whether a user-frame or a raw-frame value is being produced.
+        private static long ToUser(AxisId id, long raw) => id == AxisId.Y ? -raw : raw;
+        private static long ToRaw(AxisId id, long user) => id == AxisId.Y ? -user : user;
+
         /// <summary>Current position of an axis in the USER frame (Y inverted), if polled yet.</summary>
         public bool TryCurrentUser(AxisId id, out long user)
         {
-            if (_lastPos.TryGetValue(id, out long raw)) { user = id == AxisId.Y ? -raw : raw; return true; }
+            if (_lastPos.TryGetValue(id, out long raw)) { user = ToUser(id, raw); return true; }
             user = 0;
             return false;
         }
@@ -75,8 +83,8 @@ namespace NanotecController
         {
             AxisCalibration c = _calib.For(id);
             if (!c.Min.HasValue || !c.Max.HasValue) return null;
-            long a = id == AxisId.Y ? -c.Min.Value : c.Min.Value;
-            long b = id == AxisId.Y ? -c.Max.Value : c.Max.Value;
+            long a = ToUser(id, c.Min.Value);
+            long b = ToUser(id, c.Max.Value);
             return (Math.Min(a, b), Math.Max(a, b));
         }
 
@@ -185,7 +193,7 @@ namespace NanotecController
             val = null;
             text = text?.Trim() ?? "";
             if (text.Length == 0) return true;
-            if (long.TryParse(text, out long v)) { val = id == AxisId.Y ? -v : v; return true; }   // invert Y for more intuitive readout and entry
+            if (long.TryParse(text, out long v)) { val = ToRaw(id, v); return true; }   // user → raw (Y inverted) for intuitive entry
             
             AppendLog($"Move: '{text}' is not a valid {id} coordinate.");
             return false;

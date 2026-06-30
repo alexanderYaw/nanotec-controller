@@ -143,14 +143,14 @@ namespace NanotecController
                         if (!CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, deltaRad * frac, sign,
                                                            out long txUser, out long tyUser))
                             throw new DriveException("calibration affine is degenerate — recalibrate the camera scale.");
-                        RejectIfOutOfTravel(AxisId.X, txUser);    // X: user == raw
-                        RejectIfOutOfTravel(AxisId.Y, -tyUser);   // Y: raw == −user
+                        RejectIfOutOfTravel(AxisId.X, ToRaw(AxisId.X, txUser));
+                        RejectIfOutOfTravel(AxisId.Y, ToRaw(AxisId.Y, tyUser));
 
                         // Follow in the USER frame — velocity-mode jog uses the user frame (the
                         // vision jog commands Y WITHOUT the raw flip). A raw-frame error would
                         // invert Y (userY = −rawY) and drive it the WRONG way → runaway.
-                        long errX = txUser - _motion.GetStatus(AxisId.X).Position;        // X: user == raw
-                        long errY = tyUser - (-_motion.GetStatus(AxisId.Y).Position);     // Y: user == −raw
+                        long errX = txUser - ToUser(AxisId.X, _motion.GetStatus(AxisId.X).Position);
+                        long errY = tyUser - ToUser(AxisId.Y, _motion.GetStatus(AxisId.Y).Position);
                         lastErrX = errX; lastErrY = errY;
 
                         // Head start: hold X/Y for the first ROTATE_XY_DELAY_MS so Θ visibly leads
@@ -228,8 +228,8 @@ namespace NanotecController
                 _motion.RecoverIfQuickStopped(AxisId.X);
                 _motion.RecoverIfQuickStopped(AxisId.Y);
 
-                long s0x = _motion.GetStatus(AxisId.X).Position;       // live start pose (USER frame)
-                long s0y = -_motion.GetStatus(AxisId.Y).Position;
+                long s0x = ToUser(AxisId.X, _motion.GetStatus(AxisId.X).Position);   // live start pose (USER frame)
+                long s0y = ToUser(AxisId.Y, _motion.GetStatus(AxisId.Y).Position);
                 long thetaStart = _motion.GetStatus(AxisId.Theta).Position;
                 _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_SPEED);   // Θ runs until released
                 try
@@ -251,11 +251,11 @@ namespace NanotecController
                         double angleRad = radPerTick * (_motion.GetStatus(AxisId.Theta).Position - thetaStart);
                         if (!CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, angleRad, sign, out long txUser, out long tyUser))
                             throw new DriveException("calibration affine is degenerate — recalibrate the camera scale.");
-                        RejectIfOutOfTravel(AxisId.X, txUser);
-                        RejectIfOutOfTravel(AxisId.Y, -tyUser);
+                        RejectIfOutOfTravel(AxisId.X, ToRaw(AxisId.X, txUser));
+                        RejectIfOutOfTravel(AxisId.Y, ToRaw(AxisId.Y, tyUser));
 
-                        long errX = txUser - _motion.GetStatus(AxisId.X).Position;
-                        long errY = tyUser - (-_motion.GetStatus(AxisId.Y).Position);
+                        long errX = txUser - ToUser(AxisId.X, _motion.GetStatus(AxisId.X).Position);
+                        long errY = tyUser - ToUser(AxisId.Y, _motion.GetStatus(AxisId.Y).Position);
 
                         // Head start: hold X/Y for the first ROTATE_XY_DELAY_MS so Θ visibly leads.
                         // Once releasing, follow regardless so the release-settle pins the feature.
