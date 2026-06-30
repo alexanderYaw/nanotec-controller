@@ -50,26 +50,15 @@ namespace NanotecController
         public void VisionJogUser(int vxUser, int vyUser)
         {
             if (_motion == null || !_drivesEnabled || _busy) return;
-            CommandVisionAxis(AxisId.X, vxUser);
-            CommandVisionAxis(AxisId.Y, vyUser);
+            CommandAxisVelocity(AxisId.X, vxUser, honorSoftLimit: true);
+            CommandAxisVelocity(AxisId.Y, vyUser, honorSoftLimit: true);
         }
 
         public void VisionStop()
         {
             if (_motion == null) return;
-            CommandVisionAxis(AxisId.X, 0);
-            CommandVisionAxis(AxisId.Y, 0);
-        }
-
-        private void CommandVisionAxis(AxisId id, int v)
-        {
-            if (v != 0 && _softLimits.IsBlocked(id, Math.Sign(v))) v = 0;   // soft limit -> stop
-            try
-            {
-                if (v == 0) { _motion!.Stop(id); _softLimits.RecordCommand(id, 0); }
-                else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _softLimits.RecordCommand(id, Math.Sign(v)); }
-            }
-            catch (DriveException ex) { AppendLog($"ERROR: vision jog {id}: {ex.Message}"); }
+            CommandAxisVelocity(AxisId.X, 0, honorSoftLimit: true);
+            CommandAxisVelocity(AxisId.Y, 0, honorSoftLimit: true);
         }
     }
 }

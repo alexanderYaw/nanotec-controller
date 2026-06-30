@@ -86,22 +86,9 @@ namespace NanotecController
             if (dir != 0 && _softLimits.IsBlocked(id, dir)) dir = 0; // soft limit -> treat as stop
             (int dir, bool fast) last = _lastJoy[id];
             if (last.dir == dir && (dir == 0 || last.fast == fast)) return; // unchanged
-            try
-            {
-                if (dir == 0)
-                {
-                    _motion!.Stop(id);
-                    _softLimits.RecordCommand(id, 0);
-                }
-                else
-                {
-                    int speed = _axisRows[id].Speed.Value;
-                    if (fast) speed = Math.Min(speed * FAST_FACTOR, _axisRows[id].Speed.Maximum);
-                    _motion!.JogAt(id, dir, speed);
-                    _softLimits.RecordCommand(id, dir);
-                }
-            }
-            catch (DriveException ex) { AppendLog($"ERROR: joystick {id}: {ex.Message}"); }
+            int speed = _axisRows[id].Speed.Value;
+            if (fast) speed = Math.Min(speed * FAST_FACTOR, _axisRows[id].Speed.Maximum);
+            CommandAxisVelocity(id, dir * speed, honorSoftLimit: false);   // block already applied above
             _lastJoy[id] = (dir, fast);
         }
 
@@ -114,20 +101,14 @@ namespace NanotecController
         /// </summary>
         private void ApplyVector(int vx, int vy)
         {
-            try
-            {
-                if (vx != _lastVx) { CommandVel(AxisId.X, vx); _lastVx = vx; }
-                if (vy != _lastVy) { CommandVel(AxisId.Y, vy); _lastVy = vy; }
-            }
-            catch (DriveException ex) { AppendLog($"ERROR: on-screen jog: {ex.Message}"); }
+            if (vx != _lastVx) { CommandVel(AxisId.X, vx); _lastVx = vx; }
+            if (vy != _lastVy) { CommandVel(AxisId.Y, vy); _lastVy = vy; }
         }
 
         private void CommandVel(AxisId id, int v)
         {
             if (InvertDir(id, 1) < 0) v = -v;                    // movement-inversion toggle (X/Y)
-            if (v != 0 && _softLimits.IsBlocked(id, Math.Sign(v))) v = 0; // soft limit -> treat as stop
-            if (v == 0) { _motion!.Stop(id); _softLimits.RecordCommand(id, 0); }
-            else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _softLimits.RecordCommand(id, Math.Sign(v)); }
+            CommandAxisVelocity(id, v, honorSoftLimit: true);
         }
 
         /// <summary>Stops any axis the joystick was driving and clears its last-command cache.</summary>

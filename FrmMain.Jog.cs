@@ -57,6 +57,27 @@ namespace NanotecController
             catch (DriveException ex) { AppendLog($"ERROR: stop {id} failed: {ex.Message}"); }
         }
 
+        /// <summary>
+        /// Commands one axis at a signed velocity (raw drive units; sign = direction) and records the
+        /// direction for the soft-limit tracker. With <paramref name="honorSoftLimit"/>, a velocity that
+        /// would push further past a parked soft limit is squashed to a stop. Zero stops the axis. The
+        /// single velocity-mode path for the joystick puck, vision jog, and on-screen vector — so the
+        /// JogAt/Stop + RecordCommand bookkeeping can't drift between them. (The rotate follow-loop uses
+        /// CommandFollow instead: it must let a DriveException propagate to abort the rotation, whereas
+        /// this swallows + logs so a UI jog never crashes the form.)
+        /// </summary>
+        private void CommandAxisVelocity(AxisId id, int signedVel, bool honorSoftLimit)
+        {
+            if (honorSoftLimit && signedVel != 0 && _softLimits.IsBlocked(id, Math.Sign(signedVel)))
+                signedVel = 0;
+            try
+            {
+                if (signedVel == 0) { _motion!.Stop(id); _softLimits.RecordCommand(id, 0); }
+                else { _motion!.JogAt(id, Math.Sign(signedVel), Math.Abs(signedVel)); _softLimits.RecordCommand(id, Math.Sign(signedVel)); }
+            }
+            catch (DriveException ex) { AppendLog($"ERROR: command {id}: {ex.Message}"); }
+        }
+
         // --- Live status poll -----------------------------------------------------
 
         private void statusTimer_Tick(object? sender, EventArgs e)
