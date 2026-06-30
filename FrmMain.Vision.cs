@@ -63,11 +63,11 @@ namespace NanotecController
 
         private void CommandVisionAxis(AxisId id, int v)
         {
-            if (v != 0 && IsJogBlocked(id, Math.Sign(v))) v = 0;   // soft limit -> stop
+            if (v != 0 && _softLimits.IsBlocked(id, Math.Sign(v))) v = 0;   // soft limit -> stop
             try
             {
-                if (v == 0) { _motion!.Stop(id); _cmdDir[id] = 0; }
-                else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _cmdDir[id] = Math.Sign(v); }
+                if (v == 0) { _motion!.Stop(id); _softLimits.RecordCommand(id, 0); }
+                else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _softLimits.RecordCommand(id, Math.Sign(v)); }
             }
             catch (DriveException ex) { AppendLog($"ERROR: vision jog {id}: {ex.Message}"); }
         }

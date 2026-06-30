@@ -114,7 +114,7 @@ namespace NanotecController
             if (totalThetaTicks == 0) { AppendLog("Rotate: angle too small to move Θ."); return; }
             int thetaDir = Math.Sign(totalThetaTicks);
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Rotate {deltaDegrees:+0.##;-0.##}° about crosshair (continuous; centre X={cx:N0} Y={cy:N0}, sign {sign:+0;-0})...");
             long thetaStart = 0, thetaEnd = 0, lastErrX = 0, lastErrY = 0;
             bool ok = await RunDriveOp(() =>
@@ -188,7 +188,6 @@ namespace NanotecController
             if (ok)
                 AppendLog($"  Θ {thetaStart:N0} → {thetaEnd:N0} (Δ {thetaEnd - thetaStart:+0;-0}); final X/Y follow err {lastErrX:N0},{lastErrY:N0}.");
             AppendLog(ok ? "Rotate complete." : "Rotate FAILED — see error above.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>
@@ -221,7 +220,7 @@ namespace NanotecController
             int thetaDir = Math.Sign(direction);
 
             _holdRotateStop = false;
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Rotate {(thetaDir > 0 ? "⟳" : "⟲")} about crosshair (hold; centre X={cx:N0} Y={cy:N0}, sign {sign:+0;-0})...");
             bool ok = await RunDriveOp(() =>
             {
@@ -287,7 +286,6 @@ namespace NanotecController
                 }
             });
             AppendLog(ok ? "Rotate (hold) stopped." : "Rotate (hold) FAILED — see error above.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>Ends a <see cref="HoldRotateAsync"/> (call from the button MouseUp / on focus loss).</summary>

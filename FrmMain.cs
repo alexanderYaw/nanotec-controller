@@ -78,18 +78,11 @@ namespace NanotecController
         private readonly CalibrationStore _calib;
         private FrmCalibration? _calibWindow;
 
-        // Soft-limit enforcement during jogging: last polled position per axis (to infer
-        // travel direction) and which axes are currently parked at a limit (one-shot log).
-        private readonly Dictionary<AxisId, long> _prevPos = new();
-        private readonly HashSet<AxisId> _atSoftLimit = new();
-        // Soft-limit jog gate (polarity-agnostic — kept in COMMAND space, never assuming a
-        // command→position sign): _cmdDir = the direction currently commanded per axis;
-        // _limitBlockedDir = the direction that tripped a soft limit and is refused until
-        // the axis is jogged back into range. This stops a re-pressed/held outward jog from
-        // re-lurching for up to a status-poll period — critical for X+ and Z, which have no
-        // hardware switch (see limit-switch findings).
-        private readonly Dictionary<AxisId, int> _cmdDir = new();
-        private readonly Dictionary<AxisId, int> _limitBlockedDir = new();
+        // Soft-limit jog guard (polarity-agnostic, COMMAND space): tracks the last polled
+        // position, parked-at-limit axes, the commanded direction, and the direction refused
+        // after tripping a limit — critical for X+ and Z, which have no hardware switch (see
+        // limit-switch findings). Logic lives in SoftLimitTracker; FrmMain does the Stop + log.
+        private readonly SoftLimitTracker _softLimits = new();
 
         private sealed record AxisRow(Button Neg, Button Pos, Label Status, TrackBar Speed, Label SpeedValue);
         private readonly Dictionary<AxisId, AxisRow> _axisRows = new();
@@ -265,6 +258,23 @@ namespace NanotecController
             ResetSoftLimitTracking();   // a move may have happened while paused; rebaseline
             statusTimer.Start();
             if (rbUsb.Checked || rbScreen.Checked) { ResetJoy(); joystickTimer.Start(); }
+        }
+
+        /// <summary>
+        /// Scopes a busy (operation-in-progress) section. Construction sets <c>_busy</c> and
+        /// refreshes the buttons; Dispose clears <c>_busy</c>, restarts the timers, and refreshes
+        /// again. Use as <c>using var busyScope = BeginBusy();</c> at the top of a drive op so the
+        /// clear/restart runs even if the op throws — centralizing an invariant that was previously
+        /// hand-copied (and skippable) in every op. (Timer pausing stays with the op: RunDriveOp or
+        /// the explicit statusTimer/joystickTimer.Stop() calls; Dispose only restarts.)
+        /// </summary>
+        private BusyScope BeginBusy() => new(this);
+
+        private sealed class BusyScope : IDisposable
+        {
+            private readonly FrmMain _f;
+            public BusyScope(FrmMain f) { _f = f; f._busy = true; f.RefreshButtons(); }
+            public void Dispose() { _f._busy = false; _f.RestartTimers(); _f.RefreshButtons(); }
         }
 
         // --- Window lifecycle / focus safety --------------------------------------

@@ -14,8 +14,8 @@ namespace NanotecController
         // Movement-inversion toggle (visual-centering): when on, flips the commanded jog
         // direction for the in-plane / rotary axes so the controls match the inverted camera
         // view. Applied at every manual-jog entry point (d-pad, USB joystick, on-screen puck)
-        // BEFORE the soft-limit logic, so _cmdDir / _limitBlockedDir stay in true command
-        // space. Z is excluded (depth axis, unaffected by an in-plane view flip).
+        // BEFORE the soft-limit logic, so the SoftLimitTracker direction state stays in true
+        // command space. Z is excluded (depth axis, unaffected by an in-plane view flip).
         private bool _invertMovement;
 
         private int InvertDir(AxisId id, int dir)
@@ -25,7 +25,7 @@ namespace NanotecController
         {
             if (_motion == null || !_drivesEnabled || _busy) return;
             direction = InvertDir(id, direction);
-            if (IsJogBlocked(id, direction))
+            if (_softLimits.IsBlocked(id, direction))
             {
                 AppendLog($"{id} at soft limit - jog {(direction > 0 ? "+" : "−")} blocked (jog back into range first).");
                 return;
@@ -41,7 +41,7 @@ namespace NanotecController
                 if (_motion.RecoverIfQuickStopped(id))
                     AppendLog($"{id} was in Quick Stop (limit) - re-enabled.");
                 _motion.JogAt(id, direction, speed);
-                _cmdDir[id] = direction;
+                _softLimits.RecordCommand(id, direction);
                 AppendLog($"Jog {id} {(direction > 0 ? "+" : "−")} at {speed}.");
             }
             catch (DriveException ex)
@@ -53,18 +53,9 @@ namespace NanotecController
         private void StopJog(AxisId id)
         {
             if (_motion == null) return;
-            try { _motion.Stop(id); _cmdDir[id] = 0; }
+            try { _motion.Stop(id); _softLimits.RecordCommand(id, 0); }
             catch (DriveException ex) { AppendLog($"ERROR: stop {id} failed: {ex.Message}"); }
         }
-
-        /// <summary>
-        /// True if jogging <paramref name="dir"/> would push the axis further past the soft
-        /// limit it is already parked against. The blocked direction is recorded in command
-        /// space at the moment the limit tripped, so this never assumes a command→position
-        /// polarity; jogging the opposite way (back into range) is always allowed.
-        /// </summary>
-        private bool IsJogBlocked(AxisId id, int dir)
-            => dir != 0 && _limitBlockedDir.TryGetValue(id, out int b) && b == dir;
 
         // --- Live status poll -----------------------------------------------------
 
@@ -106,40 +97,15 @@ namespace NanotecController
         /// </summary>
         private void EnforceSoftLimits(AxisId id, long pos)
         {
-            bool hasPrev = _prevPos.TryGetValue(id, out long prev);
-            _prevPos[id] = pos;
-            if (!_drivesEnabled || !hasPrev) { _atSoftLimit.Remove(id); _limitBlockedDir[id] = 0; return; }
-
-            AxisCalibration cal = _calib.For(id);
-            long delta = pos - prev;
-            bool outMax = cal.Max.HasValue && pos >= cal.Max.Value;
-            bool outMin = cal.Min.HasValue && pos <= cal.Min.Value;
-
-            if ((outMax && delta > 0) || (outMin && delta < 0))
-            {
-                try { _motion!.Stop(id); } catch (DriveException) { }
-                // Refuse further jogs in the SAME command direction that pushed it out, so a
-                // held/re-pressed control can't re-lurch past the limit each poll. Reversing
-                // (back into range) clears the block below.
-                if (_cmdDir.TryGetValue(id, out int d) && d != 0) _limitBlockedDir[id] = d;
-                _cmdDir[id] = 0;
-                if (_atSoftLimit.Add(id))   // log once per approach, not every poll
-                    AppendLog($"{id} soft {(outMax ? "Max" : "Min")} limit reached - jog stopped at {pos:N0}.");
-            }
-            else if (!outMax && !outMin)
-            {
-                _atSoftLimit.Remove(id);    // safely back inside the range
-                _limitBlockedDir[id] = 0;   // re-allow both directions
-            }
+            SoftLimitTracker.Decision d = _softLimits.Evaluate(id, pos, _calib, _drivesEnabled);
+            if (d.Stop) { try { _motion!.Stop(id); } catch (DriveException) { } }
+            if (d.Log != null) AppendLog(d.Log);
         }
 
         /// <summary>Clears soft-limit tracking so a stale position delta can't trigger a false stop.</summary>
         private void ResetSoftLimitTracking()
         {
-            _prevPos.Clear();
-            _atSoftLimit.Clear();
-            _cmdDir.Clear();
-            _limitBlockedDir.Clear();
+            _softLimits.Reset();
             _lastPos.Clear();
         }
     }

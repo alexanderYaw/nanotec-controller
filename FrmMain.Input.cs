@@ -83,7 +83,7 @@ namespace NanotecController
         private void ApplyJoy(AxisId id, int dir, bool fast)
         {
             dir = InvertDir(id, dir);                       // movement-inversion toggle (X/Y/Θ)
-            if (dir != 0 && IsJogBlocked(id, dir)) dir = 0; // soft limit -> treat as stop
+            if (dir != 0 && _softLimits.IsBlocked(id, dir)) dir = 0; // soft limit -> treat as stop
             (int dir, bool fast) last = _lastJoy[id];
             if (last.dir == dir && (dir == 0 || last.fast == fast)) return; // unchanged
             try
@@ -91,14 +91,14 @@ namespace NanotecController
                 if (dir == 0)
                 {
                     _motion!.Stop(id);
-                    _cmdDir[id] = 0;
+                    _softLimits.RecordCommand(id, 0);
                 }
                 else
                 {
                     int speed = _axisRows[id].Speed.Value;
                     if (fast) speed = Math.Min(speed * FAST_FACTOR, _axisRows[id].Speed.Maximum);
                     _motion!.JogAt(id, dir, speed);
-                    _cmdDir[id] = dir;
+                    _softLimits.RecordCommand(id, dir);
                 }
             }
             catch (DriveException ex) { AppendLog($"ERROR: joystick {id}: {ex.Message}"); }
@@ -125,9 +125,9 @@ namespace NanotecController
         private void CommandVel(AxisId id, int v)
         {
             if (InvertDir(id, 1) < 0) v = -v;                    // movement-inversion toggle (X/Y)
-            if (v != 0 && IsJogBlocked(id, Math.Sign(v))) v = 0; // soft limit -> treat as stop
-            if (v == 0) { _motion!.Stop(id); _cmdDir[id] = 0; }
-            else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _cmdDir[id] = Math.Sign(v); }
+            if (v != 0 && _softLimits.IsBlocked(id, Math.Sign(v))) v = 0; // soft limit -> treat as stop
+            if (v == 0) { _motion!.Stop(id); _softLimits.RecordCommand(id, 0); }
+            else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _softLimits.RecordCommand(id, Math.Sign(v)); }
         }
 
         /// <summary>Stops any axis the joystick was driving and clears its last-command cache.</summary>

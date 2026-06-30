@@ -34,7 +34,7 @@ namespace NanotecController
         {
             if (!CanAccessParams) { sink.Report("Read: link not ready."); return; }
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             statusTimer.Stop(); joystickTimer.Stop();
             sink.Report("=== Read drive parameters (read-only; writes nothing) ===");
             await Task.Run(() =>
@@ -66,8 +66,6 @@ namespace NanotecController
                 }
             });
             sink.Report("=== Done. Re-run after a power cycle and compare to confirm NV persistence. ===");
-
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>
@@ -79,7 +77,7 @@ namespace NanotecController
             if (!CanWriteParams) { sink.Report("Write: link not ready."); return; }
             if (!_motion!.Has(id)) { sink.Report($"Write: axis {id} is not connected."); return; }
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             statusTimer.Stop(); joystickTimer.Stop();
             try
             {
@@ -90,7 +88,6 @@ namespace NanotecController
             {
                 sink.Report($"Write FAILED: {ex.Message}");
             }
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>Persists one axis's current parameters to NV (0x1010:01). Reports to <paramref name="sink"/>.</summary>
@@ -99,7 +96,7 @@ namespace NanotecController
             if (!CanWriteParams) { sink.Report("Save NV: link not ready."); return; }
             if (!_motion!.Has(id)) { sink.Report($"Save NV: axis {id} is not connected."); return; }
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             statusTimer.Stop(); joystickTimer.Stop();
             try
             {
@@ -110,7 +107,6 @@ namespace NanotecController
             {
                 sink.Report($"Save NV FAILED: {ex.Message}");
             }
-            _busy = false; RestartTimers(); RefreshButtons();
         }
     }
 }

@@ -102,7 +102,7 @@ namespace NanotecController
             int xSpd = HomeSpeedFor(AxisId.X);
             int ySpd = HomeSpeedFor(AxisId.Y);
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Home All: Z → {zT.Value:N0} first, then X → {xT.Value:N0} & Y → {yT.Value:N0} together...");
             bool ok = await RunDriveOp(() =>
             {
@@ -121,7 +121,6 @@ namespace NanotecController
                 _motion.WaitForMotionComplete(AxisId.Y, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Home All complete." : "Home All FAILED - see error above.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>
@@ -169,7 +168,7 @@ namespace NanotecController
             foreach ((AxisId id, long pos) t in targets)
                 desc += (desc.Length > 0 ? ", " : "") + $"{t.id}={t.pos:N0}";
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Move to: {desc}...");
             bool ok = await RunDriveOp(() =>
             {
@@ -177,7 +176,6 @@ namespace NanotecController
                 foreach ((AxisId id, long pos) t in targets) _motion!.WaitForMotionComplete(t.id, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Move complete." : "Move FAILED - see error above.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         // Parses one optional coordinate field: blank → null (skip axis), valid → the value;
@@ -225,8 +223,7 @@ namespace NanotecController
             if (isMax) { c.Max = null; AppendLog($"{id} Max limit cleared."); }
             else { c.Min = null; AppendLog($"{id} Min limit cleared."); }
             TrySaveCalibration();
-            _limitBlockedDir[id] = 0;
-            _atSoftLimit.Remove(id);
+            _softLimits.ClearAxis(id);
         }
 
         private void CaptureInto(AxisId id, bool isMax, bool isHome)
@@ -251,7 +248,7 @@ namespace NanotecController
             if (target == null) { AppendLog($"{id}: set its limits/Home first."); return; }
 
             int speed = HomeSpeedFor(id);
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Go Home {id} → target {target.Value:N0} at {speed}...");
             long before = 0, after = 0;
             bool reached = false;
@@ -269,7 +266,6 @@ namespace NanotecController
                 AppendLog($"{id} Go Home: was {before:N0} → now {after:N0} (target {target.Value:N0}, " +
                           $"off by {after - target.Value:N0}){(reached ? "" : " [target-reached never set]")}" +
                           $"{(before == after ? "  *** axis did not move ***" : "")}.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>
@@ -280,7 +276,7 @@ namespace NanotecController
         public async Task FindLimitsAsync(AxisId id)
         {
             if (!CanMoveCalibration) return;
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             statusTimer.Stop(); joystickTimer.Stop();
             AppendLog($"Finding {id} limits (auto, speed {FIND_LIMIT_SPEED})...");
             try
@@ -296,7 +292,6 @@ namespace NanotecController
             {
                 AppendLog($"Find {id} limits FAILED: {ex.Message}");
             }
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         // Background worker: jog to one end, recover + back off, jog to the other end.
