@@ -18,7 +18,7 @@ namespace NanotecController
             RequestFrame(frame =>
             {
                 bool found;
-                ReflectiveMarkDetector.Mark mark;
+                SolidCircleDetector.Mark mark;
                 try { found = _markDetector.TryDetect(frame, out mark); }
                 catch (HOperatorException) { found = false; mark = default; }
                 PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
@@ -28,7 +28,7 @@ namespace NanotecController
 
         // UI thread: GrabLoop found (or didn't) the fiducial and handed us a raw full-res
         // frame. Pair the detected pixel with the current motor position and store a sample.
-        private void OnSampleGrabbed(bool found, ReflectiveMarkDetector.Mark mark, Bitmap raw)
+        private void OnSampleGrabbed(bool found, SolidCircleDetector.Mark mark, Bitmap raw)
         {
             if (IsDisposed) { raw.Dispose(); return; }
 
@@ -56,7 +56,7 @@ namespace NanotecController
 
         // Draws the detected circle + centre cross onto the (raw) sample bitmap. GDI x = column,
         // y = row. Drawn at full-res coordinates; the Zoom pane scales it to fit.
-        private static void DrawMarkOverlay(Bitmap bmp, ReflectiveMarkDetector.Mark mark)
+        private static void DrawMarkOverlay(Bitmap bmp, SolidCircleDetector.Mark mark)
         {
             using var g = Graphics.FromImage(bmp);
             float cx = (float)mark.Column, cy = (float)mark.Row, r = (float)mark.Radius;
