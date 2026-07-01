@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// The form for picking a target position and moving the chuck there. Separate from the
@@ -19,14 +19,14 @@ namespace MotorControlApp
     /// </summary>
     public sealed class FrmPosition : Form
     {
-        private readonly FrmMain _owner;
+        private readonly IMotionHost _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 250 };
 
         private readonly PositionGrid _grid;
         private readonly TextBox _x, _y, _z;
         private readonly Button _go;
 
-        public FrmPosition(FrmMain owner)
+        public FrmPosition(IMotionHost owner)
         {
             _owner = owner;
             Text = "Position Map - absolute XY positioning";

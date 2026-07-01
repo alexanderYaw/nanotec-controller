@@ -1,6 +1,6 @@
 using System;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Geometry for rotating the chuck ABOUT the camera crosshair instead of about the

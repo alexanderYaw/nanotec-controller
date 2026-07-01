@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Decoded snapshot of the joystick. Each direction is digital: -1, 0, or +1, in

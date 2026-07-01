@@ -2,7 +2,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — vision (camera) integration. Stage A: a standalone live-view test window.
     // The button is camera-only, so it stays enabled regardless of drive connection.
@@ -47,29 +47,18 @@ namespace MotorControlApp
         // Y velocity command evidently cancels it, so no second negation is needed here.)
         // NOTE: this also sets the ▲/▼ direction — verify ▲ moves up after changing it.
 
-        internal void VisionJogUser(int vxUser, int vyUser)
+        public void VisionJogUser(int vxUser, int vyUser)
         {
             if (_motion == null || !_drivesEnabled || _busy) return;
-            CommandVisionAxis(AxisId.X, vxUser);
-            CommandVisionAxis(AxisId.Y, vyUser);
+            CommandAxisVelocity(AxisId.X, vxUser, honorSoftLimit: true);
+            CommandAxisVelocity(AxisId.Y, vyUser, honorSoftLimit: true);
         }
 
-        internal void VisionStop()
+        public void VisionStop()
         {
             if (_motion == null) return;
-            CommandVisionAxis(AxisId.X, 0);
-            CommandVisionAxis(AxisId.Y, 0);
-        }
-
-        private void CommandVisionAxis(AxisId id, int v)
-        {
-            if (v != 0 && IsJogBlocked(id, Math.Sign(v))) v = 0;   // soft limit -> stop
-            try
-            {
-                if (v == 0) { _motion!.Stop(id); _cmdDir[id] = 0; }
-                else { _motion!.JogAt(id, Math.Sign(v), Math.Abs(v)); _cmdDir[id] = Math.Sign(v); }
-            }
-            catch (ChuckException ex) { AppendLog($"ERROR: vision jog {id}: {ex.Message}"); }
+            CommandAxisVelocity(AxisId.X, 0, honorSoftLimit: true);
+            CommandAxisVelocity(AxisId.Y, 0, honorSoftLimit: true);
         }
     }
 }

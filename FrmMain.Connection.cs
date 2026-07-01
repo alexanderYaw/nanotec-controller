@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — connection lifecycle: pick a bus and connect/disconnect all drives,
     // enable/disable them, and the read-only parameter sweep. (Partial of FrmMain.)
@@ -89,33 +89,23 @@ namespace MotorControlApp
         private async void enableButton_Click(object? sender, EventArgs e)
         {
             if (_motion == null) return;
-            _busy = true;
-            RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog("Enabling all drives (holding torque, no motion)...");
 
             bool ok = await RunDriveOp(() => _motion.EnableAll());
             _drivesEnabled = ok;
             AppendLog(ok ? "All drives ENABLED." : "Enable FAILED - see error above.");
-
-            _busy = false;
-            RestartTimers();
-            RefreshButtons();
         }
 
         private async void disableButton_Click(object? sender, EventArgs e)
         {
             if (_motion == null) return;
             rbOff.Checked = true;
-            _busy = true;
-            RefreshButtons();
+            using var busyScope = BeginBusy();
 
             await RunDriveOp(() => _motion.DisableAll());
             _drivesEnabled = false;
             AppendLog("All drives DISABLED.");
-
-            _busy = false;
-            RestartTimers();
-            RefreshButtons();
         }
     }
 }

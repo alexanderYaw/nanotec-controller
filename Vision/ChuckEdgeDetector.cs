@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Locates the chuck EDGE point nearest a reference pixel, using a FOCUS/TEXTURE approach

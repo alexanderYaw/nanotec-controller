@@ -4,7 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Stored travel limits + home for one axis, in raw drive position units (object

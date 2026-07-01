@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Separate window for reading and writing drive parameters. Pure UI: all drive access,
@@ -18,7 +18,7 @@ namespace MotorControlApp
     /// </summary>
     public sealed class FrmParams : Form
     {
-        private readonly FrmMain _owner;
+        private readonly IMotionHost _owner;
         private readonly IProgress<string> _sink;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
@@ -26,7 +26,7 @@ namespace MotorControlApp
         private readonly TextBox _index, _sub, _value, _output;
         private readonly Button _read, _write, _saveNv;
 
-        public FrmParams(FrmMain owner)
+        public FrmParams(IMotionHost owner)
         {
             _owner = owner;
             Text = "Parameters - read / write drive objects";

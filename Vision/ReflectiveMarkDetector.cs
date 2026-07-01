@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Locates the centre of the circular calibration fiducial — a BRIGHT RING with a darker,

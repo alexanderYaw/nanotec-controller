@@ -1,7 +1,7 @@
 using System;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     static class Program
     {

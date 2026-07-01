@@ -1,6 +1,6 @@
 using System;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>The four mechanical axes of the inspection table.</summary>
     public enum AxisId

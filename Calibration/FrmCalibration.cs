@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Separate window for defining each linear axis's digital travel limits and Home.
@@ -17,13 +17,13 @@ namespace MotorControlApp
     {
         private static readonly AxisId[] CalibAxes = { AxisId.X, AxisId.Y, AxisId.Z };
 
-        private readonly FrmMain _owner;
+        private readonly IMotionHost _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
         private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button? Find, Button GoHome);
         private readonly Dictionary<AxisId, Row> _rows = new();
 
-        public FrmCalibration(FrmMain owner)
+        public FrmCalibration(IMotionHost owner)
         {
             _owner = owner;
             Text = "Calibration - travel limits & Home";

@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     // FrmMain — owns all calibration motion and persistence (the FrmCalibration window is
     // pure UI that calls these internal methods): Home All, Move To, Set Min/Max/Home
@@ -59,10 +59,18 @@ namespace MotorControlApp
             _posWindow.BringToFront();
         }
 
+        // User frame ↔ raw drive frame. Y reads/enters inverted (user +Y = raw −Y) so the on-screen
+        // position is intuitive; every other axis is identity. SINGLE SOURCE of the Y-sign convention.
+        // The one deliberate exception is the vision-jog Y command (FrmMain.Vision.cs), whose sign is
+        // empirical. Both directions are the same negation (an involution); the two names document, at
+        // each call site, whether a user-frame or a raw-frame value is being produced.
+        private static long ToUser(AxisId id, long raw) => id == AxisId.Y ? -raw : raw;
+        private static long ToRaw(AxisId id, long user) => id == AxisId.Y ? -user : user;
+
         /// <summary>Current position of an axis in the USER frame (Y inverted), if polled yet.</summary>
-        internal bool TryCurrentUser(AxisId id, out long user)
+        public bool TryCurrentUser(AxisId id, out long user)
         {
-            if (_lastPos.TryGetValue(id, out long raw)) { user = id == AxisId.Y ? -raw : raw; return true; }
+            if (_lastPos.TryGetValue(id, out long raw)) { user = ToUser(id, raw); return true; }
             user = 0;
             return false;
         }
@@ -71,12 +79,12 @@ namespace MotorControlApp
         /// An axis's travel limits in the USER frame, or null if both ends aren't set. The Y
         /// negation flips min/max order, so they're re-sorted before returning.
         /// </summary>
-        internal (long min, long max)? UserLimits(AxisId id)
+        public (long min, long max)? UserLimits(AxisId id)
         {
             AxisCalibration c = _calib.For(id);
             if (!c.Min.HasValue || !c.Max.HasValue) return null;
-            long a = id == AxisId.Y ? -c.Min.Value : c.Min.Value;
-            long b = id == AxisId.Y ? -c.Max.Value : c.Max.Value;
+            long a = ToUser(id, c.Min.Value);
+            long b = ToUser(id, c.Max.Value);
             return (Math.Min(a, b), Math.Max(a, b));
         }
 
@@ -85,7 +93,7 @@ namespace MotorControlApp
         /// waits for it, THEN moves X and Y to their homes simultaneously. Requires a home
         /// target for all three; aborts otherwise so X/Y never move before Z has retracted.
         /// </summary>
-        internal async Task HomeAllAsync()
+        public async Task HomeAllAsync()
         {
             if (!CanMoveCalibration) return;
             long? zT = HomeTargetFor(AxisId.Z);
@@ -102,7 +110,7 @@ namespace MotorControlApp
             int xSpd = HomeSpeedFor(AxisId.X);
             int ySpd = HomeSpeedFor(AxisId.Y);
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Home All: Z → {zT.Value:N0} first, then X → {xT.Value:N0} & Y → {yT.Value:N0} together...");
             bool ok = await RunDriveOp(() =>
             {
@@ -111,7 +119,7 @@ namespace MotorControlApp
                 _motion!.RecoverIfQuickStopped(AxisId.Z);   // clear a quick stop so the move runs
                 _motion.MoveAbsolute(AxisId.Z, zT.Value, zSpd);
                 if (!_motion.WaitForMotionComplete(AxisId.Z, FIND_TIMEOUT_MS))
-                    throw new ChuckException("Z did not reach Home in time - aborting before X/Y move.");
+                    throw new DriveException("Z did not reach Home in time - aborting before X/Y move.");
                 // 2) X and Y together: issue both moves, then wait for both to finish.
                 _motion.RecoverIfQuickStopped(AxisId.X);
                 _motion.RecoverIfQuickStopped(AxisId.Y);
@@ -121,7 +129,6 @@ namespace MotorControlApp
                 _motion.WaitForMotionComplete(AxisId.Y, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Home All complete." : "Home All FAILED - see error above.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>
@@ -130,7 +137,7 @@ namespace MotorControlApp
         /// limits and the WHOLE move is rejected if any is out of range. The entered axes
         /// move together. Coordinates are in the same drive units shown as Min/Max.
         /// </summary>
-        internal async Task MoveToAsync(string xText, string yText, string zText)
+        public async Task MoveToAsync(string xText, string yText, string zText)
         {
             if (!CanMoveCalibration) return;
 
@@ -169,7 +176,7 @@ namespace MotorControlApp
             foreach ((AxisId id, long pos) t in targets)
                 desc += (desc.Length > 0 ? ", " : "") + $"{t.id}={t.pos:N0}";
 
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Move to: {desc}...");
             bool ok = await RunDriveOp(() =>
             {
@@ -177,7 +184,6 @@ namespace MotorControlApp
                 foreach ((AxisId id, long pos) t in targets) _motion!.WaitForMotionComplete(t.id, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Move complete." : "Move FAILED - see error above.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         // Parses one optional coordinate field: blank → null (skip axis), valid → the value;
@@ -187,34 +193,34 @@ namespace MotorControlApp
             val = null;
             text = text?.Trim() ?? "";
             if (text.Length == 0) return true;
-            if (long.TryParse(text, out long v)) { val = id == AxisId.Y ? -v : v; return true; }   // invert Y for more intuitive readout and entry
+            if (long.TryParse(text, out long v)) { val = ToRaw(id, v); return true; }   // user → raw (Y inverted) for intuitive entry
             
             AppendLog($"Move: '{text}' is not a valid {id} coordinate.");
             return false;
         }
 
         /// <summary>The shared per-axis limits/home store (read by the calibration window).</summary>
-        internal CalibrationStore Calibration => _calib;
+        public CalibrationStore Calibration => _calib;
 
         /// <summary>Reading a position needs the link up; capture is a UI-thread SDO read.</summary>
-        internal bool CanCaptureCalibration => _connection.IsConnected && !_busy && _motion != null;
+        public bool CanCaptureCalibration => _connection.IsConnected && !_busy && _motion != null;
 
         /// <summary>Motion (find / go-home) needs the drives enabled and idle.</summary>
-        internal bool CanMoveCalibration => _drivesEnabled && !_busy && _motion != null;
+        public bool CanMoveCalibration => _drivesEnabled && !_busy && _motion != null;
 
         /// <summary>Home target for an axis: centre of the limits for X/Y, explicit Home for Z.</summary>
-        internal long? HomeTargetFor(AxisId id)
+        public long? HomeTargetFor(AxisId id)
         {
             AxisCalibration c = _calib.For(id);
             return id == AxisId.Z ? c.Home : c.Center;
         }
 
-        internal void SetCalibrationMin(AxisId id) => CaptureInto(id, isMax: false, isHome: false);
-        internal void SetCalibrationMax(AxisId id) => CaptureInto(id, isMax: true, isHome: false);
-        internal void SetCalibrationHome(AxisId id) => CaptureInto(id, isMax: false, isHome: true);
+        public void SetCalibrationMin(AxisId id) => CaptureInto(id, isMax: false, isHome: false);
+        public void SetCalibrationMax(AxisId id) => CaptureInto(id, isMax: true, isHome: false);
+        public void SetCalibrationHome(AxisId id) => CaptureInto(id, isMax: false, isHome: true);
 
-        internal void ClearCalibrationMin(AxisId id) => ClearLimit(id, isMax: false);
-        internal void ClearCalibrationMax(AxisId id) => ClearLimit(id, isMax: true);
+        public void ClearCalibrationMin(AxisId id) => ClearLimit(id, isMax: false);
+        public void ClearCalibrationMax(AxisId id) => ClearLimit(id, isMax: true);
 
         // Removes a stored soft limit (sets it back to "none") and persists. Local edit only —
         // touches no drive. Also drops any soft-limit jog block for the axis, since the limit
@@ -225,8 +231,7 @@ namespace MotorControlApp
             if (isMax) { c.Max = null; AppendLog($"{id} Max limit cleared."); }
             else { c.Min = null; AppendLog($"{id} Min limit cleared."); }
             TrySaveCalibration();
-            _limitBlockedDir[id] = 0;
-            _atSoftLimit.Remove(id);
+            _softLimits.ClearAxis(id);
         }
 
         private void CaptureInto(AxisId id, bool isMax, bool isHome)
@@ -234,7 +239,7 @@ namespace MotorControlApp
             if (!CanCaptureCalibration) return;
             long pos;
             try { pos = _motion!.GetStatus(id).Position; }
-            catch (ChuckException ex) { AppendLog($"ERROR: read {id} position: {ex.Message}"); return; }
+            catch (DriveException ex) { AppendLog($"ERROR: read {id} position: {ex.Message}"); return; }
 
             AxisCalibration c = _calib.For(id);
             if (isHome) { c.Home = pos; AppendLog($"{id} Home set to {pos:N0}."); }
@@ -244,14 +249,14 @@ namespace MotorControlApp
         }
 
         /// <summary>Moves an axis to its Home target (Profile Position) and waits for arrival.</summary>
-        internal async Task GoHomeAsync(AxisId id)
+        public async Task GoHomeAsync(AxisId id)
         {
             if (!CanMoveCalibration) return;
             long? target = HomeTargetFor(id);
             if (target == null) { AppendLog($"{id}: set its limits/Home first."); return; }
 
             int speed = HomeSpeedFor(id);
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             AppendLog($"Go Home {id} → target {target.Value:N0} at {speed}...");
             long before = 0, after = 0;
             bool reached = false;
@@ -269,7 +274,6 @@ namespace MotorControlApp
                 AppendLog($"{id} Go Home: was {before:N0} → now {after:N0} (target {target.Value:N0}, " +
                           $"off by {after - target.Value:N0}){(reached ? "" : " [target-reached never set]")}" +
                           $"{(before == after ? "  *** axis did not move ***" : "")}.");
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         /// <summary>
@@ -277,10 +281,10 @@ namespace MotorControlApp
         /// the position at the edge, and taking the pair as Min/Max (Home = centre).
         /// Only Y is wired to this today (two working switches that quick-stop).
         /// </summary>
-        internal async Task FindLimitsAsync(AxisId id)
+        public async Task FindLimitsAsync(AxisId id)
         {
             if (!CanMoveCalibration) return;
-            _busy = true; RefreshButtons();
+            using var busyScope = BeginBusy();
             statusTimer.Stop(); joystickTimer.Stop();
             AppendLog($"Finding {id} limits (auto, speed {FIND_LIMIT_SPEED})...");
             try
@@ -296,7 +300,6 @@ namespace MotorControlApp
             {
                 AppendLog($"Find {id} limits FAILED: {ex.Message}");
             }
-            _busy = false; RestartTimers(); RefreshButtons();
         }
 
         // Background worker: jog to one end, recover + back off, jog to the other end.
@@ -333,7 +336,7 @@ namespace MotorControlApp
                 _motion.Stop(id);
                 if ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) == 0) return;
             }
-            throw new ChuckException($"{id} starts on a limit switch and could not be backed off either way.");
+            throw new DriveException($"{id} starts on a limit switch and could not be backed off either way.");
         }
 
         // Jogs until a limit bit (0x60FD bit 0 or 1) that wasn't already set goes high,
@@ -357,7 +360,7 @@ namespace MotorControlApp
                 waited += FIND_POLL_MS;
             }
             _motion.Stop(id);
-            throw new ChuckException($"no limit detected within {FIND_TIMEOUT_MS / 1000}s");
+            throw new DriveException($"no limit detected within {FIND_TIMEOUT_MS / 1000}s");
         }
 
         // After a limit hit the drive is in Quick Stop Active; re-enable to Operation

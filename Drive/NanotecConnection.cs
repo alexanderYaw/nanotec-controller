@@ -1,7 +1,7 @@
 using System;
 using Nlc;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Encapsulates the EtherCAT bring-up sequence (scan → open → scan devices →
@@ -10,7 +10,7 @@ namespace MotorControlApp
     /// <see cref="IProgress{String}"/> so the UI can show the connection process.
     ///
     /// This class only *connects and verifies* - it never enables the drive or
-    /// commands motion. Motion stays the responsibility of <see cref="ChuckController"/>.
+    /// commands motion. Motion stays the responsibility of <see cref="AxisDriver"/>.
     /// </summary>
     public class NanotecConnection
     {

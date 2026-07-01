@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Builds the pixel→step affine <see cref="PixelStepAffine"/> from manually-captured
@@ -45,8 +45,7 @@ namespace MotorControlApp
             int n = _samples.Count;
             if (n < 3) { error = $"Need at least 3 samples (have {n})."; return false; }
 
-            // Sums for centred least squares (centring improves conditioning and makes the
-            // collinearity test meaningful).
+            // Centering: Sums for centred least squares
             double sr = 0, sc = 0, sx = 0, sy = 0;
             double srr = 0, scc = 0, src = 0;
             double sxr = 0, sxc = 0, syr = 0, syc = 0;

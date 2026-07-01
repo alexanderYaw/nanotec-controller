@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using Nlc;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>Identity read from a drive at connect — logged so a mis-cabled axis is caught.</summary>
     public readonly record struct DeviceIdentity(

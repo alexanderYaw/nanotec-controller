@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Small modal dialog that lets the user pick which network bus to connect to.

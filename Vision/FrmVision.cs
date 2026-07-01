@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -8,7 +9,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Stage A live-view test: opens the HALCON USB3Vision camera, streams frames into a
@@ -22,7 +23,7 @@ namespace MotorControlApp
     /// the per-pixel conversion off the UI thread, and frames are downscaled to the view size
     /// before conversion — the two things that made the original timer-on-UI version laggy.
     /// </summary>
-    public sealed class FrmVision : Form
+    public sealed partial class FrmVision : Form
     {
         private readonly VisionCamera _camera = new();
         private readonly PictureBox _liveBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
@@ -33,11 +34,10 @@ namespace MotorControlApp
         private readonly Button _invertBtn = new() { Text = "Invert: On" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
 
-        // --- Camera-scale calibration (manual jog + capture; owner supplies motor position) --
-        private readonly FrmMain? _owner;
+        // Camera-scale calibration (manual jog + capture; owner supplies motor position)
+        private readonly IMotionHost? _owner;
         private readonly ReflectiveMarkDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
-        private volatile bool _sampleRequested;     // UI asked GrabLoop for a calibration sample
         private readonly Button _sampleBtn = new() { Text = "Add Sample", Enabled = false };
         private readonly Button _computeBtn = new() { Text = "Compute && Save A", Enabled = false };
         private readonly Button _clearBtn = new() { Text = "Clear", Enabled = false };
@@ -62,8 +62,7 @@ namespace MotorControlApp
         // --- Wafer centre-find: capture >=3 wafer-rim points (step space), circle-fit, go to centre.
         // Same flow as the chuck centre-find but with WaferEdgeDetector and a separate stored centre.
         private readonly WaferEdgeDetector _waferDetector = new();
-        private readonly List<(double X, double Y)> _waferPoints = new();   // user-frame step coords
-        private volatile bool _waferRequested;
+        private readonly CentreFinder _waferFinder = new();   // accumulates wafer rim points (user-frame steps)
         private readonly Button _waferEdgeBtn = new() { Text = "Add Wafer Edge", Enabled = false };
         private readonly Button _waferClearBtn = new() { Text = "Clear", Enabled = false };
         private readonly Button _waferCentreBtn = new() { Text = "Compute Centre", Enabled = false };
@@ -73,8 +72,7 @@ namespace MotorControlApp
 
         // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
         private readonly ChuckEdgeDetector _edgeDetector = new();
-        private readonly List<(double X, double Y)> _edgePoints = new();   // user-frame step coords
-        private volatile bool _edgeRequested;
+        private readonly CentreFinder _chuckFinder = new();   // accumulates chuck edge points (user-frame steps)
         private readonly Button _edgeBtn = new() { Text = "Add Edge", Enabled = false };
         private readonly Button _edgeClearBtn = new() { Text = "Clear Edges", Enabled = false };
         private readonly Button _centreBtn = new() { Text = "Compute Centre", Enabled = false };
@@ -98,7 +96,11 @@ namespace MotorControlApp
 
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
-        private volatile bool _captureRequested;   // UI asked GrabLoop for a full-res capture
+
+        // One-shot jobs to run against the next grabbed frame, on the grab thread (replaces the
+        // per-feature "request" flags). The UI enqueues; GrabLoop drains them while the frame is
+        // alive. Each job runs its own detection + bitmap conversion and marshals to the UI.
+        private readonly ConcurrentQueue<Action<HObject>> _frameJobs = new();
 
         private Task? _grabTask;
         private CancellationTokenSource? _cts;
@@ -107,7 +109,7 @@ namespace MotorControlApp
         private bool _displayQueued;        // a BeginInvoke(ShowPending) is already in flight
         private volatile int _viewW = 480, _viewH = 440;   // downscale target (live box size)
 
-        public FrmVision(FrmMain owner)
+        public FrmVision(IMotionHost owner)
         {
             _owner = owner;
             Text = "Vision - live view";
@@ -173,7 +175,26 @@ namespace MotorControlApp
             _waferEdgeBtn.Click += (s, e) =>
             {
                 if (!_camera.IsOpen) return;
-                _waferRequested = true;
+                RequestFrame(frame =>
+                {
+                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                    bool found;
+                    WaferEdgeDetector.EdgePoint edge;
+                    double[] cRows = Array.Empty<double>(), cCols = Array.Empty<double>();
+                    try
+                    {
+                        found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
+                        if (found && contour != null)
+                        {
+                            try { HOperatorSet.GetContourXld(contour, out HTuple rows, out HTuple cols); cRows = rows.ToDArr(); cCols = cols.ToDArr(); }
+                            catch (HOperatorException) { /* keep the point even if the contour read fails */ }
+                        }
+                        contour?.Dispose();
+                    }
+                    catch (HOperatorException) { found = false; edge = default; }
+                    PostFrameBitmap(frame, flip: false, raw => OnWaferGrabbed(found, edge, cRows, cCols, crossRow, crossCol, raw));
+                });
                 _status.Text = "Detecting wafer edge...";
             };
 
@@ -433,102 +454,14 @@ namespace MotorControlApp
                 try { frame = _camera.GrabImage(); }
                 catch (HOperatorException ex) { PostStatus("Live grab stopped: " + ex.Message); return; }
 
-                // Full-resolution capture: convert this frame at native size (no downscale)
-                // before it's disposed. Done here, not on the UI thread, so we never touch the
-                // HALCON acquisition handle from two threads.
-                if (_captureRequested)
+                // Run any queued one-shot jobs (capture / calibration sample / chuck or wafer edge)
+                // against THIS frame, on the grab thread, so the HALCON acquisition handle stays
+                // single-threaded. A job that throws is skipped (the user can retry); each job does
+                // its own detection + bitmap conversion and marshals the result to the UI.
+                while (_frameJobs.TryDequeue(out Action<HObject>? job))
                 {
-                    _captureRequested = false;
-                    Bitmap? full = null;
-                    try { full = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { full = null; }   // skip; user can retry
-                    if (full != null)
-                    {
-                        if (_invertView) full.RotateFlip(RotateFlipType.Rotate180FlipNone);
-                        try { BeginInvoke(new Action(() => SetCaptured(full))); }
-                        catch (InvalidOperationException) { full.Dispose(); }   // closing
-                    }
-                }
-
-                // Calibration sample: detect the fiducial on the RAW frame (no flip — pixel
-                // coords must be consistent), and hand a raw full-res bitmap to the UI so the
-                // user can confirm the detection. Done here so the HALCON handle stays single-
-                // threaded, like the capture path above.
-                if (_sampleRequested)
-                {
-                    _sampleRequested = false;
-                    bool found;
-                    ReflectiveMarkDetector.Mark mark;
-                    try { found = _markDetector.TryDetect(frame, out mark); }
-                    catch (HOperatorException) { found = false; mark = default; }
-
-                    Bitmap? raw = null;
-                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { raw = null; }
-                    if (raw != null)
-                    {
-                        bool f = found; ReflectiveMarkDetector.Mark m = mark; Bitmap r = raw;
-                        try { BeginInvoke(new Action(() => OnSampleGrabbed(f, m, r))); }
-                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
-                    }
-                }
-
-                // Centre-find edge: detect the chuck edge nearest the crosshair (raw frame
-                // centre), on the raw frame. Crosshair = frame centre in raw pixels.
-                if (_edgeRequested)
-                {
-                    _edgeRequested = false;
-                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
-                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
-                    bool found;
-                    ChuckEdgeDetector.EdgePoint edge;
-                    try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
-                    catch (HOperatorException) { found = false; edge = default; }
-
-                    Bitmap? raw = null;
-                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { raw = null; }
-                    if (raw != null)
-                    {
-                        bool f = found; ChuckEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
-                        double cr = crossRow, cc = crossCol;
-                        try { BeginInvoke(new Action(() => OnEdgeGrabbed(f, ed, cr, cc, r))); }
-                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
-                    }
-                }
-
-                // Wafer-edge test: detect the wafer rim nearest the crosshair on the raw frame and
-                // extract the detected boundary (for overlay), so the thresholds can be tuned live.
-                if (_waferRequested)
-                {
-                    _waferRequested = false;
-                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
-                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
-                    bool found;
-                    WaferEdgeDetector.EdgePoint edge;
-                    double[] cRows = Array.Empty<double>(), cCols = Array.Empty<double>();
-                    try
-                    {
-                        found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
-                        if (found && contour != null)
-                        {
-                            try { HOperatorSet.GetContourXld(contour, out HTuple rows, out HTuple cols); cRows = rows.ToDArr(); cCols = cols.ToDArr(); }
-                            catch (HOperatorException) { /* keep the point even if the contour read fails */ }
-                        }
-                        contour?.Dispose();
-                    }
-                    catch (HOperatorException) { found = false; edge = default; }
-
-                    Bitmap? raw = null;
-                    try { raw = HalconBitmap.ToBitmap(frame, 0, 0); }
-                    catch (HOperatorException) { raw = null; }
-                    if (raw != null)
-                    {
-                        bool f = found; WaferEdgeDetector.EdgePoint ed = edge; Bitmap r = raw;
-                        double cr = crossRow, cc = crossCol; double[] rr = cRows, cc2 = cCols;
-                        try { BeginInvoke(new Action(() => OnWaferGrabbed(f, ed, rr, cc2, cr, cc, r))); }
-                        catch (InvalidOperationException) { raw.Dispose(); }   // closing
-                    }
+                    try { job(frame); }
+                    catch (HOperatorException) { /* detection failed on this frame; user can retry */ }
                 }
 
                 Bitmap bmp;
@@ -570,11 +503,28 @@ namespace MotorControlApp
             if (!ReferenceEquals(old, next)) old?.Dispose();
         }
 
+        // Enqueues a unit of work to run against the next grabbed frame, on the grab thread.
+        private void RequestFrame(Action<HObject> job) => _frameJobs.Enqueue(job);
+
+        // Grab-thread helper: convert the live frame to a full-res bitmap (optionally 180°-flipped),
+        // then hand it to a UI callback that takes ownership. Skips silently if the frame can't be
+        // converted (user can retry); disposes the bitmap if the window is already closing. Mirrors
+        // the old per-request tail so capture / sample / edge / wafer share one convert+marshal path.
+        private void PostFrameBitmap(HObject frame, bool flip, Action<Bitmap> onUi)
+        {
+            Bitmap bmp;
+            try { bmp = HalconBitmap.ToBitmap(frame, 0, 0); }
+            catch (HOperatorException) { return; }   // skip; user can retry
+            if (flip) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
+            try { BeginInvoke(new Action(() => onUi(bmp))); }
+            catch (InvalidOperationException) { bmp.Dispose(); }   // closing
+        }
+
         // Asks GrabLoop to convert the next frame at full resolution; SetCaptured shows it.
         private void CaptureFrame()
         {
             if (!_camera.IsOpen) return;
-            _captureRequested = true;
+            RequestFrame(frame => PostFrameBitmap(frame, _invertView, full => SetCaptured(full)));
             _status.Text = "Capturing full-resolution frame...";
         }
 
@@ -597,357 +547,10 @@ namespace MotorControlApp
             _saveBtn.Enabled = true;
         }
 
-        // ---- Camera-scale calibration -------------------------------------------------
+        // Camera-scale calibration → FrmVision.Calibration.cs
+        // Chuck + wafer centre-find → FrmVision.CentreFind.cs
 
-        // Asks GrabLoop to detect the fiducial in the next frame (the table is held still by
-        // the user during a manual sample).
-        private void RequestSample()
-        {
-            if (!_camera.IsOpen) return;
-            _sampleRequested = true;
-            _status.Text = "Sampling: detecting fiducial...";
-        }
-
-        // UI thread: GrabLoop found (or didn't) the fiducial and handed us a raw full-res
-        // frame. Pair the detected pixel with the current motor position and store a sample.
-        private void OnSampleGrabbed(bool found, ReflectiveMarkDetector.Mark mark, Bitmap raw)
-        {
-            if (IsDisposed) { raw.Dispose(); return; }
-
-            if (!found)
-            {
-                ShowCaptured(raw);   // show what the camera saw so the user can adjust
-                _status.Text = "Sample: fiducial NOT found - adjust framing/lighting (test thresholds in HDevelop).";
-                return;
-            }
-            if (_owner == null
-                || !_owner.TryCurrentUser(AxisId.X, out long x)
-                || !_owner.TryCurrentUser(AxisId.Y, out long y))
-            {
-                ShowCaptured(raw);
-                _status.Text = "Sample: motor position unavailable - connect & enable so the live position is updating.";
-                return;
-            }
-
-            _calibrator.Add(mark.Row, mark.Column, x, y);
-            DrawMarkOverlay(raw, mark);
-            ShowCaptured(raw);
-            RefreshCalibUi();
-            _status.Text = $"Sample {_calibrator.Count}: pos=({x}, {y})  px=(r {mark.Row:F1}, c {mark.Column:F1})";
-        }
-
-        // Draws the detected circle + centre cross onto the (raw) sample bitmap. GDI x = column,
-        // y = row. Drawn at full-res coordinates; the Zoom pane scales it to fit.
-        private static void DrawMarkOverlay(Bitmap bmp, ReflectiveMarkDetector.Mark mark)
-        {
-            using var g = Graphics.FromImage(bmp);
-            float cx = (float)mark.Column, cy = (float)mark.Row, r = (float)mark.Radius;
-            using var pen = new Pen(Color.Lime, Math.Max(2f, bmp.Width / 400f));
-            g.DrawEllipse(pen, cx - r, cy - r, 2 * r, 2 * r);
-            g.DrawLine(pen, cx - r, cy, cx + r, cy);
-            g.DrawLine(pen, cx, cy - r, cx, cy + r);
-        }
-
-        private void ClearSamples()
-        {
-            _calibrator.Clear();
-            RefreshCalibUi();
-            _status.Text = "Calibration samples cleared.";
-        }
-
-        private void RefreshCalibUi()
-        {
-            var sb = new StringBuilder();
-            int i = 1;
-            foreach (CameraCalibrator.Sample s in _calibrator.Samples)
-                sb.AppendLine($"{i++,2}: X={s.X,8} Y={s.Y,8}  r={s.Row,7:F1} c={s.Column,7:F1}");
-            _sampleList.Text = sb.ToString();
-            _computeBtn.Enabled = _calibrator.Count >= 3;
-            _clearBtn.Enabled = _calibrator.Count > 0;
-        }
-
-        // Solves the pixel->step affine from the samples and saves it to the shared store.
-        private void ComputeAndSave()
-        {
-            if (!_calibrator.TrySolve(out PixelStepAffine a, out double resid, out string? err))
-            {
-                _calibResult.Text = "Solve failed:\r\n" + err;
-                return;
-            }
-            if (_owner != null)
-            {
-                _owner.Calibration.PixelStep = a;
-                try { _owner.Calibration.Save(); }
-                catch (Exception ex) { _calibResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
-            }
-            _calibResult.Text =
-                $"Saved.  N={a.SampleCount}  RMS resid={resid:F1} steps\r\n" +
-                $"dX/drow={a.Xr:F3}  dX/dcol={a.Xc:F3}\r\n" +
-                $"dY/drow={a.Yr:F3}  dY/dcol={a.Yc:F3}";
-            _status.Text = "Calibration computed and saved to calibration.json.";
-        }
-
-        // ---- Chuck centre-find --------------------------------------------------------
-
-        private void RequestEdge()
-        {
-            if (!_camera.IsOpen) return;
-            _edgeRequested = true;
-            _status.Text = "Detecting chuck edge...";
-        }
-
-        // UI thread: GrabLoop found (or not) the chuck-edge point nearest the crosshair. Convert
-        // it to step space via the calibration and store it: E = M + A·(p_crosshair − p_edge),
-        // the motor position that would bring this edge point onto the crosshair (user frame).
-        private void OnEdgeGrabbed(bool found, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol, Bitmap raw)
-        {
-            if (IsDisposed) { raw.Dispose(); return; }
-
-            if (!found)
-            {
-                ShowCaptured(raw);
-                _status.Text = "Edge: chuck edge NOT found — reframe so the edge crosses the view (tune in HDevelop).";
-                return;
-            }
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
-            if (a == null)
-            {
-                ShowCaptured(raw);
-                _status.Text = "Edge: needs the camera-scale calibration first.";
-                return;
-            }
-            if (!_owner!.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
-            {
-                ShowCaptured(raw);
-                _status.Text = "Edge: motor position unavailable — connect & enable.";
-                return;
-            }
-
-            double dRow = crossRow - edge.Row, dCol = crossCol - edge.Column;
-            double ex = mx + a.Xr * dRow + a.Xc * dCol;
-            double ey = my + a.Yr * dRow + a.Yc * dCol;
-            _edgePoints.Add((ex, ey));
-
-            DrawEdgeOverlay(raw, edge, crossRow, crossCol);
-            ShowCaptured(raw);
-            RefreshEdgeUi();
-            _status.Text = $"Edge {_edgePoints.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
-        }
-
-        // Draws the frame-centre crosshair (green) and the detected edge point (yellow circle).
-        private static void DrawEdgeOverlay(Bitmap bmp, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol)
-        {
-            using var g = Graphics.FromImage(bmp);
-            float w = Math.Max(2f, bmp.Width / 400f), half = bmp.Width / 30f, rad = bmp.Width / 60f;
-            using (var cpen = new Pen(Color.Lime, w))
-            {
-                g.DrawLine(cpen, (float)crossCol, (float)crossRow - half, (float)crossCol, (float)crossRow + half);
-                g.DrawLine(cpen, (float)crossCol - half, (float)crossRow, (float)crossCol + half, (float)crossRow);
-            }
-            using var epen = new Pen(Color.Yellow, w);
-            g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
-        }
-
-        // UI thread: a wafer-rim point was (or wasn't) found. On success convert it to step space
-        // (E = M + A·(p_cross − p_edge), the motor position that brings this rim point to the
-        // crosshair — same maths as the chuck edge), add it to the wafer set, and overlay the
-        // detected boundary (cyan) + the rim point (yellow) on the captured pane. (cRows/cCols px.)
-        private void OnWaferGrabbed(bool found, WaferEdgeDetector.EdgePoint edge,
-                                    double[] cRows, double[] cCols, double crossRow, double crossCol, Bitmap raw)
-        {
-            if (IsDisposed) { raw.Dispose(); return; }
-            if (!found)
-            {
-                ShowCaptured(raw);
-                _status.Text = "Wafer edge NOT found — adjust lighting or tune WaferEdgeDetector (WaferIsBrighter / radii).";
-                return;
-            }
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
-            if (a == null)
-            {
-                ShowCaptured(raw);
-                _status.Text = "Wafer edge: needs the camera-scale calibration first.";
-                return;
-            }
-            if (!_owner!.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
-            {
-                ShowCaptured(raw);
-                _status.Text = "Wafer edge: motor position unavailable — connect & enable.";
-                return;
-            }
-
-            double dRow = crossRow - edge.Row, dCol = crossCol - edge.Column;
-            double ex = mx + a.Xr * dRow + a.Xc * dCol;
-            double ey = my + a.Yr * dRow + a.Yc * dCol;
-            _waferPoints.Add((ex, ey));
-
-            using (var g = Graphics.FromImage(raw))
-            {
-                float w = Math.Max(2f, raw.Width / 400f), half = raw.Width / 30f, rad = raw.Width / 60f;
-                using (var cpen = new Pen(Color.Lime, w))
-                {
-                    g.DrawLine(cpen, (float)crossCol, (float)crossRow - half, (float)crossCol, (float)crossRow + half);
-                    g.DrawLine(cpen, (float)crossCol - half, (float)crossRow, (float)crossCol + half, (float)crossRow);
-                }
-                if (cRows.Length >= 2)
-                {
-                    var pts = new PointF[cRows.Length];
-                    for (int k = 0; k < cRows.Length; k++) pts[k] = new PointF((float)cCols[k], (float)cRows[k]);
-                    using var lpen = new Pen(Color.Cyan, w);
-                    g.DrawLines(lpen, pts);
-                }
-                using var epen = new Pen(Color.Yellow, w * 1.5f);
-                g.DrawEllipse(epen, (float)edge.Column - rad, (float)edge.Row - rad, 2 * rad, 2 * rad);
-            }
-
-            ShowCaptured(raw);
-            RefreshWaferUi();
-            _status.Text = $"Wafer edge {_waferPoints.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
-        }
-
-        private void ClearWaferPoints()
-        {
-            _waferPoints.Clear();
-            RefreshWaferUi();
-            _status.Text = "Wafer edge points cleared.";
-        }
-
-        private void RefreshWaferUi()
-        {
-            _waferCentreBtn.Enabled = _waferPoints.Count >= 3;
-            _waferClearBtn.Enabled = _waferPoints.Count > 0;
-        }
-
-        // Circle-fits the wafer rim points (step space); the centre is the motor position that puts
-        // the wafer centre on the crosshair. Persists it to the shared store (separate from chuck).
-        private void ComputeWaferCentre()
-        {
-            if (!CircleFit.TryFit(_waferPoints, out CircleFit.Result fit, out string? err))
-            {
-                _waferResult.Text = "Fit failed:\r\n" + err;
-                return;
-            }
-            long cx = (long)Math.Round(fit.CenterX), cy = (long)Math.Round(fit.CenterY);
-            _waferCentre = (cx, cy);
-            if (_owner != null)
-            {
-                _owner.Calibration.WaferCenterX = cx;
-                _owner.Calibration.WaferCenterY = cy;
-                try { _owner.Calibration.Save(); }
-                catch (Exception ex) { _waferResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
-            }
-            _waferGoBtn.Enabled = true;
-            _waferResult.Text = $"Wafer (N={_waferPoints.Count}): X={cx} Y={cy}\r\nR={fit.Radius:F0}  RMS={fit.RmsError:F0} steps";
-            _status.Text = "Wafer centre computed and saved.";
-        }
-
-        // Drives the table so the wafer centre lands on the view centre (same path as Go to Centre).
-        private async Task GoToWaferCentreAsync()
-        {
-            if (_owner == null || _waferCentre == null) return;
-            long cx = _waferCentre.Value.X, cy = _waferCentre.Value.Y;
-            DialogResult ans = MessageBox.Show(this,
-                $"Move the wafer centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
-                "Go to Wafer Centre", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (ans != DialogResult.Yes) return;
-            _status.Text = "Moving to wafer centre...";
-            await _owner.MoveToAsync(cx.ToString(), cy.ToString(), "");
-            _status.Text = "Go to wafer centre: move issued (see main-window log).";
-        }
-
-        private void ClearEdges()
-        {
-            _edgePoints.Clear();
-            RefreshEdgeUi();
-            _status.Text = "Edge points cleared.";
-        }
-
-        private void RefreshEdgeUi()
-        {
-            var sb = new StringBuilder();
-            int i = 1;
-            foreach ((double X, double Y) p in _edgePoints)
-                sb.AppendLine($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
-            _edgeList.Text = sb.ToString();
-            _centreBtn.Enabled = _edgePoints.Count >= 3;
-            _edgeClearBtn.Enabled = _edgePoints.Count > 0;
-        }
-
-        // Circle-fits the edge points (step space); the centre is the motor position that puts
-        // the chuck centre on the crosshair. Persists it to the shared store.
-        private void ComputeCentre()
-        {
-            if (!CircleFit.TryFit(_edgePoints, out CircleFit.Result fit, out string? err))
-            {
-                _centreResult.Text = "Fit failed:\r\n" + err;
-                return;
-            }
-            long cx = (long)Math.Round(fit.CenterX), cy = (long)Math.Round(fit.CenterY);
-            _chuckCentre = (cx, cy);
-            if (_owner != null)
-            {
-                _owner.Calibration.ChuckCenterX = cx;
-                _owner.Calibration.ChuckCenterY = cy;
-                try { _owner.Calibration.Save(); }
-                catch (Exception ex) { _centreResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
-            }
-            _goCentreBtn.Enabled = true;
-            _centreResult.Text =
-                $"Centre (N={_edgePoints.Count}):\r\nX={cx}  Y={cy}\r\n" +
-                $"R={fit.Radius:F0}  fit RMS={fit.RmsError:F0} steps";
-            _status.Text = "Chuck centre computed and saved.";
-        }
-
-        // Drives the table so the chuck centre lands on the view centre. Absolute move via
-        // FrmMain.MoveToAsync (bounds-checked, Y-frame handled). Confirms first — auto move.
-        private async Task GoToCentreAsync()
-        {
-            if (_owner == null || _chuckCentre == null) return;
-            long cx = _chuckCentre.Value.X, cy = _chuckCentre.Value.Y;
-            DialogResult ans = MessageBox.Show(this,
-                $"Move the chuck centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
-                "Go to Centre", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (ans != DialogResult.Yes) return;
-            _status.Text = "Moving to chuck centre...";
-            await _owner.MoveToAsync(cx.ToString(), cy.ToString(), "");
-            _status.Text = "Go to centre: move issued (see main-window log).";
-        }
-
-        private void RefreshSignLabel()
-            => _signLabel.Text = _owner?.RotationSign is int s ? $"Handedness: {s:+0;-0}" : "Handedness: not set";
-
-        // Fixes the image handedness empirically: rotate a small angle about the crosshair with
-        // the current assumed sign, ask whether the crosshair point stayed pinned, then rotate
-        // back (same sign → exact restore) and persist the confirmed/flipped sign. If the point
-        // swung away instead of staying put, the sign was wrong and gets flipped.
-        private async Task SignTestAsync()
-        {
-            if (_owner == null) return;
-            const double testDeg = 6.0;
-            if (MessageBox.Show(this,
-                    $"Sign test rotates ~{testDeg}° about the crosshair and back.\r\n" +
-                    "Watch the point under the crosshair.\r\nProceed?",
-                    "Sign test", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-                return;
-
-            int assumed = _owner.RotationSign ?? +1;   // the sign used for BOTH the test and the restore
-            await _owner.RotateAboutCrosshairAsync(+testDeg);
-
-            DialogResult pinned = MessageBox.Show(this,
-                "Did the point under the crosshair STAY pinned?\r\n\r\n" +
-                "Yes = handedness correct\r\nNo = it swung away (will flip)",
-                "Sign test", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-
-            // Reversing with the SAME stored sign is the exact geometric inverse, so this returns
-            // to the start pose regardless of the answer. Do it BEFORE changing the sign.
-            await _owner.RotateAboutCrosshairAsync(-testDeg);
-
-            if (pinned == DialogResult.Cancel) { _status.Text = "Sign test cancelled (no change)."; return; }
-            int chosen = pinned == DialogResult.Yes ? assumed : -assumed;
-            _owner.SetRotationSign(chosen);
-            RefreshSignLabel();
-            _status.Text = $"Sign test done: handedness {chosen:+0;-0}.";
-        }
+        // Rotate-about-crosshair UI (sign label + sign test) → FrmVision.Rotation.cs
 
         // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the
         // framed image is centred in the box, so box-centre = frame geometric centre. This is
@@ -988,56 +591,7 @@ namespace MotorControlApp
             catch (InvalidOperationException) { /* closing */ }
         }
 
-        // Polls the joystick puck and commands a drift-corrected jog: the puck's screen direction
-        // (x right+, y up+) is mapped through the calibration so the on-screen motion is along that
-        // direction, and the speed scales with the puck's deflection (× the Speed control). The
-        // puck is tied to the camera's NATIVE (raw) orientation — screen right = +col, up = −row;
-        // the display Invert toggle is display-only and deliberately does NOT change control sense.
-        // Send-on-change so a centred puck commands a single Stop and then stays silent.
-        private void VisionPadTick()
-        {
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
-            PointF v = _vPad.Vector;
-            double vmag = Math.Min(1.0, Math.Sqrt(v.X * v.X + v.Y * v.Y));
-
-            int vx = 0, vy = 0;
-            if (a != null && vmag >= 0.05)   // small dead-zone around centre
-            {
-                double dCol = v.X, dRow = -v.Y;
-                double vxUser = a.Xr * dRow + a.Xc * dCol;   // steps/pixel · pixel direction
-                double vyUser = a.Yr * dRow + a.Yc * dCol;
-                double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
-                if (m >= 1e-9)
-                {
-                    double speed = vmag * (double)_vSpeed.Value;   // deflection scales the speed
-                    vx = (int)Math.Round(vxUser / m * speed);
-                    vy = (int)Math.Round(vyUser / m * speed);
-                }
-            }
-
-            if (vx == _vLastVx && vy == _vLastVy) return;   // send-on-change
-            _vLastVx = vx; _vLastVy = vy;
-            if (vx == 0 && vy == 0) _owner?.VisionStop();
-            else _owner?.VisionJogUser(vx, vy);
-        }
-
-        // Discrete d-pad jog: a pure SCREEN direction (sx right+, sy up+) at the full Speed setting,
-        // drift-corrected through the calibration. Coexists with the puck — the puck's send-on-change
-        // poll stays silent while the puck is centred, so it won't cancel a button jog. MouseUp stops.
-        private void VisionJog(int sx, int sy)
-        {
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
-            if (a == null) { _status.Text = "Vision jog needs the camera-scale calibration first."; return; }
-
-            double dCol = sx, dRow = -sy;   // screen right = +col, up = −row (native frame)
-            double vxUser = a.Xr * dRow + a.Xc * dCol;
-            double vyUser = a.Yr * dRow + a.Yc * dCol;
-            double m = Math.Max(Math.Abs(vxUser), Math.Abs(vyUser));
-            if (m < 1e-9) { _status.Text = "Calibration is degenerate; recalibrate."; return; }
-
-            double speed = (double)_vSpeed.Value;
-            _owner!.VisionJogUser((int)Math.Round(vxUser / m * speed), (int)Math.Round(vyUser / m * speed));
-        }
+        // Drift-corrected vision jog (puck poll + discrete d-pad) → FrmVision.Jog.cs
 
         private void Teardown()
         {

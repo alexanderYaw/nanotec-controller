@@ -2,19 +2,25 @@ using System;
 using System.Threading;
 using Nlc; // NanoLib namespace
 
-namespace MotorControlApp
+namespace NanotecController
 {
     /// <summary>
     /// Raised when a NanoLib operation reports an error or the drive fails to
     /// reach an expected CiA 402 state. Callers should treat this as "the
     /// hardware link or drive is not in a usable state" and shut down safely.
     /// </summary>
-    public class ChuckException : Exception
+    public class DriveException : Exception
     {
-        public ChuckException(string message) : base(message) { }
+        public DriveException(string message) : base(message) { }
     }
 
-    public class ChuckController
+    /// <summary>
+    /// Drives ONE axis (any of X / Y / Z / Θ) over NanoLib via the CiA 402 state machine:
+    /// enable/disable, profile-velocity jog, profile-position moves, homing, and status reads.
+    /// One instance per connected drive; <see cref="MultiAxisController"/> holds the set and is
+    /// what the rest of the app talks to. (Formerly "ChuckController" — it is not chuck-specific.)
+    /// </summary>
+    public class AxisDriver
     {
         private readonly NanoLibAccessor _accessor;
         private readonly DeviceHandle _deviceHandle;
@@ -99,18 +105,18 @@ namespace MotorControlApp
         /// <summary>Per-axis configuration (name, jog speeds, limits, direction).</summary>
         public AxisConfig Config { get; }
 
-        public ChuckController(NanoLibAccessor accessor, DeviceHandle deviceHandle)
+        public AxisDriver(NanoLibAccessor accessor, DeviceHandle deviceHandle)
             : this(accessor, deviceHandle, new AxisConfig()) { }
 
-        public ChuckController(NanoLibAccessor accessor, DeviceHandle deviceHandle, AxisConfig config)
+        public AxisDriver(NanoLibAccessor accessor, DeviceHandle deviceHandle, AxisConfig config)
         {
             _accessor = accessor;
             _deviceHandle = deviceHandle;
             Config = config;
         }
 
-        /// <summary>A single snapshot of the chuck, read from the drive.</summary>
-        public readonly struct ChuckStatus
+        /// <summary>A single snapshot of one axis, read from the drive.</summary>
+        public readonly struct AxisStatus
         {
             /// <summary>Actual position from object 0x6064, in the drive's configured
             /// position units (raw counts / user units until factor-group scaling is decoded).</summary>
@@ -122,20 +128,20 @@ namespace MotorControlApp
 
         // --- Checked NanoLib wrappers -------------------------------------------------
         // Every write/read result is inspected. A failed read used to return a silent
-        // 0 via getResult(); these helpers turn that into an explicit ChuckException.
+        // 0 via getResult(); these helpers turn that into an explicit DriveException.
 
         private void Write(long value, OdIndex od, uint bitLength, string what)
         {
             using ResultVoid r = _accessor.writeNumber(_deviceHandle, value, od, bitLength);
             if (r.hasError())
-                throw new ChuckException($"Write failed ({what}): {r.getError()}");
+                throw new DriveException($"Write failed ({what}): {r.getError()}");
         }
 
         private long Read(OdIndex od, string what)
         {
             using ResultInt r = _accessor.readNumber(_deviceHandle, od);
             if (r.hasError())
-                throw new ChuckException($"Read failed ({what}): {r.getError()}");
+                throw new DriveException($"Read failed ({what}): {r.getError()}");
             return r.getResult();
         }
 
@@ -170,7 +176,7 @@ namespace MotorControlApp
                 Thread.Sleep(POLL_STEP_MS);
                 waited += POLL_STEP_MS;
             }
-            throw new ChuckException(
+            throw new DriveException(
                 $"Timed out after {timeoutMs} ms waiting for {what}. " +
                 $"Last statusword=0x{sw:X4} (state 0x{sw & SW_STATE_MASK:X2}).");
         }
@@ -280,7 +286,7 @@ namespace MotorControlApp
         private void FinishSetpoint()
         {
             try { WaitForStatus(s => (s & SW_SETPOINT_ACK) != 0, STATE_TIMEOUT_MS, "set-point acknowledge"); }
-            catch (ChuckException) { /* bit 12 not surfaced; the elapsed wait is the settle */ }
+            catch (DriveException) { /* bit 12 not surfaced; the elapsed wait is the settle */ }
 
             // Drop the new-set-point bit so the drive clears the acknowledge and can latch the
             // next move. The move itself continues (change-immediately was set above).
@@ -301,7 +307,7 @@ namespace MotorControlApp
                 WaitForStatus(s => (s & SW_TARGET_REACHED) != 0, timeoutMs, "target reached");
                 return true;
             }
-            catch (ChuckException)
+            catch (DriveException)
             {
                 return false;
             }
@@ -310,7 +316,7 @@ namespace MotorControlApp
         /// <summary>
         /// Runs a homing cycle that establishes the current physical position as zero.
         /// Returns true once homing is attained; false on a drive-reported homing error
-        /// or timeout. Throws <see cref="ChuckException"/> on a communication failure.
+        /// or timeout. Throws <see cref="DriveException"/> on a communication failure.
         /// </summary>
         public bool SynchronizeEncoderToPhysicalZero()
         {
@@ -388,11 +394,11 @@ namespace MotorControlApp
         }
 
         /// <summary>Reads angle + decoded CiA 402 state in one go, for live display.</summary>
-        public ChuckStatus GetStatus()
+        public AxisStatus GetStatus()
         {
             long sw = Read(OD_Statusword, "statusword");
             long rawTicks = ReadPosition();
-            return new ChuckStatus
+            return new AxisStatus
             {
                 Position = rawTicks,
                 AngleDegrees = TicksToAngle(rawTicks),
