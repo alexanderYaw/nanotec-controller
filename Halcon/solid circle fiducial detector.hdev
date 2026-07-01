@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="24.11.2.0">
+<procedure name="main">
+<interface/>
+<body>
+<c>* Solid-circle fiducial detector</c>
+<c>* The marker is a SOLID red disk, slightly brighter than the red background.</c>
+<c>* Bright diagonal scribe lines cross it; a large bright blob sits bottom-right.</c>
+<c>* Strategy: threshold bright -&gt; open away the thin lines -&gt; keep the round, big blob.</c>
+<c>* dev_display + stop() after each stage. Press Run to advance.</c>
+<c>* ClosingRadius : bridge the rim notch / dark streaks; set &gt;= widest gap to close</c>
+<c>* OpenRadius   : must exceed half the scribe-line width, stay below the disk radius</c>
+<c>* MinCircularity: reject the elongated lines and the non-round corner blob</c>
+<l>ClosingRadius := 25</l>
+<l>OpenRadius := 20</l>
+<l>MinCircularity := 0.85</l>
+<l>MinArea := 5000</l>
+<l>MaxArea := 1e9</l>
+<c>* Load a test frame.</c>
+<l>dev_update_off ()</l>
+<l>dev_close_window ()</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/solid_circle_fiducial.png')</l>
+<l>get_image_size (Image, Width, Height)</l>
+<l>dev_open_window (0, 0, 600, 450, 'black', WindowHandle)</l>
+<l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
+<l>dev_set_part (0, 0, Height - 1, Width - 1)</l>
+<l>dev_display (Image)</l>
+<l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Preprocess: red channel as byte (marker is red-lit).</c>
+<l>count_channels (Image, Channels)</l>
+<l>if (Channels &gt;= 3)</l>
+<l>    access_channel (Image, Single, 1)</l>
+<l>else</l>
+<l>    copy_image (Image, Single)</l>
+<l>endif</l>
+<l>convert_image_type (Single, GrayByte, 'byte')</l>
+<l>dev_display (GrayByte)</l>
+<l>disp_message (WindowHandle, '1: red channel (byte)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Segment the bright structures (disk + scribe lines + corner blob).</c>
+<l>binary_threshold (GrayByte, Bright, 'max_separability', 'light', UsedThreshold)</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_draw ('margin')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Bright)</l>
+<l>disp_message (WindowHandle, '2: binary_threshold light (used=' + UsedThreshold + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Close -> fill -> open. Closing bridges the rim notch where the scribe line cuts the</c>
+<c>* disk and absorbs dark internal streaks (fill_up alone cannot - those gaps open to</c>
+<c>* the boundary). fill_up then closes any fully-enclosed holes. Opening with a disk</c>
+<c>* bigger than half the line width finally severs/erases the thin scribe lines, leaving</c>
+<c>* a near-perfect solid circle.</c>
+<l>closing_circle (Bright, Closed, ClosingRadius)</l>
+<l>fill_up (Closed, FilledHoles)</l>
+<l>opening_circle (FilledHoles, Opened, OpenRadius)</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Opened)</l>
+<l>disp_message (WindowHandle, '3: closing ' + ClosingRadius + ' + fill_up + opening ' + OpenRadius, 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* DIAGNOSTIC: inspect the MOST CIRCULAR remaining blob BEFORE filtering so you can</c>
+<c>* read its area + circularity. The fiducial is the roundest blob, NOT the biggest -</c>
+<c>* the clipped corner ellipse is larger but elongated, so it loses on circularity.</c>
+<l>connection (Opened, Connected)</l>
+<l>count_obj (Connected, NumParts)</l>
+<l>if (NumParts &lt; 1)</l>
+<l>    dev_display (GrayByte)</l>
+<l>    disp_message (WindowHandle, 'step 4: NOTHING survived the opening - lower OpenRadius or check step 2.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>circularity (Connected, AllCirc)</l>
+<l>tuple_sort_index (AllCirc, AllSortIdx)</l>
+<l>select_obj (Connected, Roundest, AllSortIdx[|AllSortIdx| - 1] + 1)</l>
+<l>area_center (Roundest, BigArea, BigRow, BigCol)</l>
+<l>circularity (Roundest, BigCirc)</l>
+<l>dev_display (GrayByte)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_display (Roundest)</l>
+<l>disp_message (WindowHandle, '4: roundest blob: area=' + BigArea + '  circ=' + BigCirc$'.2f' + '   (need area&gt;=' + MinArea + ', circ&gt;=' + MinCircularity + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* Keep round, sufficiently large blobs -&gt; drops lines; then pick the MOST CIRCULAR</c>
+<c>* one so the small fiducial wins over the larger, less-round corner ellipse.</c>
+<l>select_shape (Connected, Round, ['circularity','area'], 'and', [MinCircularity,MinArea], [1.0,MaxArea])</l>
+<l>count_obj (Round, Count)</l>
+<l>if (Count &lt; 1)</l>
+<l>    dev_display (GrayByte)</l>
+<l>    disp_message (WindowHandle, 'NO MARK: roundest blob failed (area=' + BigArea + ', circ=' + BigCirc$'.2f' + '). Loosen whichever it missed.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>circularity (Round, RoundCirc)</l>
+<l>tuple_sort_index (RoundCirc, RoundSortIdx)</l>
+<l>select_obj (Round, Best, RoundSortIdx[|RoundSortIdx| - 1] + 1)</l>
+<l>area_center (Best, Area, Row, Column)</l>
+<l>Radius := sqrt(Area / 3.14159265358979)</l>
+<c>* Result overlay.</c>
+<l>gen_contour_region_xld (Best, Border, 'border')</l>
+<l>gen_cross_contour_xld (Cross, Row, Column, 60, 0.785398)</l>
+<l>dev_display (Image)</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_set_color ('red')</l>
+<l>dev_display (Border)</l>
+<l>dev_set_color ('yellow')</l>
+<l>dev_display (Cross)</l>
+<l>disp_message (WindowHandle, 'centre = (' + Row$'.1f' + ', ' + Column$'.1f' + ')  r=' + Radius$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+</hdevelop>

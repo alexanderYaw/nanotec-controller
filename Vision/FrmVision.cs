@@ -36,7 +36,7 @@ namespace NanotecController
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
-        private readonly ReflectiveMarkDetector _markDetector = new();
+        private readonly SolidCircleDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
         private readonly Button _sampleBtn = new() { Text = "Add Sample", Enabled = false };
         private readonly Button _computeBtn = new() { Text = "Compute && Save A", Enabled = false };

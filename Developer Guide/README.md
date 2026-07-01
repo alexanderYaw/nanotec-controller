@@ -185,7 +185,7 @@ flowchart TB
 | **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `DriveDiagnostics.cs`, `NanotecConnection.cs` | The motion stack: types, link, per-axis CiA 402, shared API, diagnostics. (`NanotecConnection` is the unused single-axis legacy link.) |
 | **`Input/`** | `Joystick.cs`, `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | USB (winmm) reader, the on-screen analog puck, and the Position Map grid control + its window. |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits/home store and its UI window. |
-| **`Vision/`** | `VisionCamera.cs`, `HalconBitmap.cs`, `FrmVision.cs`, detectors (`ReflectiveMarkDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | HALCON camera + live-view window, the edge/fiducial detectors, and the (HALCON-bound) calibration / centre-find vision logic plus the overlay-drawing and jog-velocity helpers. |
+| **`Vision/`** | `VisionCamera.cs`, `HalconBitmap.cs`, `FrmVision.cs`, detectors (`SolidCircleDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | HALCON camera + live-view window, the edge/fiducial detectors, and the (HALCON-bound) calibration / centre-find vision logic plus the overlay-drawing and jog-velocity helpers. |
 | **`Geometry/`** | `CircleFit.cs`, `CrosshairRotation.cs` | HALCON-free maths: least-squares circle fit (centre-find) and the crosshair-pivot rotation geometry. |
 | **`Params/`** | `FrmParams.cs` | The drive-parameter read/write/save-to-NV window (its host logic is `FrmMain.Params.cs`). |
 | **root** | `FrmMain.*`, `IMotionHost.cs`, `BusPicker.cs`, `Program.cs` | The main window (split into partials), the owner-surface interface it implements, the bus-picker dialog, and the entry point. |
@@ -498,58 +498,58 @@ All / Go Home internally).
 
 ---
 
-## 14. Fiducial detection — the reflective mark (`Vision/ReflectiveMarkDetector.cs`)
+## 14. Fiducial detection — the solid circle (`Vision/SolidCircleDetector.cs`)
 
-Finds the sub-pixel centre of the circular calibration fiducial — a **bright red-lit ring
-with a darker, mottled centre** — in one frame. This is the 2D-localisable point that feeds
-the pixel→step affine fit (§15, `Vision/CameraCalibrator.cs`); a smooth wafer edge can't serve
+Finds the sub-pixel centre of the circular calibration fiducial — a **solid red disk, slightly
+brighter than the red background**, crossed by **bright diagonal scribe lines** with a large
+bright blob in one corner — in one frame. This is the 2D-localisable point that feeds the
+pixel→step affine fit (§15, `Vision/CameraCalibrator.cs`); a smooth wafer edge can't serve
 here because a plain arc only reveals motion along its normal (the aperture problem).
 
-**The core idea:** ignore the ring itself *and* the unreliable glowing centre — derive the
-centre from the **dark hole the ring encloses**. The hole's outer boundary is the ring's
-**inner edge**, the one boundary that stays sharp and symmetric even when the mark glows or
-the outer perimeter clips off-frame. Its centroid is concentric with the ring, averages over
-thousands of pixels (sub-pixel, speckle-proof), and stays valid at extreme stage positions.
+**The core idea:** clean the disk into a single near-perfect blob with morphology, then pick
+the **roundest** survivor. The scribe lines and the clipped corner blob also threshold bright,
+so shape alone can't separate them at the threshold step — an *opening* with a disk larger than
+half a line's width erases the thin lines, and a *circularity* gate rejects whatever elongated
+piece is left. The disk's centroid averages over thousands of pixels (sub-pixel, speckle-proof)
+and stays valid at extreme stage positions.
 
-The HDevelop tuning script `Halcon/reflective mark detector.hdev` mirrors this pipeline stage
-for stage (with `dev_display`/`stop` after each), so it can be tuned against live captures.
+The HDevelop tuning script `Halcon/solid circle fiducial detector.hdev` mirrors this pipeline
+stage for stage (with `dev_display`/`stop` after each), so it can be tuned against live captures.
 
-### The 8-step pipeline
+### The pipeline
 
 1. **Load the frame.** Read the capture; grab `Width`/`Height` for display.
 2. **Isolate the red channel → byte.** The markers are red-lit, so the red channel carries
    almost all the contrast (a luminance grey weights red only ~0.3). Mono frames pass through.
-3. **Threshold the bright ring.** `binary_threshold(… 'max_separability' 'light')` auto-picks
-   the cut (Otsu-style — no hand-tuned grey level) and keeps the bright side → the ring region.
-4. **Recover the dark inner gap.** `closing_circle` (radius `ClosingRadius`) bridges speckle
-   breaks so the ring is a closed loop; `fill_up` fills it to a solid disk; `difference(filled,
-   closed)` = what was *inside* the ring but not part of it → the **dark central gap**;
-   `connection` + `select_shape_std('max_area')` keeps the largest such gap.
-5. **Convex hull → solid inner disk.** `shape_trans(… 'convex')` turns the gap (possibly a
-   donut/irregular blob — the centre glow only touches its *inner* boundary, which we discard)
-   into a clean solid disk bounded by the ring's inner edge.
-6. **Diagnostic measure (tuning aid).** Measure the candidate's `area` and `circularity` and
-   print them next to the required thresholds, so a rejection shows *which* gate it missed (and
-   "NO inner region → raise ClosingRadius" when the ring never closed). Not part of the result.
-7. **Validate the shape.** `select_shape` keeps only regions that are both round enough
-   (`circularity ≥ MinCircularity`) **and** the right size (`MinArea ≤ area ≤ MaxArea`),
-   rejecting vignette/background blobs and speckle.
-8. **Extract the centre.** Of the survivors, take the largest (`select_shape_std max_area`),
-   then `area_center` gives the centroid **`(Row, Column)`** in pixels — **the fiducial
-   centre.** Radius is back-computed from area (`r = √(area/π)`) for the overlay (boundary in
-   red, cross at the centre in yellow).
+3. **Threshold the bright structures.** `binary_threshold(… 'max_separability' 'light')`
+   auto-picks the cut (Otsu-style — no hand-tuned grey level) and keeps the bright side → the
+   disk **plus** the scribe lines and the corner blob.
+4. **Close → fill → open into a clean disk.** `closing_circle` (radius `ClosingRadius`) bridges
+   the rim notch where a scribe line cuts the disk and absorbs dark internal streaks; `fill_up`
+   closes any fully-enclosed holes; `opening_circle` (radius `OpenRadius`) — a disk bigger than
+   half the scribe-line width — severs/erases the thin lines, leaving a near-perfect solid circle.
+5. **Validate the shape.** `connection`, then `select_shape` keeps only regions that are both
+   round enough (`circularity ≥ MinCircularity`) **and** the right size (`MinArea ≤ area ≤
+   MaxArea`), dropping the lines, the corner blob, and vignette/background speckle.
+6. **Extract the centre.** Of the survivors, take the **most circular** (`circularity` +
+   `tuple_sort_index` + `select_obj`) — *not* the largest, so the round fiducial wins over any
+   larger-but-elongated piece that slips the gate. `area_center` gives the centroid **`(Row,
+   Column)`** in pixels — **the fiducial centre.** Radius is back-computed from area
+   (`r = √(area/π)`) for the overlay (boundary in red, cross at the centre in yellow).
 
 ```
-red channel → threshold ring → close+fill → subtract ring → dark inner gap
-  → convex hull → solid inner disk → validate (round & sized) → area_center → centre (row, col)
+red channel → threshold bright → close + fill + open → clean solid disk
+  → validate (round & sized) → pick MOST circular → area_center → centre (row, col)
 ```
 
-> **Tunables** (`ClosingRadius`, `MinCircularity`, `MinArea`, `MaxArea`) are exposed as
-> properties and set **empirically**, not by formula: run the .hdev script on representative
-> captures, read the real area/circularity at step 6, and set the gates with margin below the
-> true values (and `ClosingRadius` just above the worst ring gap seen at step 3). Defaults are
-> deliberately lenient — a missed detection costs more here than a rare false hit, which the
-> downstream circle-fit/residual checks catch anyway.
+> **Tunables** (`ClosingRadius`, `OpenRadius`, `MinCircularity`, `MinArea`, `MaxArea`) are
+> exposed as properties and set **empirically**, not by formula: run the .hdev script on
+> representative captures, read the real area/circularity, and set the gates with margin below
+> the true values. Size `ClosingRadius` just above the widest rim gap/streak, and `OpenRadius`
+> above half the widest scribe-line width but below the disk radius (too large erases the disk
+> too). `MinCircularity` defaults to `0.85` — tight enough to reject the elongated corner blob.
+> A missed detection costs more than a rare false hit, which the downstream circle-fit/residual
+> checks catch anyway.
 
 ---
 
