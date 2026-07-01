@@ -5,32 +5,34 @@ using HalconDotNet;
 namespace NanotecController
 {
     /// <summary>
-    /// Locates the centre of the circular calibration fiducial — a BRIGHT RING with a darker,
-    /// mottled centre on a contrasting background (see Desktop/images/capture_*.png) — in one
-    /// frame, returning a sub-pixel centre in image pixels.
+    /// Locates the centre of the SOLID-DISK calibration fiducial — a solid red disk, slightly
+    /// brighter than the red background, crossed by bright diagonal scribe lines with a large
+    /// bright blob in one corner (see Desktop/images/solid_circle_fiducial.png) — in one frame,
+    /// returning a sub-pixel centre in image pixels.
     ///
     /// Separate from <see cref="WaferEdgeDetector"/>: this is the 2D-localisable feature used to
-    /// calibrate the pixel→step affine. The ring's disk gives a robust, rotation-free 2D point
-    /// (the wafer edge can't — a smooth arc only reveals motion along its normal, the aperture
-    /// problem). Method: segment the bright ring → close gaps → fill the dark centre, then take
-    /// the INNER disk (the hole the ring encloses) and its centroid. The inner disk is
-    /// concentric with the ring, so the centroid is the same centre — but because the inner
-    /// circle is smaller it stays in frame (and unbiased) even when the OUTER perimeter clips,
-    /// so the mark can be driven to more extreme positions. The centroid averages over
-    /// thousands of pixels, so it's robust to the speckled/specular interior and sub-pixel.
+    /// calibrate the pixel→step affine. The disk gives a robust, rotation-free 2D point (the
+    /// wafer edge can't — a smooth arc only reveals motion along its normal, the aperture
+    /// problem). Method: segment the bright structures → CLOSE (bridge the rim notch where a
+    /// scribe line cuts the disk, absorb dark internal streaks) → FILL (close enclosed holes) →
+    /// OPEN with a disk larger than half the scribe-line width (severs/erases the thin lines),
+    /// leaving a near-perfect solid circle. The disk's centroid averages over thousands of
+    /// pixels, so it's sub-pixel and robust to speckle/specular texture.
     ///
-    /// FIRST CUT: the thresholds are guesses and WILL need tuning against live frames — they're
-    /// all exposed as properties. Pass the FULL-RESOLUTION frame; the input is never modified.
+    /// The fiducial is the ROUNDEST surviving blob, not the biggest: a clipped corner blob can
+    /// be larger but is elongated, so it loses on circularity. Thresholds are exposed for tuning
+    /// against live frames. Pass the FULL-RESOLUTION frame; the input is never modified.
     /// </summary>
-    public sealed class ReflectiveMarkDetector
+    public sealed class SolidCircleDetector
     {
-        // Lenient by default: the inner disk is the convex hull of the gap, which is always
-        // roughly round when valid, so loose gates mainly avoid false NEGATIVES (the
-        // "can't find it even with the full ring in frame" cases) without inviting false hits.
-        public double MinCircularity { get; set; } = 0.5;    // 1 = perfect circle; rejects irregular blobs
-        public double MinArea { get; set; } = 2000;          // ignore specks/noise
+        // ClosingRadius : bridge the rim notch / dark streaks; set >= widest gap to close.
+        // OpenRadius    : must exceed half the scribe-line width, stay below the disk radius.
+        // MinCircularity: reject the elongated lines and the non-round corner blob.
+        public double ClosingRadius { get; set; } = 25;
+        public double OpenRadius { get; set; } = 20;
+        public double MinCircularity { get; set; } = 0.85;   // 1 = perfect circle
+        public double MinArea { get; set; } = 5000;          // ignore specks / thin lines
         public double MaxArea { get; set; } = 1e9;
-        public double ClosingRadius { get; set; } = 8;       // bridge speckle gaps so the ring closes + fills
 
         /// <summary>Fiducial centre + nominal radius, in image pixels (HALCON row/column).</summary>
         public readonly record struct Mark(double Row, double Column, double Radius);
@@ -57,26 +59,22 @@ namespace NanotecController
             {
                 HObject gray = Preprocess(image); temps.Add(gray);
 
-                // Bright ring → close its gaps → fill the dark centre → solid disk.
+                // Bright structures (disk + scribe lines + corner blob).
                 HOperatorSet.BinaryThreshold(gray, out HObject bright, "max_separability", "light", out HTuple _); temps.Add(bright);
+
+                // Close bridges the rim notch where a scribe line cuts the disk and absorbs dark
+                // internal streaks; fill_up closes any fully-enclosed holes; opening with a disk
+                // bigger than half the line width severs/erases the thin scribe lines, leaving a
+                // near-perfect solid circle.
                 HOperatorSet.ClosingCircle(bright, out HObject closed, ClosingRadius); temps.Add(closed);
-
-                // INNER disk, glow-proof. Fill the whole mark to a disk, then the dark band
-                // inside the ring (= `gap`) has the ring's INNER EDGE as its outer boundary.
-                // The centre glow only affects the gap's INNER boundary, which we ignore: the
-                // CONVEX HULL of the gap is the solid disk bounded by the ring's inner edge —
-                // correct whatever is in the centre, and clip-tolerant (inner edge stays in
-                // frame even when the outer perimeter runs off the edge).
                 HOperatorSet.FillUp(closed, out HObject filled); temps.Add(filled);
-                HOperatorSet.Difference(filled, closed, out HObject gap); temps.Add(gap);
-                HOperatorSet.Connection(gap, out HObject gapParts); temps.Add(gapParts);
-                HOperatorSet.CountObj(gapParts, out HTuple nGap);
-                if (nGap.I < 1) return false;
-                HOperatorSet.SelectShapeStd(gapParts, out HObject biggestGap, "max_area", 0); temps.Add(biggestGap);
-                HOperatorSet.ShapeTrans(biggestGap, out HObject innerDisk, "convex"); temps.Add(innerDisk);
-                HOperatorSet.Connection(innerDisk, out HObject conn); temps.Add(conn);
+                HOperatorSet.OpeningCircle(filled, out HObject opened, OpenRadius); temps.Add(opened);
+                HOperatorSet.Connection(opened, out HObject conn); temps.Add(conn);
 
-                // Keep big, round regions only — rejects vignette/background blobs.
+                HOperatorSet.CountObj(conn, out HTuple nParts);
+                if (nParts.I < 1) return false;
+
+                // Keep big, round blobs → drops the lines and the elongated corner blob.
                 HTuple features = new HTuple("circularity").TupleConcat("area");
                 HTuple mins = new HTuple(MinCircularity).TupleConcat(MinArea);
                 HTuple maxs = new HTuple(1.0).TupleConcat(MaxArea);
@@ -85,8 +83,13 @@ namespace NanotecController
                 HOperatorSet.CountObj(round, out HTuple count);
                 if (count.I < 1) return false;
 
-                // The fiducial is the largest surviving round region.
-                HOperatorSet.SelectShapeStd(round, out HObject best, "max_area", 0); temps.Add(best);
+                // Pick the MOST circular so the round fiducial wins over any larger but less-round
+                // blob that slips the gate. TupleSortIndex is ascending → most circular is last.
+                HOperatorSet.Circularity(round, out HTuple circ);
+                HOperatorSet.TupleSortIndex(circ, out HTuple sortIdx);
+                int bestIdx = sortIdx[sortIdx.Length - 1].I + 1;   // SelectObj is 1-based
+                HOperatorSet.SelectObj(round, out HObject best, bestIdx); temps.Add(best);
+
                 HOperatorSet.AreaCenter(best, out HTuple area, out HTuple row, out HTuple col);
                 if (row.Length < 1) return false;
 
