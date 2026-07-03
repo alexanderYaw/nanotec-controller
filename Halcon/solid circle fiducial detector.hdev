@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<hdevelop file_version="1.2" halcon_version="24.11.2.0">
+<hdevelop file_version="1.2" halcon_version="26.05.0.0">
 <procedure name="main">
 <interface/>
 <body>
@@ -16,10 +16,15 @@
 <l>MinCircularity := 0.85</l>
 <l>MinArea := 5000</l>
 <l>MaxArea := 1e9</l>
+<c>* BrightThreshold: global gray cut. Background is a uniform ~183, the disk is 219-250, the</c>
+<c>* dark corner ~74. A fixed cut ~200 isolates the disk+lines: global Otsu picks the wrong</c>
+<c>* valley (the dark corner skews it) and dyn_threshold hollows a disk larger than its mask.</c>
+<l>BrightThreshold := 200</l>
 <c>* Load a test frame.</c>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
-<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/solid_circle_fiducial.png')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/solid_circle_fiducial.png')</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/unable_to_detect.png')</l>
 <l>get_image_size (Image, Width, Height)</l>
 <l>dev_open_window (0, 0, 600, 450, 'black', WindowHandle)</l>
 <l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
@@ -38,16 +43,19 @@
 <l>dev_display (GrayByte)</l>
 <l>disp_message (WindowHandle, '1: red channel (byte)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* Segment the bright structures (disk + scribe lines + corner blob).</c>
-<l>binary_threshold (GrayByte, Bright, 'max_separability', 'light', UsedThreshold)</l>
+<c>* Segment the bright structures (disk + scribe lines) with a fixed global cut. The disk is</c>
+<c>* large and SOLID (219-250) over a very uniform background (~183), so one threshold isolates</c>
+<c>* it. Global Otsu picks the wrong valley because the dark corner (~74) skews the histogram;</c>
+<c>* dyn_threshold hollows a disk this big because its mask can't exceed the disk diameter.</c>
+<l>threshold (GrayByte, Bright, BrightThreshold, 255)</l>
 <l>dev_display (GrayByte)</l>
 <l>dev_set_draw ('margin')</l>
 <l>dev_set_line_width (2)</l>
 <l>dev_set_color ('green')</l>
 <l>dev_display (Bright)</l>
-<l>disp_message (WindowHandle, '2: binary_threshold light (used=' + UsedThreshold + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '2: threshold &gt;= ' + BrightThreshold, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* Close -> fill -> open. Closing bridges the rim notch where the scribe line cuts the</c>
+<c>* Close -&gt; fill -&gt; open. Closing bridges the rim notch where the scribe line cuts the</c>
 <c>* disk and absorbs dark internal streaks (fill_up alone cannot - those gaps open to</c>
 <c>* the boundary). fill_up then closes any fully-enclosed holes. Opening with a disk</c>
 <c>* bigger than half the line width finally severs/erases the thin scribe lines, leaving</c>
