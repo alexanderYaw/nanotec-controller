@@ -33,6 +33,10 @@ namespace NanotecController
         public double MinCircularity { get; set; } = 0.85;   // 1 = perfect circle
         public double MinArea { get; set; } = 5000;          // ignore specks / thin lines
         public double MaxArea { get; set; } = 1e9;
+        // BrightThreshold: global gray cut. Background is a uniform ~183, the disk is 219-250, the
+        // dark corner ~74; a fixed cut ~200 isolates the disk. Global Otsu picks the wrong valley
+        // (the dark corner skews it) and dyn_threshold hollows a disk larger than any usable mask.
+        public double BrightThreshold { get; set; } = 200;
 
         /// <summary>Fiducial centre + nominal radius, in image pixels (HALCON row/column).</summary>
         public readonly record struct Mark(double Row, double Column, double Radius);
@@ -59,8 +63,12 @@ namespace NanotecController
             {
                 HObject gray = Preprocess(image); temps.Add(gray);
 
-                // Bright structures (disk + scribe lines + corner blob).
-                HOperatorSet.BinaryThreshold(gray, out HObject bright, "max_separability", "light", out HTuple _); temps.Add(bright);
+                // Bright structures (disk + scribe lines), by a fixed global cut. The disk is
+                // large and SOLID (219-250) over a uniform background (~183), so one threshold
+                // isolates it. Otsu picks the wrong valley (the dark corner ~74 skews the
+                // histogram) and DynThreshold hollows a disk this big because its mask can't
+                // exceed the disk diameter.
+                HOperatorSet.Threshold(gray, out HObject bright, BrightThreshold, 255); temps.Add(bright);
 
                 // Close bridges the rim notch where a scribe line cuts the disk and absorbs dark
                 // internal streaks; fill_up closes any fully-enclosed holes; opening with a disk
