@@ -238,6 +238,17 @@ namespace NanotecController
             Write(CW_HALT, OD_Controlword, BITS_16, "controlword: halt");
         }
 
+        /// <summary>
+        /// Velocity-only update to an ALREADY-RUNNING profile-velocity jog: rewrites just the
+        /// 0x60FF target (one SDO transaction) instead of re-sending mode + controlword like
+        /// <see cref="StartManualJog"/>. Zero decelerates to a servo hold WITHOUT the halt bit,
+        /// so there is no halt/run controlword flipping around zero. Arm the axis with
+        /// <see cref="StartManualJog"/> first; used by the crosshair-rotation follow loop, where
+        /// three axes are re-commanded every tick and SDO traffic sets the loop period.
+        /// </summary>
+        public void UpdateJogVelocity(int velocity)
+            => Write(velocity, OD_TargetVel, BITS_32, "target velocity (update)");
+
         // --- Profile Position (point-to-point) ---------------------------------------
         // Used by the step-and-settle scan. Positions/velocities are in the drive's
         // own units (counts / 0x60FF units) until factor-group conversion is wired in.
@@ -392,6 +403,10 @@ namespace NanotecController
             long rawTicks = ReadPosition();
             return TicksToAngle(rawTicks);
         }
+
+        /// <summary>Position-only read (one SDO transaction, half of <see cref="GetStatus"/>)
+        /// for fast follow loops that don't need the CiA 402 state each tick.</summary>
+        public long GetPosition() => ReadPosition();
 
         /// <summary>Reads angle + decoded CiA 402 state in one go, for live display.</summary>
         public AxisStatus GetStatus()

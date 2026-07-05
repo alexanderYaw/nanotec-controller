@@ -6,10 +6,12 @@ namespace NanotecController
     // FrmMain — rotation ABOUT the camera crosshair. The Θ axis rotates the chuck about its
     // own mechanical centre; combining it with an X/Y shift (CrosshairRotation) makes the
     // chuck centre orbit the crosshair, which pins the point under the crosshair while Θ turns.
-    // Runs CONTINUOUS, like the joystick: Θ jogs at a constant velocity while a fast loop steers
-    // X/Y (also in velocity mode) toward the position that pins the crosshair for Θ's PREDICTED
-    // angle (a short lookahead cancels the follower's time-lag) — so all three axes move together,
-    // not step-and-settle. FrmMain owns this because NanoLib access must be serialized. (Partial of FrmMain.)
+    // Runs CONTINUOUS, like the joystick: Θ jogs with a soft-ramped setpoint while a fast loop
+    // steers X/Y (also in velocity mode) toward the pin position, driven by an ANALYTIC velocity
+    // feedforward plus proportional trim — so all three axes move together, not step-and-settle.
+    // The hot loop touches the drives with velocity-only writes and position-only reads (arming
+    // mode/controlword once up front) to keep the SDO traffic — and so the loop period — down.
+    // FrmMain owns this because NanoLib access must be serialized. (Partial of FrmMain.)
     public partial class FrmMain
     {
         // Θ jog velocity during a rotation (drive units = steps/s, per the K-capture).
@@ -26,7 +28,7 @@ namespace NanotecController
         private const int ROTATE_XY_DELAY_MS = 0;
         // X/Y position-follow loop: period, proportional gain (velocity units per step of error),
         // velocity clamp, smallest commanded velocity, and the dead-band under which an axis is
-        // stopped. GAIN/VMAX likely need tuning on hardware (units aren't mm/deg yet).
+        // held at zero velocity. GAIN/VMAX likely need tuning on hardware (units aren't mm/deg yet).
         private const int ROTATE_FOLLOW_MS = 25;
         // GAIN is velocity-units per step of error. Too high overshoots: at velocity V the axis
         // travels ~K·V·dt steps per tick, so a gain above ~1/(K·dt) ("deadbeat") oscillates. Start
@@ -45,13 +47,13 @@ namespace NanotecController
         // tick-rate into the angular rate the analytic velocity feedforward needs.
         private static readonly double ROTATE_RADPERTICK = 2.0 * Math.PI / CrosshairRotation.ChuckTicksPerRev;
         // Feedforward gain K (drive-velocity-units per step-per-tick of the target's motion), PER
-        // AXIS. The FF term is now the ANALYTIC target velocity (CrosshairRotation.TryXyTargetVelocity
+        // AXIS. The FF term is the ANALYTIC target velocity (CrosshairRotation.TryXyTargetVelocity
         // × Θ tick-rate) rather than a numeric difference of quantized targets — so it is noise-free,
-        // and the old fragility (a bad estimate fighting the P-term) is gone. Still DISABLED (0) by
-        // default because ROTATE_LOOKAHEAD_MS already cancels the follower's constant lag; enabling
-        // FF as well would double-compensate. Turn on ONLY if you also reduce the lookahead — its
-        // value then lets you drop ROTATE_FOLLOW_GAIN (less noise amplification). K is a single
-        // per-axis scalar: jog X (then Y) at a known drive velocity, measure steps/s, K = vel/(steps/s).
+        // and the old fragility (a bad estimate fighting the P-term) is gone. ENABLED: FF carries the
+        // baseline follow velocity and cancels the follower's constant time-lag, which is why
+        // ROTATE_LOOKAHEAD_MS is 0 (running both would double-compensate). K is a single per-axis
+        // scalar — steps moved per velocity-unit per second — measured by the K-capture logged after
+        // each rotate; re-measure if the drives' velocity scaling ever changes.
         private const double ROTATE_FOLLOW_FF_X = 39.84;   // measured via K-capture (1 vu = 1 step/s ⇒ ≈40)
         private const double ROTATE_FOLLOW_FF_Y = 39.60;
         // Master (Θ) lookahead: project Θ this many ms into the future (via its smoothed velocity)
@@ -164,10 +166,17 @@ namespace NanotecController
                 _motion.RecoverIfQuickStopped(AxisId.Y);
 
                 thetaStart = _motion.GetStatus(AxisId.Theta).Position;
+                // Arm all three axes in profile-velocity run state ONCE; inside the loop only the
+                // 0x60FF target is rewritten (UpdateJogVelocity). Re-sending mode + controlword every
+                // tick was ~2/3 of the loop's SDO traffic and a big source of period jitter.
                 _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_MIN_SPEED);   // Θ soft-ramps inside the loop
+                _motion.JogAt(AxisId.X, +1, 0);   // X/Y armed at zero velocity (servo hold, no halt)
+                _motion.JogAt(AxisId.Y, +1, 0);
+                _followVelX = 0; _followVelY = 0;
                 try
                 {
                     bool thetaDone = false;
+                    int lastThetaCmd = ROTATE_THETA_MIN_SPEED;
                     int elapsed = 0, settled = 0;
                     var ffClock = System.Diagnostics.Stopwatch.StartNew();
                     long ffPrevMs = 0;                   // previous tick's timestamp, for the Θ-velocity dt
@@ -179,7 +188,7 @@ namespace NanotecController
                     double maxThetaVel = 0.0;            // peak |thetaVel| seen (ticks/ms), for the ramp-down distance
                     while (true)
                     {
-                        long currentTheta = _motion.GetStatus(AxisId.Theta).Position;
+                        long currentTheta = _motion.GetPosition(AxisId.Theta);
                         long nowMs = ffClock.ElapsedMilliseconds;
                         long dtMs = nowMs - ffPrevMs;
 
@@ -213,7 +222,11 @@ namespace NanotecController
                             double rampDist = 0.5 * maxThetaVel * ROTATE_THETA_RAMP_MS;
                             double downFrac = rampDist > 1.0 ? Math.Clamp(remaining / rampDist, 0.0, 1.0) : 1.0;
                             int thetaCmd = (int)Math.Max(ROTATE_THETA_MIN_SPEED, ROTATE_THETA_SPEED * Math.Min(upFrac, downFrac));
-                            _motion.JogAt(AxisId.Theta, thetaDir, thetaCmd);
+                            if (thetaCmd != lastThetaCmd)
+                            {
+                                _motion.UpdateJogVelocity(AxisId.Theta, thetaDir, thetaCmd);
+                                lastThetaCmd = thetaCmd;
+                            }
                         }
                         long prog = (currentTheta + (long)(thetaVel * ROTATE_LOOKAHEAD_MS)) - thetaStart;
                         double frac = Math.Clamp((double)prog / totalThetaTicks, 0.0, 1.0);
@@ -228,8 +241,8 @@ namespace NanotecController
                         // Follow in the USER frame — velocity-mode jog uses the user frame (the
                         // vision jog commands Y WITHOUT the raw flip). A raw-frame error would
                         // invert Y (userY = −rawY) and drive it the WRONG way → runaway.
-                        long curXUser = ToUser(AxisId.X, _motion.GetStatus(AxisId.X).Position);
-                        long curYUser = ToUser(AxisId.Y, _motion.GetStatus(AxisId.Y).Position);
+                        long curXUser = ToUser(AxisId.X, _motion.GetPosition(AxisId.X));
+                        long curYUser = ToUser(AxisId.Y, _motion.GetPosition(AxisId.Y));
                         long errX = txUser - curXUser;
                         long errY = tyUser - curYUser;
                         lastErrX = errX; lastErrY = errY;
@@ -244,7 +257,7 @@ namespace NanotecController
                         }
                         prevXUser = curXUser; prevYUser = curYUser; kSeeded = true;
 
-                        // ANALYTIC velocity feedforward (0 by default — see the FF_X/FF_Y note). The pin
+                        // ANALYTIC velocity feedforward (gains per axis — see the FF_X/FF_Y note). The pin
                         // target's exact step-velocity is d(target)/d(angle) · d(angle)/dt, where the
                         // geometry derivative is closed-form (not a diff of quantized targets) and
                         // d(angle)/dt = ROTATE_RADPERTICK · thetaVel. anglePerTick is that angular
@@ -371,16 +384,25 @@ namespace NanotecController
                 _motion.RecoverIfQuickStopped(AxisId.X);
                 _motion.RecoverIfQuickStopped(AxisId.Y);
 
-                long s0x = ToUser(AxisId.X, _motion.GetStatus(AxisId.X).Position);   // live start pose (USER frame)
-                long s0y = ToUser(AxisId.Y, _motion.GetStatus(AxisId.Y).Position);
+                long s0x = ToUser(AxisId.X, _motion.GetPosition(AxisId.X));   // live start pose (USER frame)
+                long s0y = ToUser(AxisId.Y, _motion.GetPosition(AxisId.Y));
                 long thetaStart = _motion.GetStatus(AxisId.Theta).Position;
-                _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_SPEED);   // Θ runs until released
+                // Arm all three once (see the fixed-angle rotate); the loop then only rewrites
+                // 0x60FF. Θ soft-ramps up over RAMP_MS and — on release — back down over RAMP_MS
+                // before halting, so hold-to-rotate no longer swings out at either end.
+                _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_MIN_SPEED);
+                _motion.JogAt(AxisId.X, +1, 0);   // X/Y armed at zero velocity (servo hold, no halt)
+                _motion.JogAt(AxisId.Y, +1, 0);
+                _followVelX = 0; _followVelY = 0;
                 try
                 {
-                    // On release, Θ is stopped but we keep following X/Y to Θ's ACTUAL final angle
-                    // (including its decel coast) until X/Y catches up — same settle as the fixed
-                    // rotate, so the feature ends pinned instead of drifting further on release.
-                    bool releasing = false;
+                    // On release, Θ's setpoint ramps down and is then stopped, but we keep following
+                    // X/Y to Θ's ACTUAL final angle (including its decel coast) until X/Y catches up —
+                    // same settle as the fixed rotate, so the feature ends pinned instead of drifting.
+                    bool releasing = false;            // Θ halted; X/Y settling onto the final angle
+                    long rampDownStartMs = -1;         // ≥0 once the release ramp-down has begun
+                    int cmdAtRelease = 0;              // Θ setpoint level the ramp-down starts from
+                    int lastThetaCmd = ROTATE_THETA_MIN_SPEED;
                     int elapsed = 0, settled = 0;
                     var ffClock = System.Diagnostics.Stopwatch.StartNew();
                     long ffPrevMs = 0;                   // previous tick's timestamp, for the Θ-velocity dt
@@ -389,15 +411,48 @@ namespace NanotecController
                     bool velSeeded = false;
                     while (true)
                     {
-                        if (_holdRotateStop && !releasing)
-                        {
-                            _motion.Stop(AxisId.Theta);   // begin Θ deceleration; X/Y keeps following
-                            releasing = true;
-                        }
-
-                        long currentTheta = _motion.GetStatus(AxisId.Theta).Position;
+                        long currentTheta = _motion.GetPosition(AxisId.Theta);
                         long nowMs = ffClock.ElapsedMilliseconds;
                         long dtMs = nowMs - ffPrevMs;
+
+                        if (_holdRotateStop && rampDownStartMs < 0)
+                        {
+                            rampDownStartMs = nowMs;      // begin the Θ ramp-down; X/Y keeps following
+                            cmdAtRelease = lastThetaCmd;
+                        }
+
+                        // Θ setpoint soft-ramp (same reason as the fixed-angle rotate: accel/decel
+                        // kept within the follower's bandwidth kills the swing-out): up over the
+                        // first RAMP_MS; on release, down over RAMP_MS from wherever it was, THEN halt.
+                        if (!releasing)
+                        {
+                            int thetaCmd;
+                            if (rampDownStartMs >= 0)
+                            {
+                                double downFrac = ROTATE_THETA_RAMP_MS > 0
+                                    ? 1.0 - (nowMs - rampDownStartMs) / ROTATE_THETA_RAMP_MS
+                                    : 0.0;
+                                thetaCmd = (int)(cmdAtRelease * Math.Max(0.0, downFrac));
+                                if (thetaCmd < ROTATE_THETA_MIN_SPEED)
+                                {
+                                    _motion.Stop(AxisId.Theta);   // ramp done; X/Y settles onto the coast
+                                    releasing = true;
+                                    thetaCmd = lastThetaCmd;      // no further Θ writes
+                                }
+                            }
+                            else
+                            {
+                                double upFrac = ROTATE_THETA_RAMP_MS > 0
+                                    ? Math.Clamp(nowMs / ROTATE_THETA_RAMP_MS, 0.0, 1.0)
+                                    : 1.0;
+                                thetaCmd = (int)Math.Max(ROTATE_THETA_MIN_SPEED, ROTATE_THETA_SPEED * upFrac);
+                            }
+                            if (thetaCmd != lastThetaCmd)
+                            {
+                                _motion.UpdateJogVelocity(AxisId.Theta, thetaDir, thetaCmd);
+                                lastThetaCmd = thetaCmd;
+                            }
+                        }
 
                         // Smoothed Θ velocity for the lookahead AND the analytic feedforward (EMA to
                         // reject Sleep-jitter/quantization spikes). 0.5 is the validated baseline;
@@ -419,10 +474,10 @@ namespace NanotecController
                         RejectIfOutOfTravel(AxisId.X, ToRaw(AxisId.X, txUser));
                         RejectIfOutOfTravel(AxisId.Y, ToRaw(AxisId.Y, tyUser));
 
-                        long errX = txUser - ToUser(AxisId.X, _motion.GetStatus(AxisId.X).Position);
-                        long errY = tyUser - ToUser(AxisId.Y, _motion.GetStatus(AxisId.Y).Position);
+                        long errX = txUser - ToUser(AxisId.X, _motion.GetPosition(AxisId.X));
+                        long errY = tyUser - ToUser(AxisId.Y, _motion.GetPosition(AxisId.Y));
 
-                        // ANALYTIC velocity feedforward (0 by default — see the FF_X/FF_Y note). Exact
+                        // ANALYTIC velocity feedforward (gains per axis — see the FF_X/FF_Y note). Exact
                         // pin-target step-velocity from the closed-form geometry derivative × the Θ
                         // tick-rate; noise-free, in steps per nominal tick. Skipped while gains are 0.
                         ffPrevMs = nowMs;
@@ -470,10 +525,9 @@ namespace NanotecController
         /// <summary>Ends a <see cref="HoldRotateAsync"/> (call from the button MouseUp / on focus loss).</summary>
         public void StopHoldRotate() => _holdRotateStop = true;
 
-        // X/Y follow velocity (signed): feedforward (the target's own per-tick motion) plus
-        // proportional trim on the residual error. With FF disabled this is a pure P loop; the
-        // lookahead pre-shifts the target to cancel the P loop's constant time-lag. Hold only when
-        // the target is parked; otherwise clamp magnitude to [MinVel, Vmax].
+        // X/Y follow velocity (signed): analytic feedforward (the target's own velocity) carries
+        // the baseline, proportional trim corrects the residual error. Hold only when the target
+        // is parked; otherwise clamp magnitude to [MinVel, Vmax].
         private static int FollowVel(long errRaw, double velFf)
         {
             // Parked: target not moving and error within the dead-band → hold (no dither).
@@ -485,12 +539,20 @@ namespace NanotecController
             return Math.Sign(vel) * (int)mag;
         }
 
-        // Commands a raw-frame signed velocity (X/Y have InvertDirection=false, so JogAt's direction
-        // is the raw sign); zero stops the axis.
+        // Last velocity commanded to each follow axis, so ticks where it hasn't changed skip the
+        // SDO write entirely. Reset to 0 when the axes are armed at the start of a rotation.
+        private int _followVelX, _followVelY;
+
+        // Commands a raw-frame signed velocity as a 0x60FF-only update (X/Y have
+        // InvertDirection=false, so the sign is the raw direction). Zero ramps the axis to a servo
+        // hold WITHOUT the halt bit — the old stop/restart flipping around zero, where a reversing
+        // axis crosses twice per revolution, was itself a jitter source. The axis must be armed
+        // (JogAt) before the loop starts.
         private void CommandFollow(AxisId id, int signedVel)
         {
-            if (signedVel == 0) _motion!.Stop(id);
-            else _motion!.JogAt(id, Math.Sign(signedVel), Math.Abs(signedVel));
+            if (id == AxisId.X) { if (signedVel == _followVelX) return; _followVelX = signedVel; }
+            else                { if (signedVel == _followVelY) return; _followVelY = signedVel; }
+            _motion!.UpdateJogVelocity(id, Math.Sign(signedVel), Math.Abs(signedVel));
         }
 
         // Throws (aborting the rotation) if a raw target leaves an axis's stored travel limits.

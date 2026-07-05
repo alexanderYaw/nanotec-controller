@@ -95,6 +95,20 @@ namespace NanotecController
             axis.StartManualJog(speed * sign);
         }
 
+        /// <summary>
+        /// Velocity-only update to an already-running jog (one SDO write; no mode/controlword
+        /// traffic, and 0 holds at zero velocity WITHOUT the halt bit — see
+        /// <see cref="AxisDriver.UpdateJogVelocity"/>). Applies InvertDirection exactly like
+        /// <see cref="JogAt"/>; direction 0 commands zero velocity. Arm the axis with
+        /// <see cref="JogAt"/> first.
+        /// </summary>
+        public void UpdateJogVelocity(AxisId id, int direction, int speed)
+        {
+            AxisDriver axis = _axes[id];
+            int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
+            axis.UpdateJogVelocity(speed * sign);
+        }
+
         public void Stop(AxisId id) => _axes[id].StopManualJog();
 
         /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>
@@ -120,6 +134,9 @@ namespace NanotecController
         // --- Status ----------------------------------------------------------------
 
         public AxisDriver.AxisStatus GetStatus(AxisId id) => _axes[id].GetStatus();
+
+        /// <summary>Position-only read (one SDO transaction) for fast follow loops.</summary>
+        public long GetPosition(AxisId id) => _axes[id].GetPosition();
 
         /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
         public long GetDigitalInputs(AxisId id) => _axes[id].ReadDigitalInputs();
