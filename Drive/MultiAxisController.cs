@@ -109,6 +109,13 @@ namespace NanotecController
             axis.UpdateJogVelocity(speed * sign);
         }
 
+        /// <summary>Current profile accel/decel (0x6083/0x6084) of one axis, for save/restore.</summary>
+        public (long Accel, long Decel) GetProfileRamp(AxisId id) => _axes[id].GetProfileRamp();
+
+        /// <summary>Sets profile accel/decel (0x6083/0x6084) of one axis, in counts/s² (see
+        /// <see cref="AxisDriver.SetProfileRamp"/>).</summary>
+        public void SetProfileRamp(AxisId id, long accel, long decel) => _axes[id].SetProfileRamp(accel, decel);
+
         public void Stop(AxisId id) => _axes[id].StopManualJog();
 
         /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>

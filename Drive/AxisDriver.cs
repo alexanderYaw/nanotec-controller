@@ -249,6 +249,25 @@ namespace NanotecController
         public void UpdateJogVelocity(int velocity)
             => Write(velocity, OD_TargetVel, BITS_32, "target velocity (update)");
 
+        /// <summary>Current profile accel/decel (0x6083/0x6084) — read so callers that need their
+        /// own ramps (the crosshair-rotation follow loop) can save and later restore them.</summary>
+        public (long Accel, long Decel) GetProfileRamp()
+            => (Read(OD_ProfileAccel, "profile acceleration"),
+                Read(OD_ProfileDecel, "profile deceleration"));
+
+        /// <summary>
+        /// Sets profile accel/decel (0x6083/0x6084), in counts/s². These bound how fast the drive
+        /// chases a new 0x60FF target in profile-velocity mode too (not just profile-position), so
+        /// a follow loop that rewrites the target every tick needs them high enough that each step
+        /// is reached well within one tick — the drive's stored default is otherwise an unmodeled
+        /// lag on every update.
+        /// </summary>
+        public void SetProfileRamp(long accel, long decel)
+        {
+            Write(accel, OD_ProfileAccel, BITS_32, "profile acceleration");
+            Write(decel, OD_ProfileDecel, BITS_32, "profile deceleration");
+        }
+
         // --- Profile Position (point-to-point) ---------------------------------------
         // Used by the step-and-settle scan. Positions/velocities are in the drive's
         // own units (counts / 0x60FF units) until factor-group conversion is wired in.
