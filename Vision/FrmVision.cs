@@ -34,6 +34,7 @@ namespace NanotecController
         private readonly Button _invertBtn = new() { Text = "Invert: On" };
         private readonly Button _monoBtn = new() { Text = "Mono: Off" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
+        private readonly Label _fpsLabel = new() { AutoSize = true, ForeColor = Color.DimGray };
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
@@ -123,6 +124,7 @@ namespace NanotecController
             MinimumSize = new Size(1200, 680);
 
             var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
+            _fpsLabel.Location = new Point(52, 11);
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
 
             _liveBox.Location = new Point(12, 32);
@@ -379,6 +381,7 @@ namespace NanotecController
             _rotSpeedLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
             Controls.Add(liveLabel);
+            Controls.Add(_fpsLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
             Controls.Add(_capturedBox);
@@ -469,7 +472,8 @@ namespace NanotecController
             _rotBy.Enabled = _rotByBtn.Enabled = true;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
             _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = true;
-            _status.Text = "Live.";
+            _rotSpeedSlider.Enabled = true;
+            _status.Text = "Live. " + _camera.CameraInfo;
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
         }
@@ -479,6 +483,11 @@ namespace NanotecController
         // copy can stall input/painting.
         private void GrabLoop(CancellationToken ct)
         {
+            // Measured delivery rate, shown next to "Live" — distinguishes a slow camera
+            // (exposure/frame-rate config) from a slow conversion pipeline.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int shown = 0;
+
             while (!ct.IsCancellationRequested)
             {
                 HObject frame;
@@ -517,6 +526,15 @@ namespace NanotecController
                 if (queue)
                 {
                     try { BeginInvoke(new Action(ShowPending)); }
+                    catch (InvalidOperationException) { return; }   // handle gone (closing)
+                }
+
+                shown++;
+                if (sw.ElapsedMilliseconds >= 1000)
+                {
+                    double fps = shown * 1000.0 / sw.ElapsedMilliseconds;
+                    sw.Restart(); shown = 0;
+                    try { BeginInvoke(new Action(() => _fpsLabel.Text = $"{fps:0.0} fps — {_camera.BufferMode}")); }
                     catch (InvalidOperationException) { return; }   // handle gone (closing)
                 }
             }
