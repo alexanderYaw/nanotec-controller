@@ -19,6 +19,12 @@ namespace NanotecController
 
         public bool IsOpen => _acq != null;
 
+        /// <summary>Which stream buffer mode actually took effect (shown in the live view).</summary>
+        public string BufferMode { get; private set; } = "queued (driver default)";
+
+        /// <summary>Camera-reported exposure / resulting frame rate, if it exposes them.</summary>
+        public string CameraInfo { get; private set; } = "";
+
         /// <summary>
         /// Opens the framegrabber and primes async acquisition. Throws
         /// <see cref="HOperatorException"/> if no camera is present / the interface fails.
@@ -30,8 +36,29 @@ namespace NanotecController
                 "default", -1, "false", "default", "0", 0, -1, out HTuple acq);
             // Keep only the newest frame so the displayed image can't fall behind real time
             // (best-effort: not every driver exposes this GenICam param under this name).
-            try { HOperatorSet.SetFramegrabberParam(acq, "StreamBufferHandlingMode", "NewestOnly"); }
-            catch (HOperatorException) { /* unsupported on this transport/driver */ }
+            try
+            {
+                HOperatorSet.SetFramegrabberParam(acq, "[Stream]StreamBufferHandlingMode", "NewestOnly");
+                BufferMode = "NewestOnly";
+            }
+            catch (HOperatorException)
+            {
+                try
+                {
+                    HOperatorSet.SetFramegrabberParam(acq, "StreamBufferHandlingMode", "NewestOnly");
+                    BufferMode = "NewestOnly";
+                }
+                catch (HOperatorException) { /* unsupported on this transport/driver */ }
+            }
+
+            // What the camera thinks it can deliver (GenICam-standard names; best-effort).
+            var info = new System.Text.StringBuilder();
+            try { HOperatorSet.GetFramegrabberParam(acq, "ResultingFrameRate", out HTuple fr); info.Append($"cam {fr.D:0.0} fps"); }
+            catch (HOperatorException) { }
+            try { HOperatorSet.GetFramegrabberParam(acq, "ExposureTime", out HTuple exp); info.Append($"  exp {exp.D / 1000.0:0.0} ms"); }
+            catch (HOperatorException) { }
+            CameraInfo = info.ToString();
+
             HOperatorSet.GrabImageStart(acq, -1);
             _acq = acq;
         }
@@ -43,7 +70,9 @@ namespace NanotecController
         public HObject GrabImage()
         {
             if (_acq == null) throw new InvalidOperationException("Camera is not open.");
-            HOperatorSet.GrabImageAsync(out HObject image, _acq, -1);
+            // Reject frames older than 100 ms so the view can't trail real time even if the
+            // NewestOnly buffer mode isn't supported by the driver.
+            HOperatorSet.GrabImageAsync(out HObject image, _acq, 100);
             return image;
         }
 

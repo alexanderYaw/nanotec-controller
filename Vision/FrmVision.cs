@@ -32,7 +32,9 @@ namespace NanotecController
         private readonly Button _saveBtn = new() { Text = "Save Image", Enabled = false };
         private readonly Button _crosshairBtn = new() { Text = "Crosshair: Off" };
         private readonly Button _invertBtn = new() { Text = "Invert: On" };
+        private readonly Button _monoBtn = new() { Text = "Mono: Off" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
+        private readonly Label _fpsLabel = new() { AutoSize = true, ForeColor = Color.DimGray };
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
@@ -98,6 +100,7 @@ namespace NanotecController
 
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
+        private volatile bool _monoView;           // grey + full-range contrast stretch (display only)
 
         // One-shot jobs to run against the next grabbed frame, on the grab thread (replaces the
         // per-feature "request" flags). The UI enqueues; GrabLoop drains them while the frame is
@@ -121,6 +124,7 @@ namespace NanotecController
             MinimumSize = new Size(1200, 680);
 
             var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
+            _fpsLabel.Location = new Point(52, 11);
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
 
             _liveBox.Location = new Point(12, 32);
@@ -162,7 +166,16 @@ namespace NanotecController
                 _invertBtn.Text = _invertView ? "Invert: On" : "Invert: Off";
             };
 
-            _status.Location = new Point(524, 496);
+            _monoBtn.Location = new Point(524, 484);
+            _monoBtn.Size = new Size(120, 40);
+            _monoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _monoBtn.Click += (s, e) =>
+            {
+                _monoView = !_monoView;
+                _monoBtn.Text = _monoView ? "Mono: On" : "Mono: Off";
+            };
+
+            _status.Location = new Point(652, 496);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Wafer centre-find (bottom strip) --------------------------------
@@ -368,6 +381,7 @@ namespace NanotecController
             _rotSpeedLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
             Controls.Add(liveLabel);
+            Controls.Add(_fpsLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
             Controls.Add(_capturedBox);
@@ -375,6 +389,7 @@ namespace NanotecController
             Controls.Add(_saveBtn);
             Controls.Add(_crosshairBtn);
             Controls.Add(_invertBtn);
+            Controls.Add(_monoBtn);
             Controls.Add(_status);
             Controls.Add(calibLabel);
             Controls.Add(_sampleBtn);
@@ -457,7 +472,8 @@ namespace NanotecController
             _rotBy.Enabled = _rotByBtn.Enabled = true;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
             _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = true;
-            _status.Text = "Live.";
+            _rotSpeedSlider.Enabled = true;
+            _status.Text = "Live. " + _camera.CameraInfo;
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
         }
@@ -467,6 +483,11 @@ namespace NanotecController
         // copy can stall input/painting.
         private void GrabLoop(CancellationToken ct)
         {
+            // Measured delivery rate, shown next to "Live" — distinguishes a slow camera
+            // (exposure/frame-rate config) from a slow conversion pipeline.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int shown = 0;
+
             while (!ct.IsCancellationRequested)
             {
                 HObject frame;
@@ -484,7 +505,7 @@ namespace NanotecController
                 }
 
                 Bitmap bmp;
-                try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH); }
+                try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH, _monoView); }
                 catch (HOperatorException) { frame.Dispose(); continue; }   // skip a bad frame
                 finally { frame.Dispose(); }
 
@@ -505,6 +526,15 @@ namespace NanotecController
                 if (queue)
                 {
                     try { BeginInvoke(new Action(ShowPending)); }
+                    catch (InvalidOperationException) { return; }   // handle gone (closing)
+                }
+
+                shown++;
+                if (sw.ElapsedMilliseconds >= 1000)
+                {
+                    double fps = shown * 1000.0 / sw.ElapsedMilliseconds;
+                    sw.Restart(); shown = 0;
+                    try { BeginInvoke(new Action(() => _fpsLabel.Text = $"{fps:0.0} fps — {_camera.BufferMode}")); }
                     catch (InvalidOperationException) { return; }   // handle gone (closing)
                 }
             }
