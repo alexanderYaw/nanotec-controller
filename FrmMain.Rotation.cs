@@ -15,7 +15,14 @@ namespace NanotecController
     public partial class FrmMain
     {
         // Θ jog velocity during a rotation (drive units = steps/s, per the K-capture).
-        private const int ROTATE_THETA_SPEED = 800;
+        private int _rotateThetaSpeed = 800;
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public int RotateThetaSpeed
+        {
+            get => _rotateThetaSpeed;
+            set => _rotateThetaSpeed = Math.Clamp(value, 50, 2000);
+        }
         // Soft-start/stop: ramp the Θ velocity SETPOINT up over this long at the start, and back down
         // as it nears the target, so Θ never accelerates faster than the X/Y follower can track — this
         // is what negates the start/stop swing-out. Larger = gentler (and a slightly slower move). If a
@@ -32,12 +39,14 @@ namespace NanotecController
         private const int ROTATE_FOLLOW_MS = 25;
         // GAIN is velocity-units per step of error. Too high overshoots: at velocity V the axis
         // travels ~K·V·dt steps per tick, so a gain above ~1/(K·dt) ≈ 40 ("deadbeat") oscillates.
-        // With FF carrying the baseline velocity, GAIN only works off the residual — any FF
-        // velocity error Δv parks a standing offset of Δv/GAIN steps — so raising it directly
-        // shrinks the mid-rotation swing. 10 keeps a 4× margin under deadbeat; the explicit
-        // drive-side ramp (ROTATE_XY_ACCEL) keeps the plant close to the K-capture model that
-        // margin assumes. Back off if X/Y ever rings around the target.
-        private const double ROTATE_FOLLOW_GAIN = 10.0;
+        // With FF carrying the baseline velocity, GAIN only trims the residual — any FF velocity
+        // error Δv parks a standing offset of Δv/GAIN steps — but it ALSO multiplies the error
+        // NOISE (read-timing skew × axis speed, so ∝ pin radius) straight into the velocity
+        // command. Measured at GAIN=10 on a far-radius rotate: |Δvel| ≈ 108 vu/tick on a 574 vu
+        // baseline — 19% modulation at 40 Hz, the visible jitter — while the FF gains are within
+        // ~3% (K-capture), so a soft trim suffices: at 4, worst-case parked offset ≈ 3%·600/4 ≈
+        // 5 steps. Raise only if the mid-rotation pin err grows; expect jitter back in return.
+        private const double ROTATE_FOLLOW_GAIN = 4.0;
         private const int ROTATE_FOLLOW_VMAX = 3200;   // X/Y follow speed cap (velocity units)
         // Smallest commanded follow velocity (1 vu = 1 step/s). With FF supplying a steady baseline
         // velocity, a low floor is safe and lets the slow/reversing axis creep instead of bang-banging
@@ -59,15 +68,24 @@ namespace NanotecController
         private const double ROTATE_FOLLOW_FF_X = 39.84;   // measured via K-capture (1 vu = 1 step/s ⇒ ≈40)
         private const double ROTATE_FOLLOW_FF_Y = 39.60;
         // Master (Θ) lookahead: project Θ this many ms into the future (via the COMMANDED setpoint
-        // velocity) before computing the X/Y pin target. FF cancels the P-loop's own
-        // velocity-tracking lag, but NOT the transport delay: the Θ read is one-to-two loop periods
-        // stale by the time the X/Y velocity write lands (~6 sequential SDO transactions per tick),
-        // and that residual lag is what made the feature orbit an offset point mid-rotation and
-        // swing back at stop. The two mechanisms cover DIFFERENT lags, so running both is not
-        // double-compensation. Tune to zero the 'mid-rotation pin err' logged below: feature LEADS
-        // (swings opposite the travel) → lower it; LAGS (swings off in the direction of travel) →
-        // raise it. If X and Y disagree, split into per-axis constants.
-        private const double ROTATE_LOOKAHEAD_MS = 30.0;
+        // velocity) before computing the X/Y pin target. What's left for it to cover is NOT servo
+        // lag (the drive-side ramps + commanded-setpoint FF reduced that to ~2 ms) but MECHANICAL
+        // COMPLIANCE: under load the stage elastically lags the motor encoders by a
+        // velocity-proportional twist that winds out during the move and springs back at stop —
+        // invisible to every motor-side metric, so this is tuned by the CAMERA, not the log.
+        // Bracketed empirically: 30 ms → feature visibly LEADS; 0 ms → visibly LAGS by about as
+        // much ⇒ optimum ≈ 15. NOTE the 'mid-rotation pin err' below is motor-side and SHOULD
+        // read ≈ +lookahead×velocity when the camera is happy — do not re-zero it against that.
+        private const double ROTATE_LOOKAHEAD_MS = 0.0;
+        // Complementary filter on the Θ used for the X/Y pin target. Each tick the model is
+        // PREDICTED forward with the commanded setpoint velocity (exact and lag-free — we command
+        // it) and then corrected by this fraction of the remaining measurement error (so it can
+        // never drift from the real Θ). Raw Θ reads carry a few ticks of timing/quantization noise,
+        // and the pin target amplifies Θ noise by the pin RADIUS — which is the command jitter seen
+        // when rotating about a point far from the chuck centre. A plain EMA would LAG a moving Θ
+        // and reintroduce the swing; prediction-from-the-setpoint doesn't. 0.15 ⇒ ~170 ms correction
+        // time-constant (well inside the settle window) and ~7× quieter targets. 1.0 disables (raw).
+        private const double ROTATE_THETA_BLEND = 0.15;
         // Drive-side profile accel/decel (0x6083/0x6084, counts/s²) applied to all three axes for
         // the duration of a rotation and restored on exit. These bound how fast the drive chases
         // each new 0x60FF target; the stored default was an unmodeled lag/jerk on every 25 ms
@@ -168,6 +186,10 @@ namespace NanotecController
             long pinSumX = 0, pinSumY = 0; int pinN = 0;   // signed PIN error (actual − current-angle target) over the middle
             bool velSaturated = false;         // X/Y ever hit the velocity cap (can't keep up)
             double kDispX = 0, kVtX = 0, kDispY = 0, kVtY = 0;   // TEMP K-capture: Σ|Δpos| and Σ|cmdVel|·dt per axis
+            // TEMP jitter probe (cruise only): Σ|Δvel| per tick (command noise), Σ|vel| (saturation
+            // margin vs VMAX), Σ|err|. Separates "P-gain amplifying error noise" from "axis riding
+            // the VMAX clamp" from "commands smooth ⇒ jitter is mechanical".
+            long jDvX = 0, jDvY = 0, jVelX = 0, jVelY = 0, jErrX = 0, jErrY = 0; int jN = 0;
             bool ok = await RunDriveOp(() =>
             {
                 _motion!.RecoverIfQuickStopped(AxisId.Theta);
@@ -200,6 +222,8 @@ namespace NanotecController
                     long prevTheta = thetaStart;         // last tick's Θ, for the velocity estimate
                     double thetaVel = 0.0;               // smoothed Θ velocity (ticks/ms) for the lookahead
                     bool velSeeded = false;
+                    double thetaModel = thetaStart;      // complementary-filtered Θ for the pin target
+                    double thetaCmdVelPrev = thetaDir * (double)ROTATE_THETA_MIN_SPEED / 1000.0;   // vel in force over the elapsed dt
                     long prevXUser = 0, prevYUser = 0; int prevVelX = 0, prevVelY = 0;   // TEMP K-capture
                     bool kSeeded = false;
                     double maxThetaVel = 0.0;            // peak |thetaVel| seen (ticks/ms), for the ramp-down distance
@@ -224,6 +248,12 @@ namespace NanotecController
                         }
                         prevTheta = currentTheta;
 
+                        // Filtered Θ for the pin target: predict with the velocity that was in force
+                        // over the elapsed interval, then blend toward the measurement (see
+                        // ROTATE_THETA_BLEND — this is what de-noises the target at large pin radius).
+                        thetaModel += thetaCmdVelPrev * dtMs;
+                        thetaModel += ROTATE_THETA_BLEND * (currentTheta - thetaModel);
+
                         // Θ SETPOINT soft-ramp: rise over the first RAMP_MS, fall over the last
                         // ramp-distance (0.5·cruise·RAMP_MS ticks) so accel/decel stay within the
                         // follower's bandwidth (kills the start/stop swing-out). Hard-stop on ACTUAL
@@ -241,7 +271,7 @@ namespace NanotecController
                             double upFrac = ROTATE_THETA_RAMP_MS > 0 ? Math.Clamp(nowMs / ROTATE_THETA_RAMP_MS, 0.0, 1.0) : 1.0;
                             double rampDist = 0.5 * maxThetaVel * ROTATE_THETA_RAMP_MS;
                             double downFrac = rampDist > 1.0 ? Math.Clamp(remaining / rampDist, 0.0, 1.0) : 1.0;
-                            int thetaCmd = (int)Math.Max(ROTATE_THETA_MIN_SPEED, ROTATE_THETA_SPEED * Math.Min(upFrac, downFrac));
+                            int thetaCmd = (int)Math.Max(ROTATE_THETA_MIN_SPEED, _rotateThetaSpeed * Math.Min(upFrac, downFrac));
                             if (thetaCmd != lastThetaCmd)
                             {
                                 _motion.UpdateJogVelocity(AxisId.Theta, thetaDir, thetaCmd);
@@ -251,7 +281,8 @@ namespace NanotecController
                         // Θ velocity for the FF and the lookahead: the commanded setpoint (see the
                         // EMA note above), in ticks/ms (1 vu = 1 tick/s). Zero once Θ is stopped.
                         double thetaCmdVel = thetaDone ? 0.0 : thetaDir * lastThetaCmd / 1000.0;
-                        long prog = (currentTheta + (long)(thetaCmdVel * ROTATE_LOOKAHEAD_MS)) - thetaStart;
+                        thetaCmdVelPrev = thetaCmdVel;
+                        long prog = (long)(thetaModel + thetaCmdVel * ROTATE_LOOKAHEAD_MS) - thetaStart;
                         double frac = Math.Clamp((double)prog / totalThetaTicks, 0.0, 1.0);
 
                         // X/Y target that pins the crosshair for the angle Θ is PREDICTED to reach.
@@ -309,6 +340,7 @@ namespace NanotecController
                             int velX = FollowVel(errX, ffX), velY = FollowVel(errY, ffY);
                             CommandFollow(AxisId.X, velX);
                             CommandFollow(AxisId.Y, velY);
+                            int dvX = Math.Abs(velX - prevVelX), dvY = Math.Abs(velY - prevVelY);   // TEMP jitter probe
                             prevVelX = velX; prevVelY = velY;   // TEMP K-capture: for next tick's m estimate
 
                             // Tuning diagnostic. Peak error is dominated by the start/stop accel
@@ -325,6 +357,13 @@ namespace NanotecController
                                 if (Math.Abs(velX) >= ROTATE_FOLLOW_VMAX || Math.Abs(velY) >= ROTATE_FOLLOW_VMAX)
                                     velSaturated = true;
                                 double curFrac = Math.Clamp((double)actualProg / totalThetaTicks, 0.0, 1.0);
+                                if (curFrac >= 0.25 && curFrac <= 0.75)   // TEMP jitter probe (cruise window)
+                                {
+                                    jDvX += dvX; jDvY += dvY;
+                                    jVelX += Math.Abs(velX); jVelY += Math.Abs(velY);
+                                    jErrX += Math.Abs(errX); jErrY += Math.Abs(errY);
+                                    jN++;
+                                }
                                 if (curFrac >= 0.4 && curFrac <= 0.6 &&
                                     CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, deltaRad * curFrac, sign,
                                                                   out long curTxUser, out long curTyUser))
@@ -373,6 +412,8 @@ namespace NanotecController
                 double mX = kVtX > 0 ? kDispX / kVtX : 0, mY = kVtY > 0 ? kDispY / kVtY : 0;
                 double ffXsug = mX > 0 ? 1.0 / (mX * ROTATE_FOLLOW_MS) : 0, ffYsug = mY > 0 ? 1.0 / (mY * ROTATE_FOLLOW_MS) : 0;
                 AppendLog($"  TEMP K-capture: m {mX:0.0000},{mY:0.0000} steps/(vu·ms) → set ROTATE_FOLLOW_FF_X={ffXsug:0.0000}, ROTATE_FOLLOW_FF_Y={ffYsug:0.0000}.");
+                int n = Math.Max(1, jN);
+                AppendLog($"  TEMP jitter: cruise mean |vel| {jVelX / n:N0},{jVelY / n:N0} vu (VMAX {ROTATE_FOLLOW_VMAX}); mean |Δvel| {jDvX / n:N0},{jDvY / n:N0} vu/tick; mean |err| {jErrX / n:N0},{jErrY / n:N0} steps (n={jN}).");
             }
             AppendLog(ok ? "Rotate complete." : "Rotate FAILED — see error above.");
         }
@@ -443,10 +484,21 @@ namespace NanotecController
                     int lastThetaCmd = ROTATE_THETA_MIN_SPEED;
                     int elapsed = 0, settled = 0;
                     var ffClock = System.Diagnostics.Stopwatch.StartNew();
+                    long ffPrevMs = 0;                   // previous tick's timestamp, for the filter dt
+                    double thetaModel = thetaStart;      // complementary-filtered Θ for the pin target
+                    double thetaCmdVelPrev = thetaDir * (double)ROTATE_THETA_MIN_SPEED / 1000.0;   // vel in force over the elapsed dt
                     while (true)
                     {
                         long currentTheta = _motion.GetPosition(AxisId.Theta);
                         long nowMs = ffClock.ElapsedMilliseconds;
+                        long dtMs = nowMs - ffPrevMs;
+                        ffPrevMs = nowMs;
+
+                        // Filtered Θ for the pin target: predict with the velocity that was in force
+                        // over the elapsed interval, then blend toward the measurement (see
+                        // ROTATE_THETA_BLEND — de-noises the target at large pin radius).
+                        thetaModel += thetaCmdVelPrev * dtMs;
+                        thetaModel += ROTATE_THETA_BLEND * (currentTheta - thetaModel);
 
                         if (_holdRotateStop && rampDownStartMs < 0)
                         {
@@ -478,7 +530,7 @@ namespace NanotecController
                                 double upFrac = ROTATE_THETA_RAMP_MS > 0
                                     ? Math.Clamp(nowMs / ROTATE_THETA_RAMP_MS, 0.0, 1.0)
                                     : 1.0;
-                                thetaCmd = (int)Math.Max(ROTATE_THETA_MIN_SPEED, ROTATE_THETA_SPEED * upFrac);
+                                thetaCmd = (int)Math.Max(ROTATE_THETA_MIN_SPEED, _rotateThetaSpeed * upFrac);
                             }
                             if (thetaCmd != lastThetaCmd)
                             {
@@ -492,10 +544,11 @@ namespace NanotecController
                         // the quantized position over a jittery Sleep period was neither (see the
                         // fixed-angle loop). Zero once Θ has been halted (releasing).
                         double thetaCmdVel = releasing ? 0.0 : thetaDir * lastThetaCmd / 1000.0;
+                        thetaCmdVelPrev = thetaCmdVel;
 
                         // Angle Θ is PREDICTED to reach a lookahead into the future; X/Y pins the
                         // crosshair for THAT, cancelling the follower's transport delay.
-                        long lookaheadTheta = currentTheta + (long)(thetaCmdVel * ROTATE_LOOKAHEAD_MS);
+                        double lookaheadTheta = thetaModel + thetaCmdVel * ROTATE_LOOKAHEAD_MS;
                         double angleRad = ROTATE_RADPERTICK * (lookaheadTheta - thetaStart);
                         if (!CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, angleRad, sign, out long txUser, out long tyUser))
                             throw new DriveException("calibration affine is degenerate — recalibrate the camera scale.");

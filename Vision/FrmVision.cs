@@ -93,6 +93,8 @@ namespace NanotecController
         // Hold-to-rotate: rotates about the crosshair while the button is held (like a jog button).
         private readonly Button _rotHoldCcwBtn = new() { Text = "⟲ Hold", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
         private readonly Button _rotHoldCwBtn = new() { Text = "Hold ⟳", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly TrackBar _rotSpeedSlider = new() { Minimum = 50, Maximum = 2000, Value = 800, TickFrequency = 50, Enabled = false };
+        private readonly Label _rotSpeedLabel = new() { Text = "Speed: 800", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
@@ -351,6 +353,20 @@ namespace NanotecController
             _rotHoldCwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(+1); };
             _rotHoldCwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
 
+            // Rotation speed control: slider to adjust ROTATE_THETA_SPEED dynamically.
+            var rotSpeedText = new Label { Text = "Rotation speed", Location = new Point(1248, 646), AutoSize = true, Font = new Font("Segoe UI", 9F), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            _rotSpeedSlider.Location = new Point(1248, 668);
+            _rotSpeedSlider.Size = new Size(228, 45);
+            _rotSpeedSlider.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotSpeedSlider.ValueChanged += (s, e) =>
+            {
+                _rotSpeedLabel.Text = $"Speed: {_rotSpeedSlider.Value}";
+                if (_owner != null) _owner.RotateThetaSpeed = _rotSpeedSlider.Value;
+            };
+
+            _rotSpeedLabel.Location = new Point(1352, 720);
+            _rotSpeedLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
             Controls.Add(liveLabel);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
@@ -396,6 +412,9 @@ namespace NanotecController
             Controls.Add(_signTestBtn);
             Controls.Add(_rotHoldCcwBtn);
             Controls.Add(_rotHoldCwBtn);
+            Controls.Add(rotSpeedText);
+            Controls.Add(_rotSpeedSlider);
+            Controls.Add(_rotSpeedLabel);
             RefreshSignLabel();
 
             // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
