@@ -30,8 +30,12 @@ namespace NanotecController
                 "default", -1, "false", "default", "0", 0, -1, out HTuple acq);
             // Keep only the newest frame so the displayed image can't fall behind real time
             // (best-effort: not every driver exposes this GenICam param under this name).
-            try { HOperatorSet.SetFramegrabberParam(acq, "StreamBufferHandlingMode", "NewestOnly"); }
-            catch (HOperatorException) { /* unsupported on this transport/driver */ }
+            try { HOperatorSet.SetFramegrabberParam(acq, "[Stream]StreamBufferHandlingMode", "NewestOnly"); }
+            catch (HOperatorException)
+            {
+                try { HOperatorSet.SetFramegrabberParam(acq, "StreamBufferHandlingMode", "NewestOnly"); }
+                catch (HOperatorException) { /* unsupported on this transport/driver */ }
+            }
             HOperatorSet.GrabImageStart(acq, -1);
             _acq = acq;
         }
@@ -43,7 +47,9 @@ namespace NanotecController
         public HObject GrabImage()
         {
             if (_acq == null) throw new InvalidOperationException("Camera is not open.");
-            HOperatorSet.GrabImageAsync(out HObject image, _acq, -1);
+            // Reject frames older than 100 ms so the view can't trail real time even if the
+            // NewestOnly buffer mode isn't supported by the driver.
+            HOperatorSet.GrabImageAsync(out HObject image, _acq, 100);
             return image;
         }
 

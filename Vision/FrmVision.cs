@@ -32,6 +32,7 @@ namespace NanotecController
         private readonly Button _saveBtn = new() { Text = "Save Image", Enabled = false };
         private readonly Button _crosshairBtn = new() { Text = "Crosshair: Off" };
         private readonly Button _invertBtn = new() { Text = "Invert: On" };
+        private readonly Button _monoBtn = new() { Text = "Mono: Off" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
@@ -98,6 +99,7 @@ namespace NanotecController
 
         private bool _showCrosshair;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
+        private volatile bool _monoView;           // grey + full-range contrast stretch (display only)
 
         // One-shot jobs to run against the next grabbed frame, on the grab thread (replaces the
         // per-feature "request" flags). The UI enqueues; GrabLoop drains them while the frame is
@@ -162,7 +164,16 @@ namespace NanotecController
                 _invertBtn.Text = _invertView ? "Invert: On" : "Invert: Off";
             };
 
-            _status.Location = new Point(524, 496);
+            _monoBtn.Location = new Point(524, 484);
+            _monoBtn.Size = new Size(120, 40);
+            _monoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _monoBtn.Click += (s, e) =>
+            {
+                _monoView = !_monoView;
+                _monoBtn.Text = _monoView ? "Mono: On" : "Mono: Off";
+            };
+
+            _status.Location = new Point(652, 496);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Wafer centre-find (bottom strip) --------------------------------
@@ -375,6 +386,7 @@ namespace NanotecController
             Controls.Add(_saveBtn);
             Controls.Add(_crosshairBtn);
             Controls.Add(_invertBtn);
+            Controls.Add(_monoBtn);
             Controls.Add(_status);
             Controls.Add(calibLabel);
             Controls.Add(_sampleBtn);
@@ -484,7 +496,7 @@ namespace NanotecController
                 }
 
                 Bitmap bmp;
-                try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH); }
+                try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH, _monoView); }
                 catch (HOperatorException) { frame.Dispose(); continue; }   // skip a bad frame
                 finally { frame.Dispose(); }
 
