@@ -40,6 +40,7 @@ namespace NanotecController
 
         // --- Rotate about crosshair (FrmMain.Rotation.cs) ---
         int? RotationSign { get; }
+        int RotateThetaSpeed { get; set; }
         void SetRotationSign(int sign);
         Task RotateToAngleAsync(double targetDegrees);
         Task RotateAboutCrosshairAsync(double deltaDegrees);

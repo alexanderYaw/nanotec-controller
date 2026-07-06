@@ -238,6 +238,36 @@ namespace NanotecController
             Write(CW_HALT, OD_Controlword, BITS_16, "controlword: halt");
         }
 
+        /// <summary>
+        /// Velocity-only update to an ALREADY-RUNNING profile-velocity jog: rewrites just the
+        /// 0x60FF target (one SDO transaction) instead of re-sending mode + controlword like
+        /// <see cref="StartManualJog"/>. Zero decelerates to a servo hold WITHOUT the halt bit,
+        /// so there is no halt/run controlword flipping around zero. Arm the axis with
+        /// <see cref="StartManualJog"/> first; used by the crosshair-rotation follow loop, where
+        /// three axes are re-commanded every tick and SDO traffic sets the loop period.
+        /// </summary>
+        public void UpdateJogVelocity(int velocity)
+            => Write(velocity, OD_TargetVel, BITS_32, "target velocity (update)");
+
+        /// <summary>Current profile accel/decel (0x6083/0x6084) — read so callers that need their
+        /// own ramps (the crosshair-rotation follow loop) can save and later restore them.</summary>
+        public (long Accel, long Decel) GetProfileRamp()
+            => (Read(OD_ProfileAccel, "profile acceleration"),
+                Read(OD_ProfileDecel, "profile deceleration"));
+
+        /// <summary>
+        /// Sets profile accel/decel (0x6083/0x6084), in counts/s². These bound how fast the drive
+        /// chases a new 0x60FF target in profile-velocity mode too (not just profile-position), so
+        /// a follow loop that rewrites the target every tick needs them high enough that each step
+        /// is reached well within one tick — the drive's stored default is otherwise an unmodeled
+        /// lag on every update.
+        /// </summary>
+        public void SetProfileRamp(long accel, long decel)
+        {
+            Write(accel, OD_ProfileAccel, BITS_32, "profile acceleration");
+            Write(decel, OD_ProfileDecel, BITS_32, "profile deceleration");
+        }
+
         // --- Profile Position (point-to-point) ---------------------------------------
         // Used by the step-and-settle scan. Positions/velocities are in the drive's
         // own units (counts / 0x60FF units) until factor-group conversion is wired in.
@@ -392,6 +422,10 @@ namespace NanotecController
             long rawTicks = ReadPosition();
             return TicksToAngle(rawTicks);
         }
+
+        /// <summary>Position-only read (one SDO transaction, half of <see cref="GetStatus"/>)
+        /// for fast follow loops that don't need the CiA 402 state each tick.</summary>
+        public long GetPosition() => ReadPosition();
 
         /// <summary>Reads angle + decoded CiA 402 state in one go, for live display.</summary>
         public AxisStatus GetStatus()
