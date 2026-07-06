@@ -26,6 +26,30 @@ namespace NanotecController
         public string CameraInfo { get; private set; } = "";
 
         /// <summary>
+        /// Centred-ROI digital zoom: the sensor streams only the middle 1/Zoom of each axis.
+        /// The frame centre stays the same physical point and the pixel size is unchanged, so
+        /// the crosshair, pixel→step calibration, and edge detection remain valid at any zoom.
+        /// </summary>
+        public int Zoom { get; private set; } = 2;
+
+        /// <summary>
+        /// Changes the zoom by re-opening the framegrabber (ROI size can't change while the
+        /// acquisition is streaming). Call from the thread that owns the grabbing — the feed
+        /// blinks for the reopen. Throws like <see cref="Open"/> if the reopen fails.
+        /// </summary>
+        public void SetZoom(int factor)
+        {
+            factor = Math.Max(1, factor);
+            if (factor == Zoom) return;
+            Zoom = factor;
+            if (_acq == null) return;
+            try { HOperatorSet.CloseFramegrabber(_acq); }
+            catch (HalconException) { /* reopening anyway */ }
+            _acq = null;
+            Open();
+        }
+
+        /// <summary>
         /// Opens the framegrabber and primes async acquisition. Throws
         /// <see cref="HOperatorException"/> if no camera is present / the interface fails.
         /// </summary>
@@ -51,12 +75,50 @@ namespace NanotecController
                 catch (HOperatorException) { /* unsupported on this transport/driver */ }
             }
 
+            // Centred ROI (see Zoom): streaming fewer pixels lifts the USB-bandwidth fps cap
+            // toward the sensor's own limit. Sizes rounded to multiples of 16 and offsets to
+            // multiples of 4 to satisfy the camera's increment/Bayer-alignment constraints.
+            // Offsets are zeroed FIRST so a shrunken previous ROI (params persist in the camera
+            // until power-cycle) never blocks growing the window back. Best-effort.
+            try
+            {
+                HOperatorSet.GetFramegrabberParam(acq, "WidthMax", out HTuple wmax);
+                HOperatorSet.GetFramegrabberParam(acq, "HeightMax", out HTuple hmax);
+                long w = (wmax.L / Zoom) & ~15L;
+                long h = (hmax.L / Zoom) & ~15L;
+                HOperatorSet.SetFramegrabberParam(acq, "OffsetX", 0);
+                HOperatorSet.SetFramegrabberParam(acq, "OffsetY", 0);
+                HOperatorSet.SetFramegrabberParam(acq, "Width", w);
+                HOperatorSet.SetFramegrabberParam(acq, "Height", h);
+                HOperatorSet.SetFramegrabberParam(acq, "OffsetX", ((wmax.L - w) / 2) & ~3L);
+                HOperatorSet.SetFramegrabberParam(acq, "OffsetY", ((hmax.L - h) / 2) & ~3L);
+            }
+            catch (HalconException) { /* ROI unsupported; stream the full frame */ }
+
+            // Full-res 8-bit Bayer frames are ~20 MB, so the camera's default 360 MB/s USB limit
+            // caps the stream at 18 fps. Ask for more; the camera clamps to what the link allows.
+            try { HOperatorSet.SetFramegrabberParam(acq, "DeviceLinkThroughputLimit", 440000000.0); }
+            catch (HalconException) { /* camera clamps or rejects; keep its default */ }
+
             // What the camera thinks it can deliver (GenICam-standard names; best-effort).
+            // HalconException (not just HOperatorException) because the returned tuple type
+            // varies per camera — e.g. a boolean feature may come back as int or string, and
+            // a wrong accessor throws HTupleAccessException.
+            static string Text(HTuple t) => t.Type == HTupleType.STRING ? t.S : t.D.ToString("0.###");
             var info = new System.Text.StringBuilder();
             try { HOperatorSet.GetFramegrabberParam(acq, "ResultingFrameRate", out HTuple fr); info.Append($"cam {fr.D:0.0} fps"); }
-            catch (HOperatorException) { }
+            catch (HalconException) { }
             try { HOperatorSet.GetFramegrabberParam(acq, "ExposureTime", out HTuple exp); info.Append($"  exp {exp.D / 1000.0:0.0} ms"); }
-            catch (HOperatorException) { }
+            catch (HalconException) { }
+            try
+            {
+                HOperatorSet.GetFramegrabberParam(acq, "Width", out HTuple iw);
+                HOperatorSet.GetFramegrabberParam(acq, "Height", out HTuple ih);
+                info.Append($"  {iw.I}x{ih.I}");
+            }
+            catch (HalconException) { }
+            try { HOperatorSet.GetFramegrabberParam(acq, "PixelFormat", out HTuple pf); info.Append($" {Text(pf)}"); }
+            catch (HalconException) { }
             CameraInfo = info.ToString();
 
             HOperatorSet.GrabImageStart(acq, -1);

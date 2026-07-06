@@ -36,6 +36,12 @@ namespace NanotecController
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
         private readonly Label _fpsLabel = new() { AutoSize = true, ForeColor = Color.DimGray };
 
+        // Centred-ROI digital zoom. The UI picks a factor; GrabLoop applies it between frames
+        // (the framegrabber must be re-opened, and the grab thread owns the camera handle).
+        private static readonly int[] ZoomFactors = { 1, 2, 3, 5 };
+        private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Enabled = false };
+        private volatile int _zoomWanted = 2;
+
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
         private readonly SolidCircleDetector _markDetector = new();
@@ -125,6 +131,16 @@ namespace NanotecController
 
             var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
             _fpsLabel.Location = new Point(52, 11);
+
+            var zoomLabel = new Label { Text = "Zoom:", Location = new Point(352, 10), AutoSize = true };
+            _zoomBox.Location = new Point(410, 5);
+            _zoomBox.Size = new Size(56, 24);
+            foreach (int z in ZoomFactors) _zoomBox.Items.Add($"{z}x");
+            _zoomBox.SelectedIndex = Array.IndexOf(ZoomFactors, _zoomWanted);
+            _zoomBox.SelectedIndexChanged += (s, e) =>
+            {
+                if (_zoomBox.SelectedIndex >= 0) _zoomWanted = ZoomFactors[_zoomBox.SelectedIndex];
+            };
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
 
             _liveBox.Location = new Point(12, 32);
@@ -382,6 +398,8 @@ namespace NanotecController
 
             Controls.Add(liveLabel);
             Controls.Add(_fpsLabel);
+            Controls.Add(zoomLabel);
+            Controls.Add(_zoomBox);
             Controls.Add(capLabel);
             Controls.Add(_liveBox);
             Controls.Add(_capturedBox);
@@ -473,7 +491,8 @@ namespace NanotecController
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
             _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = true;
             _rotSpeedSlider.Enabled = true;
-            _status.Text = "Live. " + _camera.CameraInfo;
+            _zoomBox.Enabled = true;
+            _status.Text = "Live.";
             _cts = new CancellationTokenSource();
             _grabTask = Task.Run(() => GrabLoop(_cts.Token));
         }
@@ -490,6 +509,17 @@ namespace NanotecController
 
             while (!ct.IsCancellationRequested)
             {
+                // Apply a pending zoom change here, between grabs — the grab thread owns the
+                // camera handle, and the ROI can only change across a framegrabber reopen.
+                int zoom = _zoomWanted;
+                if (zoom != _camera.Zoom)
+                {
+                    try { _camera.SetZoom(zoom); }
+                    catch (HalconException ex) { PostStatus("Zoom change failed: " + ex.Message); return; }
+                    PostStatus($"Live ({zoom}x).");
+                    continue;
+                }
+
                 HObject frame;
                 try { frame = _camera.GrabImage(); }
                 catch (HOperatorException ex) { PostStatus("Live grab stopped: " + ex.Message); return; }
