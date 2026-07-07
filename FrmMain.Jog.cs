@@ -42,7 +42,6 @@ namespace NanotecController
                     AppendLog($"{id} was in Quick Stop (limit) - re-enabled.");
                 _motion.JogAt(id, direction, speed);
                 _softLimits.RecordCommand(id, direction);
-                AppendLog($"Jog {id} {(direction > 0 ? "+" : "−")} at {speed}.");
             }
             catch (DriveException ex)
             {

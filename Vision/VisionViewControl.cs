@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Drawing;
 using System.Threading;
 using System.Threading.Tasks;
@@ -73,22 +74,26 @@ namespace NanotecController
         /// <summary>Physical scale of one IMAGE pixel (mm along the column / row axes), or null
         /// until calibrated. Supplied lazily by the host so calibration edits apply live; drives
         /// the crosshair mm ticks and the µm/px readout. See <see cref="MmPerPixel"/>.</summary>
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Func<(double mmPerPxCol, double mmPerPxRow)?>? TickScaleProvider { get; set; }
 
         public bool IsCameraOpen => _camera.IsOpen;
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public bool InvertView
         {
             get => _invertView;
             set => _invertView = value;
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public bool MonoView
         {
             get => _monoView;
             set => _monoView = value;
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public bool ShowCrosshair
         {
             get => _showCrosshair;
@@ -96,6 +101,7 @@ namespace NanotecController
         }
 
         /// <summary>Centred-ROI digital zoom factor; applied by the grab thread between frames.</summary>
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public int ZoomFactor
         {
             get => _zoomWanted;
