@@ -24,7 +24,7 @@ namespace NanotecController
             visionPlaceholder = new Label();
             statusStrip = new StatusStrip();
             statusStripLabel = new ToolStripStatusLabel();
-            logStripButton = new ToolStripStatusLabel();
+            logStripButton = new ToolStripButton();
             titleLabel = new Label();
             statusGroup = new GroupBox();
             ledPanel = new Panel();
@@ -126,8 +126,11 @@ namespace NanotecController
             //
             // logStripButton
             //
-            logStripButton.IsLink = true;
+            logStripButton.AutoSize = false;
+            logStripButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            logStripButton.Margin = new Padding(2, 1, 4, 1);
             logStripButton.Name = "logStripButton";
+            logStripButton.Size = new Size(84, 22);
             logStripButton.Text = "Log…";
             logStripButton.Click += logStripButton_Click;
             //
@@ -413,7 +416,7 @@ namespace NanotecController
         private System.Windows.Forms.Label visionPlaceholder;
         private System.Windows.Forms.StatusStrip statusStrip;
         private System.Windows.Forms.ToolStripStatusLabel statusStripLabel;
-        private System.Windows.Forms.ToolStripStatusLabel logStripButton;
+        private System.Windows.Forms.ToolStripButton logStripButton;
         private System.Windows.Forms.Label titleLabel;
         private System.Windows.Forms.GroupBox statusGroup;
         private System.Windows.Forms.Panel ledPanel;

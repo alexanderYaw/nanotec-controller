@@ -19,10 +19,9 @@ namespace NanotecController
                 Text = "Vision...",
                 Location = new Point(694, 500),
                 Size = new Size(168, 40),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
             };
             visionButton.Click += visionButton_Click;
-            Controls.Add(visionButton);
+            leftPanel.Controls.Add(visionButton);
         }
 
         private void visionButton_Click(object? sender, EventArgs e)

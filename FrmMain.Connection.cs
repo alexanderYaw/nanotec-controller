@@ -17,7 +17,7 @@ namespace NanotecController
         private async Task ConnectAsync()
         {
             SetState(connected: false, busy: true, "Scanning buses...");
-            logBox.Clear();
+            ClearLog();
 
             IReadOnlyList<string> buses = await Task.Run(() => _connection.ListBuses(_log));
             if (buses.Count == 0)
