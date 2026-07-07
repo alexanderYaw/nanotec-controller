@@ -1,32 +1,20 @@
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Stage A live-view test: opens the HALCON USB3Vision camera, streams frames into a
-    /// live pane, and a "Capture Image" button freezes the current frame into a second pane.
-    /// Pure camera proof-out — no motion, no edge detection yet. Frames are shown via
-    /// <see cref="HalconBitmap"/> (PictureBox) because HALCON's WinForms control isn't usable
-    /// under .NET 10 here.
-    ///
-    /// Smoothness: a background thread grabs AND converts frames; the UI thread only paints
-    /// the newest finished frame (older ones are dropped). This keeps the blocking grab and
-    /// the per-pixel conversion off the UI thread, and frames are downscaled to the view size
-    /// before conversion — the two things that made the original timer-on-UI version laggy.
+    /// Vision window: hosts the live view (<see cref="VisionViewControl"/>, which owns the
+    /// camera and grab thread) plus the capture pane and the calibration / centre-find /
+    /// rotate-about-crosshair protocol columns. This form is the toolbar + protocol surface;
+    /// all frame plumbing lives in the control, reached via RequestFrame / PostFrameBitmap.
     /// </summary>
     public sealed partial class FrmVision : Form
     {
-        private readonly VisionCamera _camera = new();
-        private readonly PictureBox _liveBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+        private readonly VisionViewControl _view = new();
         private readonly PictureBox _capturedBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
         private readonly Button _captureBtn = new() { Text = "Capture Image", Enabled = false };
         private readonly Button _saveBtn = new() { Text = "Save Image", Enabled = false };
@@ -35,12 +23,7 @@ namespace NanotecController
         private readonly Button _monoBtn = new() { Text = "Mono: Off" };
         private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
         private readonly Label _fpsLabel = new() { AutoSize = true, ForeColor = Color.DimGray };
-
-        // Centred-ROI digital zoom. The UI picks a factor; GrabLoop applies it between frames
-        // (the framegrabber must be re-opened, and the grab thread owns the camera handle).
-        private static readonly int[] ZoomFactors = { 1, 2, 3, 5 };
         private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Enabled = false };
-        private volatile int _zoomWanted = 2;
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
@@ -104,22 +87,6 @@ namespace NanotecController
         private readonly TrackBar _rotSpeedSlider = new() { Minimum = 50, Maximum = 2000, Value = 800, TickFrequency = 50, Enabled = false };
         private readonly Label _rotSpeedLabel = new() { Text = "Speed: 800", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
-        private bool _showCrosshair;
-        private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
-        private volatile bool _monoView;           // grey + full-range contrast stretch (display only)
-
-        // One-shot jobs to run against the next grabbed frame, on the grab thread (replaces the
-        // per-feature "request" flags). The UI enqueues; GrabLoop drains them while the frame is
-        // alive. Each job runs its own detection + bitmap conversion and marshals to the UI.
-        private readonly ConcurrentQueue<Action<HObject>> _frameJobs = new();
-
-        private Task? _grabTask;
-        private CancellationTokenSource? _cts;
-        private readonly object _frameLock = new();
-        private Bitmap? _pending;          // newest converted frame not yet shown
-        private bool _displayQueued;        // a BeginInvoke(ShowPending) is already in flight
-        private volatile int _viewW = 480, _viewH = 440;   // downscale target (live box size)
-
         public FrmVision(IMotionHost owner)
         {
             _owner = owner;
@@ -133,20 +100,24 @@ namespace NanotecController
             _fpsLabel.Location = new Point(52, 11);
 
             var zoomLabel = new Label { Text = "Zoom:", Location = new Point(352, 10), AutoSize = true };
-            _zoomBox.Location = new Point(410, 5);
+            _zoomBox.Location = new Point(410, 4);
             _zoomBox.Size = new Size(56, 24);
-            foreach (int z in ZoomFactors) _zoomBox.Items.Add($"{z}x");
-            _zoomBox.SelectedIndex = Array.IndexOf(ZoomFactors, _zoomWanted);
+            foreach (int z in VisionViewControl.ZoomFactors) _zoomBox.Items.Add($"{z}x");
+            _zoomBox.SelectedIndex = Array.IndexOf(VisionViewControl.ZoomFactors, _view.ZoomFactor);
             _zoomBox.SelectedIndexChanged += (s, e) =>
             {
-                if (_zoomBox.SelectedIndex >= 0) _zoomWanted = ZoomFactors[_zoomBox.SelectedIndex];
+                if (_zoomBox.SelectedIndex >= 0) _view.ZoomFactor = VisionViewControl.ZoomFactors[_zoomBox.SelectedIndex];
             };
             var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
 
-            _liveBox.Location = new Point(12, 32);
-            _liveBox.Size = new Size(480, 440);
-            _liveBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
-            _liveBox.Resize += (s, e) => { _viewW = Math.Max(1, _liveBox.Width); _viewH = Math.Max(1, _liveBox.Height); };
+            _view.Location = new Point(12, 32);
+            _view.Size = new Size(480, 440);
+            _view.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
+            _view.StatusChanged += text => _status.Text = text;
+            _view.FpsChanged += text => _fpsLabel.Text = text;
+            _view.CameraStateChanged += OnCameraStateChanged;
+            // Lazy so a calibration edit (affine or steps/mm) re-scales the ticks live.
+            _view.TickScaleProvider = () => _owner != null ? VisionViewControl.MmPerPixel(_owner.Calibration) : null;
 
             _capturedBox.Location = new Point(508, 32);
             _capturedBox.Size = new Size(480, 440);
@@ -167,19 +138,17 @@ namespace NanotecController
             _crosshairBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _crosshairBtn.Click += (s, e) =>
             {
-                _showCrosshair = !_showCrosshair;
-                _crosshairBtn.Text = _showCrosshair ? "Crosshair: On" : "Crosshair: Off";
-                _liveBox.Invalidate();
+                _view.ShowCrosshair = !_view.ShowCrosshair;
+                _crosshairBtn.Text = _view.ShowCrosshair ? "Crosshair: On" : "Crosshair: Off";
             };
-            _liveBox.Paint += DrawCrosshair;
 
             _invertBtn.Location = new Point(396, 484);
             _invertBtn.Size = new Size(120, 40);
             _invertBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _invertBtn.Click += (s, e) =>
             {
-                _invertView = !_invertView;
-                _invertBtn.Text = _invertView ? "Invert: On" : "Invert: Off";
+                _view.InvertView = !_view.InvertView;
+                _invertBtn.Text = _view.InvertView ? "Invert: On" : "Invert: Off";
             };
 
             _monoBtn.Location = new Point(524, 484);
@@ -187,8 +156,8 @@ namespace NanotecController
             _monoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _monoBtn.Click += (s, e) =>
             {
-                _monoView = !_monoView;
-                _monoBtn.Text = _monoView ? "Mono: On" : "Mono: Off";
+                _view.MonoView = !_view.MonoView;
+                _monoBtn.Text = _view.MonoView ? "Mono: On" : "Mono: Off";
             };
 
             _status.Location = new Point(652, 496);
@@ -205,8 +174,8 @@ namespace NanotecController
             _waferEdgeBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _waferEdgeBtn.Click += (s, e) =>
             {
-                if (!_camera.IsOpen) return;
-                RequestFrame(frame =>
+                if (!_view.IsCameraOpen) return;
+                _view.RequestFrame(frame =>
                 {
                     HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
                     double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
@@ -224,7 +193,7 @@ namespace NanotecController
                         contour?.Dispose();
                     }
                     catch (HOperatorException) { found = false; edge = default; }
-                    PostFrameBitmap(frame, flip: false, raw => OnWaferGrabbed(found, edge, cRows, cCols, crossRow, crossCol, raw));
+                    _view.PostFrameBitmap(frame, flip: false, raw => OnWaferGrabbed(found, edge, cRows, cCols, crossRow, crossCol, raw));
                 });
                 _status.Text = "Detecting wafer edge...";
             };
@@ -401,7 +370,7 @@ namespace NanotecController
             Controls.Add(zoomLabel);
             Controls.Add(_zoomBox);
             Controls.Add(capLabel);
-            Controls.Add(_liveBox);
+            Controls.Add(_view);
             Controls.Add(_capturedBox);
             Controls.Add(_captureBtn);
             Controls.Add(_saveBtn);
@@ -465,150 +434,43 @@ namespace NanotecController
                 _waferResult.Text = $"Saved wafer centre:\r\nX={wxLoaded}  Y={wyLoaded}";
             }
 
-            Load += (s, e) => StartCamera();
+            Load += (s, e) => _view.StartCamera();
             FormClosing += (s, e) => Teardown();
             // Safety: if this window loses focus mid-hold (e.g. alt-tab), stop the vision jog AND
             // any hold-rotate (a held button's MouseUp may not fire when focus is stolen).
             Deactivate += (s, e) => { _owner?.VisionStop(); _owner?.StopHoldRotate(); };
         }
 
-        private void StartCamera()
+        // Camera opened or closed: gate everything that needs live frames (or, for the motion
+        // features, that only makes sense while the operator can see the live view).
+        private void OnCameraStateChanged()
         {
-            try { _camera.Open(); }
-            catch (HOperatorException ex) { _status.Text = "Camera open failed: " + ex.Message; return; }
-
-            _viewW = Math.Max(1, _liveBox.Width);
-            _viewH = Math.Max(1, _liveBox.Height);
-            _captureBtn.Enabled = true;
-            _sampleBtn.Enabled = true;
-            _edgeBtn.Enabled = true;
-            _waferEdgeBtn.Enabled = true;
-            _vSpeed.Enabled = true;
-            _vPad.Enabled = true;
-            _vPadTimer.Start();
-            _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = true;
-            _rotBy.Enabled = _rotByBtn.Enabled = true;
-            _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = true;
-            _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = true;
-            _rotSpeedSlider.Enabled = true;
-            _zoomBox.Enabled = true;
-            _status.Text = "Live.";
-            _cts = new CancellationTokenSource();
-            _grabTask = Task.Run(() => GrabLoop(_cts.Token));
+            bool open = _view.IsCameraOpen;
+            _captureBtn.Enabled = open;
+            _sampleBtn.Enabled = open;
+            _edgeBtn.Enabled = open;
+            _waferEdgeBtn.Enabled = open;
+            _vSpeed.Enabled = open;
+            _vPad.Enabled = open;
+            _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = open;
+            _rotBy.Enabled = _rotByBtn.Enabled = open;
+            _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;
+            _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = open;
+            _rotSpeedSlider.Enabled = open;
+            _zoomBox.Enabled = open;
+            if (open) _vPadTimer.Start(); else _vPadTimer.Stop();
         }
 
-        // Background: grab + convert as fast as the camera allows, publishing only the newest
-        // frame to the UI. Runs off the UI thread so neither the blocking grab nor the pixel
-        // copy can stall input/painting.
-        private void GrabLoop(CancellationToken ct)
-        {
-            // Measured delivery rate, shown next to "Live" — distinguishes a slow camera
-            // (exposure/frame-rate config) from a slow conversion pipeline.
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            int shown = 0;
-
-            while (!ct.IsCancellationRequested)
-            {
-                // Apply a pending zoom change here, between grabs — the grab thread owns the
-                // camera handle, and the ROI can only change across a framegrabber reopen.
-                int zoom = _zoomWanted;
-                if (zoom != _camera.Zoom)
-                {
-                    try { _camera.SetZoom(zoom); }
-                    catch (HalconException ex) { PostStatus("Zoom change failed: " + ex.Message); return; }
-                    PostStatus($"Live ({zoom}x).");
-                    continue;
-                }
-
-                HObject frame;
-                try { frame = _camera.GrabImage(); }
-                catch (HOperatorException ex) { PostStatus("Live grab stopped: " + ex.Message); return; }
-
-                // Run any queued one-shot jobs (capture / calibration sample / chuck or wafer edge)
-                // against THIS frame, on the grab thread, so the HALCON acquisition handle stays
-                // single-threaded. A job that throws is skipped (the user can retry); each job does
-                // its own detection + bitmap conversion and marshals the result to the UI.
-                while (_frameJobs.TryDequeue(out Action<HObject>? job))
-                {
-                    try { job(frame); }
-                    catch (HOperatorException) { /* detection failed on this frame; user can retry */ }
-                }
-
-                Bitmap bmp;
-                try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH, _monoView); }
-                catch (HOperatorException) { frame.Dispose(); continue; }   // skip a bad frame
-                finally { frame.Dispose(); }
-
-                // Camera is mounted inverted: flip on both axes (180°) so the view is upright.
-                if (_invertView) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
-
-                Bitmap? dropped;
-                bool queue;
-                lock (_frameLock)
-                {
-                    dropped = _pending;        // UI never picked this up -> discard it
-                    _pending = bmp;
-                    queue = !_displayQueued;
-                    if (queue) _displayQueued = true;
-                }
-                dropped?.Dispose();
-
-                if (queue)
-                {
-                    try { BeginInvoke(new Action(ShowPending)); }
-                    catch (InvalidOperationException) { return; }   // handle gone (closing)
-                }
-
-                shown++;
-                if (sw.ElapsedMilliseconds >= 1000)
-                {
-                    double fps = shown * 1000.0 / sw.ElapsedMilliseconds;
-                    sw.Restart(); shown = 0;
-                    try { BeginInvoke(new Action(() => _fpsLabel.Text = $"{fps:0.0} fps — {_camera.BufferMode}")); }
-                    catch (InvalidOperationException) { return; }   // handle gone (closing)
-                }
-            }
-        }
-
-        private void ShowPending()
-        {
-            Bitmap? next;
-            lock (_frameLock) { next = _pending; _pending = null; _displayQueued = false; }
-            if (next == null) return;
-            if (IsDisposed) { next.Dispose(); return; }
-
-            Image? old = _liveBox.Image;
-            _liveBox.Image = next;
-            if (!ReferenceEquals(old, next)) old?.Dispose();
-        }
-
-        // Enqueues a unit of work to run against the next grabbed frame, on the grab thread.
-        private void RequestFrame(Action<HObject> job) => _frameJobs.Enqueue(job);
-
-        // Grab-thread helper: convert the live frame to a full-res bitmap (optionally 180°-flipped),
-        // then hand it to a UI callback that takes ownership. Skips silently if the frame can't be
-        // converted (user can retry); disposes the bitmap if the window is already closing. Mirrors
-        // the old per-request tail so capture / sample / edge / wafer share one convert+marshal path.
-        private void PostFrameBitmap(HObject frame, bool flip, Action<Bitmap> onUi)
-        {
-            Bitmap bmp;
-            try { bmp = HalconBitmap.ToBitmap(frame, 0, 0); }
-            catch (HOperatorException) { return; }   // skip; user can retry
-            if (flip) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
-            try { BeginInvoke(new Action(() => onUi(bmp))); }
-            catch (InvalidOperationException) { bmp.Dispose(); }   // closing
-        }
-
-        // Asks GrabLoop to convert the next frame at full resolution; SetCaptured shows it.
+        // Asks the view to convert the next frame at full resolution; SetCaptured shows it.
         private void CaptureFrame()
         {
-            if (!_camera.IsOpen) return;
-            RequestFrame(frame => PostFrameBitmap(frame, _invertView, full => SetCaptured(full)));
+            if (!_view.IsCameraOpen) return;
+            _view.CaptureFullRes(SetCaptured);
             _status.Text = "Capturing full-resolution frame...";
         }
 
-        // UI thread: takes ownership of the full-res capture from GrabLoop. The captured pane
-        // is SizeMode.Zoom, so it shows the full image scaled to fit; saving keeps full res.
+        // UI thread: takes ownership of the full-res capture. The captured pane is
+        // SizeMode.Zoom, so it shows the full image scaled to fit; saving keeps full res.
         private void SetCaptured(Bitmap full)
         {
             if (IsDisposed) { full.Dispose(); return; }
@@ -631,19 +493,6 @@ namespace NanotecController
 
         // Rotate-about-crosshair UI (sign label + sign test) → FrmVision.Rotation.cs
 
-        // Overlays a crosshair through the centre of the live pane. With SizeMode.Zoom the
-        // framed image is centred in the box, so box-centre = frame geometric centre. This is
-        // a visual reference only — NOT the calibrated optical/Theta centre (see Stage B).
-        private void DrawCrosshair(object? sender, PaintEventArgs e)
-        {
-            if (!_showCrosshair) return;
-            int cx = _liveBox.ClientSize.Width / 2;
-            int cy = _liveBox.ClientSize.Height / 2;
-            using var pen = new Pen(Color.Lime, 1f);
-            e.Graphics.DrawLine(pen, cx, 0, cx, _liveBox.ClientSize.Height);
-            e.Graphics.DrawLine(pen, 0, cy, _liveBox.ClientSize.Width, cy);
-        }
-
         // Saves the captured frame as a PNG under Desktop\images (created if missing).
         private void SaveCaptured()
         {
@@ -664,23 +513,13 @@ namespace NanotecController
             }
         }
 
-        private void PostStatus(string text)
-        {
-            try { BeginInvoke(new Action(() => _status.Text = text)); }
-            catch (InvalidOperationException) { /* closing */ }
-        }
-
         // Drift-corrected vision jog (puck poll + discrete d-pad) → FrmVision.Jog.cs
 
         private void Teardown()
         {
             _vPadTimer.Stop();
             _owner?.VisionStop();
-            _cts?.Cancel();
-            try { _grabTask?.Wait(500); } catch { /* best effort; camera streams so grab returns fast */ }
-            _camera.Dispose();
-            lock (_frameLock) { _pending?.Dispose(); _pending = null; }
-            _liveBox.Image?.Dispose();
+            _view.StopCamera();
             _capturedBox.Image?.Dispose();
         }
     }

@@ -10,23 +10,23 @@ namespace NanotecController
     // (Partial of FrmVision; layout + grab loop live in FrmVision.cs.)
     public sealed partial class FrmVision
     {
-        // Asks GrabLoop to detect the fiducial in the next frame (the table is held still by
-        // the user during a manual sample).
+        // Asks the grab thread to detect the fiducial in the next frame (the table is held
+        // still by the user during a manual sample).
         private void RequestSample()
         {
-            if (!_camera.IsOpen) return;
-            RequestFrame(frame =>
+            if (!_view.IsCameraOpen) return;
+            _view.RequestFrame(frame =>
             {
                 bool found;
                 SolidCircleDetector.Mark mark;
                 try { found = _markDetector.TryDetect(frame, out mark); }
                 catch (HOperatorException) { found = false; mark = default; }
-                PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
+                _view.PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
             });
             _status.Text = "Sampling: detecting fiducial...";
         }
 
-        // UI thread: GrabLoop found (or didn't) the fiducial and handed us a raw full-res
+        // UI thread: the grab thread found (or didn't) the fiducial and handed us a raw full-res
         // frame. Pair the detected pixel with the current motor position and store a sample.
         private void OnSampleGrabbed(bool found, SolidCircleDetector.Mark mark, Bitmap raw)
         {

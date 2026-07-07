@@ -16,8 +16,8 @@ namespace NanotecController
     {
         private void RequestEdge()
         {
-            if (!_camera.IsOpen) return;
-            RequestFrame(frame =>
+            if (!_view.IsCameraOpen) return;
+            _view.RequestFrame(frame =>
             {
                 HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
                 double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
@@ -25,12 +25,12 @@ namespace NanotecController
                 ChuckEdgeDetector.EdgePoint edge;
                 try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
                 catch (HOperatorException) { found = false; edge = default; }
-                PostFrameBitmap(frame, flip: false, raw => OnEdgeGrabbed(found, edge, crossRow, crossCol, raw));
+                _view.PostFrameBitmap(frame, flip: false, raw => OnEdgeGrabbed(found, edge, crossRow, crossCol, raw));
             });
             _status.Text = "Detecting chuck edge...";
         }
 
-        // UI thread: GrabLoop found (or not) the chuck-edge point nearest the crosshair. Convert
+        // UI thread: the grab thread found (or not) the chuck-edge point nearest the crosshair. Convert
         // it to step space via the calibration and store it: E = M + A·(p_crosshair − p_edge),
         // the motor position that would bring this edge point onto the crosshair (user frame).
         private void OnEdgeGrabbed(bool found, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol, Bitmap raw)
