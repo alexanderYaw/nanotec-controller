@@ -94,7 +94,6 @@ namespace NanotecController
             //
             // visionHostPanel
             //
-            visionHostPanel.BackColor = System.Drawing.Color.Black;
             visionHostPanel.Controls.Add(visionPlaceholder);
             visionHostPanel.Dock = DockStyle.Fill;
             visionHostPanel.Name = "visionHostPanel";

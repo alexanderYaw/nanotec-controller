@@ -34,7 +34,7 @@ namespace NanotecController
             visionHostPanel.Controls.Remove(visionPlaceholder);
 
             // --- top toolbar ---
-            var toolbar = new Panel { Dock = DockStyle.Top, Height = 40 };
+            var toolbar = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SystemColors.Control };
             toolbar.Controls.Add(new Label { Text = "Zoom:", Location = new Point(4, 12), AutoSize = true });
             _visionZoom = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(52, 8), Size = new Size(56, 24), Enabled = false };
             foreach (int z in VisionViewControl.ZoomFactors) _visionZoom.Items.Add($"{z}x");

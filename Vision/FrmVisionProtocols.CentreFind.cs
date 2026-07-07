@@ -7,7 +7,7 @@ using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVision — chuck + wafer centre-find: capture ≥3 rim points (step space), circle-fit them to
+    // FrmVisionProtocols — chuck + wafer centre-find: capture ≥3 rim points (step space), circle-fit them to
     // a centre, and drive there. The two features share CentreFinder plus the compute/go-to halves
     // (TryComputeAndSaveCentre / GoToCentreAsync); only the grab callbacks differ, because the chuck
     // edge (focus) and wafer edge (brightness) use different detectors and overlays.

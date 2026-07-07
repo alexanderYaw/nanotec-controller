@@ -5,7 +5,7 @@ using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVision — camera-scale calibration: manually capture (motor X,Y ↔ detected fiducial pixel)
+    // FrmVisionProtocols — camera-scale calibration: manually capture (motor X,Y ↔ detected fiducial pixel)
     // samples and solve the pixel→step affine, writing it to the shared CalibrationStore.
     // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
     public sealed partial class FrmVisionProtocols

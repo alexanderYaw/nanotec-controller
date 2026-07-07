@@ -3,7 +3,7 @@ using System.Drawing;
 
 namespace NanotecController
 {
-    // FrmVision — drift-corrected vision jog: maps a screen-space direction (analog puck poll or the
+    // FrmVisionProtocols — drift-corrected vision jog: maps a screen-space direction (analog puck poll or the
     // discrete d-pad) through the pixel→step affine so the on-screen motion follows that direction.
     // The actual axis commands run in FrmMain.VisionJogUser/VisionStop. (Partial of FrmVisionProtocols.)
     public sealed partial class FrmVisionProtocols
