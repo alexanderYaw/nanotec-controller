@@ -360,9 +360,47 @@ namespace NanotecController
             }
         }
 
+        // --- Log: capped ring buffer + status strip + on-demand FrmLog ------------
+        // The log box is gone; the strip shows only the latest line. The full history lives in a
+        // bounded ring (so a long session can't grow unbounded) and is mirrored live to an open
+        // FrmLog. AppendLog is only ever called on the UI thread (drive ops marshal through
+        // _log/Progress or run their logging outside the background lambda), so no locking here.
+        private const int LOG_RING_MAX = 5000;
+        private readonly Queue<string> _logRing = new();
+        private FrmLog? _logWindow;
+
+        /// <summary>A snapshot of the buffered log lines (oldest first) for a newly-opened FrmLog.</summary>
+        public IReadOnlyCollection<string> LogSnapshot => _logRing.ToArray();
+
+        /// <summary>Raised (UI thread) for each new log line, so an open FrmLog can append it live.</summary>
+        public event Action<string>? LogLineAdded;
+
+        /// <summary>Raised (UI thread) when the log is cleared (e.g. on a new connect).</summary>
+        public event Action? LogCleared;
+
         private void AppendLog(string message)
         {
-            logBox.AppendText($"{DateTime.Now:HH:mm:ss}  {message}{Environment.NewLine}");
+            string line = $"{DateTime.Now:HH:mm:ss}  {message}";
+            _logRing.Enqueue(line);
+            while (_logRing.Count > LOG_RING_MAX) _logRing.Dequeue();
+            statusStripLabel.Text = message;
+            LogLineAdded?.Invoke(line);
+        }
+
+        /// <summary>Empties the log buffer + strip and notifies an open FrmLog.</summary>
+        private void ClearLog()
+        {
+            _logRing.Clear();
+            statusStripLabel.Text = "";
+            LogCleared?.Invoke();
+        }
+
+        private void logStripButton_Click(object? sender, EventArgs e)
+        {
+            if (_logWindow == null || _logWindow.IsDisposed)
+                _logWindow = new FrmLog(this) { Owner = this };
+            _logWindow.Show();
+            _logWindow.BringToFront();
         }
     }
 }

@@ -44,11 +44,10 @@ namespace NanotecController
                 Text = "Position Map...",
                 Location = new Point(694, 452),
                 Size = new Size(168, 40),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Enabled = false,
             };
             positionButton.Click += positionButton_Click;
-            Controls.Add(positionButton);
+            leftPanel.Controls.Add(positionButton);
         }
 
         private void positionButton_Click(object? sender, EventArgs e)
