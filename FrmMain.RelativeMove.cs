@@ -178,7 +178,7 @@ namespace NanotecController
                 _motion!.RecoverIfQuickStopped(AxisId.Theta);
                 start = _motion.GetStatus(AxisId.Theta).Position;
                 _motion.MoveAbsolute(AxisId.Theta, start + ticks, speed);
-                _motion.WaitForMotionComplete(AxisId.Theta, FIND_TIMEOUT_MS);
+                WaitOrStop(AxisId.Theta, FIND_TIMEOUT_MS);
                 end = _motion.GetStatus(AxisId.Theta).Position;
             });
             AppendLog(ok ? $"Rotate Θ complete ({start:N0} → {end:N0})." : "Rotate Θ FAILED — see error above.");

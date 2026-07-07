@@ -226,6 +226,8 @@ namespace NanotecController
                     double maxThetaVel = 0.0;            // peak |thetaVel| seen (ticks/ms), for the ramp-down distance
                     while (true)
                     {
+                        // Operator STOP: abandon the rotate; the finally below halts all three axes.
+                        if (_stopRequested) throw new OperationCanceledException("Rotate stopped by operator.");
                         long currentTheta = _motion.GetPosition(AxisId.Theta);
                         long nowMs = ffClock.ElapsedMilliseconds;
                         long dtMs = nowMs - ffPrevMs;

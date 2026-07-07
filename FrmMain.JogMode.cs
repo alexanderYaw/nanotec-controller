@@ -22,6 +22,11 @@ namespace NanotecController
         private Button _visionModeBtn = null!;
         private Label _thetaHeader = null!;
         private Button _invertMovementBtn = null!;
+        // Dedicated VISION X/Y jog speed. Separate from the per-axis raw sliders: enabled only in
+        // VISION mode (where the X/Y raw sliders grey out), greyed in RAW. Θ speed still lives on the
+        // Θ row slider (jog speed in RAW, rotate-about-crosshair speed in VISION); Z is always raw.
+        private TrackBar _visionSpeed = null!;
+        private Label _visionSpeedValue = null!;
 
         // Per-axis raw slider ceiling (from AxisConfig) + the remembered slider value for each mode,
         // so switching back and forth restores what the user had. Vision X/Y = 0..6000; Θ = 50..2000.
@@ -33,11 +38,16 @@ namespace NanotecController
 
         private static int DefaultVisionSpeed(AxisId id) => id == AxisId.Theta ? 800 : 1000;
 
-        // Vision-mode slider range for an axis (Z is always raw, so it keeps its raw ceiling).
+        // Θ is the only axis whose ROW slider changes meaning/range with the mode: raw jog speed in
+        // RAW, rotate-about-crosshair speed (50..2000) in VISION. X/Y/Z keep their raw jog range in
+        // both modes — VISION X/Y speed lives on the dedicated _visionSpeed slider, not these rows.
+        private static bool UsesVisionRange(AxisId id, JogMode mode) => mode == JogMode.Vision && id == AxisId.Theta;
+
+        // Per-mode slider range for an axis's ROW slider.
         private (int min, int max) RangeFor(AxisId id, JogMode mode)
         {
-            if (mode == JogMode.Raw || id == AxisId.Z) return (0, _rawSpeedMax.GetValueOrDefault(id, 6000));
-            return id == AxisId.Theta ? (50, 2000) : (0, 6000);
+            if (UsesVisionRange(id, mode)) return (50, 2000);
+            return (0, _rawSpeedMax.GetValueOrDefault(id, 6000));
         }
 
         // Switches jog mode: stop everything first (safety), swap the slider ranges + labels, re-gate.
@@ -80,10 +90,11 @@ namespace NanotecController
 
         private void SaveSpeedsFor(JogMode mode)
         {
-            // Z is always raw, so its value belongs to the raw set regardless of the current mode.
+            // Only Θ has a distinct per-mode value now (its range swaps); every other axis's row
+            // slider stays raw in both modes, so it belongs to the raw set regardless of mode.
             foreach (AxisId id in _axisRows.Keys)
             {
-                Dictionary<AxisId, int> dict = mode == JogMode.Raw || id == AxisId.Z ? _rawSpeedSaved : _visionSpeedSaved;
+                Dictionary<AxisId, int> dict = UsesVisionRange(id, mode) ? _visionSpeedSaved : _rawSpeedSaved;
                 dict[id] = _axisRows[id].Speed.Value;
             }
         }
@@ -93,8 +104,8 @@ namespace NanotecController
             foreach (AxisId id in _axisRows.Keys)
             {
                 (int min, int max) = RangeFor(id, mode);
-                // Z stays raw in both modes → always restore it from the raw set (seeded in BuildAxisRows).
-                Dictionary<AxisId, int> dict = mode == JogMode.Raw || id == AxisId.Z ? _rawSpeedSaved : _visionSpeedSaved;
+                // Only Θ-in-VISION restores from the vision set; all other rows restore raw (seeded in BuildAxisRows).
+                Dictionary<AxisId, int> dict = UsesVisionRange(id, mode) ? _visionSpeedSaved : _rawSpeedSaved;
                 int want = dict.TryGetValue(id, out int v) ? v : DefaultVisionSpeed(id);
                 AxisRow row = _axisRows[id];
                 // Set Maximum before Minimum when growing (and vice-versa) so the range is never
@@ -145,7 +156,7 @@ namespace NanotecController
         {
             int sx = id == AxisId.X ? dir : 0;
             int sy = id == AxisId.Y ? dir : 0;
-            VisionJog(sx, sy, _axisRows[id].Speed.Value);
+            VisionJog(sx, sy, _visionSpeed.Value);
         }
 
         // --- vision-jog maths (moved here from the protocols window) ----------------
@@ -176,7 +187,7 @@ namespace NanotecController
 
             int vx = 0, vy = 0;
             if (a != null && vmag >= 0.05)   // small dead-zone around centre
-                VisionJogMath.TryUserVelocity(a, v.X, -v.Y, vmag * _axisRows[AxisId.X].Speed.Value, out vx, out vy);
+                VisionJogMath.TryUserVelocity(a, v.X, -v.Y, vmag * _visionSpeed.Value, out vx, out vy);
 
             if (vx == _visionLastVx && vy == _visionLastVy) return;   // send-on-change
             _visionLastVx = vx; _visionLastVy = vy;

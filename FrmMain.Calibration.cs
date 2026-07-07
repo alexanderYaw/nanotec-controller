@@ -140,15 +140,15 @@ namespace NanotecController
                 //    arrive, so X/Y never traverse while Z is still down (collision).
                 _motion!.RecoverIfQuickStopped(AxisId.Z);   // clear a quick stop so the move runs
                 _motion.MoveAbsolute(AxisId.Z, zT.Value, zSpd);
-                if (!_motion.WaitForMotionComplete(AxisId.Z, FIND_TIMEOUT_MS))
+                if (!WaitOrStop(AxisId.Z, FIND_TIMEOUT_MS))
                     throw new DriveException("Z did not reach Home in time - aborting before X/Y move.");
                 // 2) X and Y together: issue both moves, then wait for both to finish.
                 _motion.RecoverIfQuickStopped(AxisId.X);
                 _motion.RecoverIfQuickStopped(AxisId.Y);
                 _motion.MoveAbsolute(AxisId.X, xT.Value, xSpd);
                 _motion.MoveAbsolute(AxisId.Y, yT.Value, ySpd);
-                _motion.WaitForMotionComplete(AxisId.X, FIND_TIMEOUT_MS);
-                _motion.WaitForMotionComplete(AxisId.Y, FIND_TIMEOUT_MS);
+                WaitOrStop(AxisId.X, FIND_TIMEOUT_MS);
+                WaitOrStop(AxisId.Y, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Home All complete." : "Home All FAILED - see error above.");
         }
@@ -203,7 +203,7 @@ namespace NanotecController
             bool ok = await RunDriveOp(() =>
             {
                 foreach ((AxisId id, long pos) t in targets) { _motion!.RecoverIfQuickStopped(t.id); _motion.MoveAbsolute(t.id, t.pos, HomeSpeedFor(t.id)); }
-                foreach ((AxisId id, long pos) t in targets) _motion!.WaitForMotionComplete(t.id, FIND_TIMEOUT_MS);
+                foreach ((AxisId id, long pos) t in targets) WaitOrStop(t.id, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Move complete." : "Move FAILED - see error above.");
         }
@@ -287,7 +287,7 @@ namespace NanotecController
                 before = _motion!.GetStatus(id).Position;
                 _motion.RecoverIfQuickStopped(id);   // clear a limit-induced quick stop so the move runs
                 _motion.MoveAbsolute(id, target.Value, speed);
-                reached = _motion.WaitForMotionComplete(id, FIND_TIMEOUT_MS);
+                reached = WaitOrStop(id, FIND_TIMEOUT_MS);
                 after = _motion.GetStatus(id).Position;
             });
             if (!ok)
@@ -318,10 +318,20 @@ namespace NanotecController
                 TrySaveCalibration();
                 AppendLog($"{id} limits: Min={c.Min:N0}, Max={c.Max:N0}, Home(centre)={c.Center:N0}.");
             }
+            catch (OperationCanceledException)
+            {
+                AppendLog($"Find {id} limits STOPPED by operator.");
+            }
             catch (Exception ex)
             {
                 AppendLog($"Find {id} limits FAILED: {ex.Message}");
             }
+        }
+
+        // Operator STOP inside a limit-find poll loop: halt the axis and abandon the find.
+        private void ThrowIfStopped(AxisId id)
+        {
+            if (_stopRequested) { _motion!.Stop(id); throw new OperationCanceledException("Limit-find stopped by operator."); }
         }
 
         // Background worker: jog to one end, recover + back off, jog to the other end.
@@ -352,6 +362,7 @@ namespace NanotecController
                 int waited = 0;
                 while ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) != 0 && waited < BACKOFF_TIMEOUT_MS)
                 {
+                    ThrowIfStopped(id);
                     System.Threading.Thread.Sleep(FIND_POLL_MS);
                     waited += FIND_POLL_MS;
                 }
@@ -371,6 +382,7 @@ namespace NanotecController
             int waited = 0;
             while (waited < FIND_TIMEOUT_MS)
             {
+                ThrowIfStopped(id);
                 long now = _motion.GetDigitalInputs(id) & SW_LIMIT_BITS;
                 if ((now & ~baseline) != 0)
                 {
@@ -396,6 +408,7 @@ namespace NanotecController
             int waited = 0;
             while ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) != 0 && waited < FIND_TIMEOUT_MS)
             {
+                ThrowIfStopped(id);
                 System.Threading.Thread.Sleep(FIND_POLL_MS);
                 waited += FIND_POLL_MS;
             }
