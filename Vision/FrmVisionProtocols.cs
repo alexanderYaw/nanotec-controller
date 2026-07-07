@@ -25,6 +25,14 @@ namespace NanotecController
         private readonly PictureBox _capturedBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
         private readonly Label _status = new() { Text = "Ready.", AutoSize = true };
 
+        // Live-view MIRROR of the main-screen camera (this window owns no camera): the primary
+        // control pushes frames here via IVisionFrameSource.FrameDisplayed, so the operator can align
+        // a feature to the crosshair without switching to the main window. The crosshair toggle is
+        // local to this view; zoom drives the shared camera (so it also changes the main view).
+        private readonly VisionViewControl _live = new() { OwnsCamera = false };
+        private readonly Button _crosshairBtn = new() { Text = "Crosshair: On" };
+        private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
         private readonly SolidCircleDetector _markDetector = new();
@@ -77,15 +85,41 @@ namespace NanotecController
             ClientSize = new Size(1490, 640);
             MinimumSize = new Size(1200, 680);
 
-            // ---- Captured pane (overlays from Add Sample / Add Edge / Add Wafer Edge) --------
-            // The live view lives on the main screen now; this pane fills the freed space and
-            // shows each detection's result (crosshair + edge/mark overlay).
-            var capLabel = new Label { Text = "Captured (detection overlay)", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
-            _capturedBox.Location = new Point(12, 32);
-            _capturedBox.Size = new Size(976, 440);
+            // ---- Live view (mirror) + captured pane (top row) --------------------
+            // Left: a live MIRROR of the main-screen camera (crosshair toggle + shared zoom) so the
+            // operator can align features here. Right: the captured pane showing each detection's
+            // overlay (crosshair + edge/mark).
+            var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
+
+            _crosshairBtn.Location = new Point(58, 6);
+            _crosshairBtn.Size = new Size(108, 24);
+            _crosshairBtn.Click += (s, e) =>
+            {
+                _live.ShowCrosshair = !_live.ShowCrosshair;
+                _crosshairBtn.Text = _live.ShowCrosshair ? "Crosshair: On" : "Crosshair: Off";
+            };
+
+            var zoomLabel = new Label { Text = "Zoom:", Location = new Point(178, 10), AutoSize = true };
+            _zoomBox.Location = new Point(226, 6);
+            _zoomBox.Size = new Size(56, 24);
+            foreach (int z in VisionViewControl.ZoomFactors) _zoomBox.Items.Add($"{z}x");
+            _zoomBox.SelectedIndex = Math.Max(0, Array.IndexOf(VisionViewControl.ZoomFactors, _view.ZoomFactor));
+            _zoomBox.SelectedIndexChanged += (s, e) =>
+            {
+                if (_zoomBox.SelectedIndex >= 0) _view.ZoomFactor = VisionViewControl.ZoomFactors[_zoomBox.SelectedIndex];
+            };
+
+            _live.Location = new Point(12, 32);
+            _live.Size = new Size(480, 440);
+            _live.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
+            _live.ShowCrosshair = true;   // on by default here — the point of this view is alignment
+
+            var capLabel = new Label { Text = "Captured (detection overlay)", Location = new Point(500, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
+            _capturedBox.Location = new Point(500, 32);
+            _capturedBox.Size = new Size(488, 440);
             _capturedBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
 
-            _status.Location = new Point(652, 484);
+            _status.Location = new Point(500, 484);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Wafer centre-find (bottom strip) --------------------------------
@@ -235,6 +269,11 @@ namespace NanotecController
             _signTestBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _signTestBtn.Click += async (s, e) => await SignTestAsync();
 
+            Controls.Add(liveLabel);
+            Controls.Add(_crosshairBtn);
+            Controls.Add(zoomLabel);
+            Controls.Add(_zoomBox);
+            Controls.Add(_live);
             Controls.Add(capLabel);
             Controls.Add(_capturedBox);
             Controls.Add(_status);
@@ -285,6 +324,7 @@ namespace NanotecController
             // follow open/close (e.g. a Retry on the main toolbar) while this window is open.
             _view.CameraStateChanged += OnCameraStateChanged;
             OnCameraStateChanged();
+            _view.FrameDisplayed += _live.PushFrame;   // mirror the main-screen live feed into _live
 
             FormClosing += (s, e) => Teardown();
         }
@@ -317,6 +357,7 @@ namespace NanotecController
         private void Teardown()
         {
             _view.CameraStateChanged -= OnCameraStateChanged;
+            _view.FrameDisplayed -= _live.PushFrame;
             _capturedBox.Image?.Dispose();
         }
     }

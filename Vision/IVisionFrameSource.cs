@@ -20,6 +20,13 @@ namespace NanotecController
         /// doesn't own the camera re-gates its controls on <see cref="IsCameraOpen"/> here.</summary>
         event Action? CameraStateChanged;
 
+        /// <summary>Raised (UI thread) with each newly-displayed frame so a second window can mirror
+        /// the live view. The bitmap is only valid during the handler — clone it to keep it.</summary>
+        event Action<Bitmap>? FrameDisplayed;
+
+        /// <summary>Centred-ROI digital zoom factor (shared: also drives the main-screen view).</summary>
+        int ZoomFactor { get; set; }
+
         /// <summary>Current 180° display flip (camera is mounted inverted). Detection jobs run
         /// on the RAW frame; pass this as <c>flip</c> only for "what you see" captures.</summary>
         bool InvertView { get; }

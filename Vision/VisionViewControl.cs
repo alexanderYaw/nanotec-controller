@@ -71,6 +71,17 @@ namespace NanotecController
         /// <summary>Raised after the camera opens or closes; read <see cref="IsCameraOpen"/>.</summary>
         public event Action? CameraStateChanged;
 
+        /// <summary>Raised (UI thread) with each newly-displayed frame, so a second view can mirror
+        /// the live feed. The bitmap is owned by this control and only valid for the duration of the
+        /// handler — a follower must clone it (see <see cref="PushFrame"/>). Not raised when there are
+        /// no subscribers, so the mirror costs nothing while the protocols window is closed.</summary>
+        public event Action<Bitmap>? FrameDisplayed;
+
+        /// <summary>False for a camera-less "follower" view that only mirrors another control's frames
+        /// (via <see cref="PushFrame"/>). A follower never opens the exclusive framegrabber.</summary>
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public bool OwnsCamera { get; init; } = true;
+
         /// <summary>Physical scale of one IMAGE pixel (mm along the column / row axes), or null
         /// until calibrated. Supplied lazily by the host so calibration edits apply live; drives
         /// the crosshair mm ticks and the µm/px readout. See <see cref="MmPerPixel"/>.</summary>
@@ -115,7 +126,7 @@ namespace NanotecController
         /// </summary>
         public void StartCamera()
         {
-            if (_camera.IsOpen) return;
+            if (!OwnsCamera || _camera.IsOpen) return;   // followers never open the exclusive camera
             try { _camera.Open(); }
             catch (HOperatorException ex)
             {
@@ -285,6 +296,33 @@ namespace NanotecController
             Image? old = _liveBox.Image;
             _liveBox.Image = next;
             if (!ReferenceEquals(old, next)) old?.Dispose();
+
+            // Mirror the frame to any follower view (protocols window). Runs synchronously here on
+            // the UI thread while `next` is alive; the follower clones it. Skipped when unsubscribed.
+            FrameDisplayed?.Invoke(next);
+        }
+
+        /// <summary>
+        /// Follower entry point: displays a clone of a frame pushed from the primary control's
+        /// <see cref="FrameDisplayed"/>. Aspect-correct like the live view; draw a crosshair with
+        /// <see cref="ShowCrosshair"/>. No-op unless this is a follower (see <see cref="OwnsCamera"/>).
+        /// </summary>
+        public void PushFrame(Bitmap src)
+        {
+            if (OwnsCamera || IsDisposed) return;
+            Bitmap clone;
+            try { clone = (Bitmap)src.Clone(); }
+            catch { return; }   // source being torn down; skip this frame
+
+            if (clone.Width != _frameW || clone.Height != _frameH)
+            {
+                _frameW = clone.Width;
+                _frameH = clone.Height;
+                Relayout();
+            }
+            Image? old = _liveBox.Image;
+            _liveBox.Image = clone;
+            if (!ReferenceEquals(old, clone)) old?.Dispose();
         }
 
         private void PostStatus(string text)
