@@ -383,24 +383,30 @@ namespace NanotecController
             // mm per SCREEN pixel = mm per image pixel ÷ displayed-pixels-per-image-pixel.
             // Zoom doesn't enter: the centred ROI leaves the image pixel size unchanged, only
             // the screen scale (box px / frame px) changes.
-            DrawTicks(e.Graphics, pen, horizontal: true, cx, cy, cw, mm.Value.mmPerPxCol * fw / cw);
-            DrawTicks(e.Graphics, pen, horizontal: false, cx, cy, ch, mm.Value.mmPerPxRow * fh / ch);
+            DrawMmTicks(e.Graphics, pen, horizontal: true, cx, cy, cw, mm.Value.mmPerPxCol * fw / cw);
+            DrawMmTicks(e.Graphics, pen, horizontal: false, cx, cy, ch, mm.Value.mmPerPxRow * fh / ch);
         }
 
-        // Ticks at a {1,2,5}×10ⁿ mm pitch chosen so majors sit ≥ ~45 screen px apart; minor
-        // ticks at pitch/5 when they'd be ≥ 9 px apart.
-        private static void DrawTicks(Graphics g, Pen pen, bool horizontal, int cx, int cy, int extent, double mmPerScreenPx)
+        // Small label font for the mm markings (cached — DrawOverlay repaints per frame).
+        private static readonly Font TickFont = new("Segoe UI", 7f);
+
+        // Markings at a FIXED 1 mm pitch along a crosshair arm: a short tick every 1 mm, a longer
+        // one every 5 mm, and the longest + a mm-distance label every 10 mm. If 1 mm is too few
+        // screen pixels to resolve (heavily zoomed out), the minor ticks are thinned to 5 mm — and
+        // 10 mm if even that is dense — so they don't smear into a solid bar. Zoom does not enter
+        // mmPerScreenPx (centred-ROI zoom leaves the image pixel size unchanged).
+        private static void DrawMmTicks(Graphics g, Pen pen, bool horizontal, int cx, int cy, int extent, double mmPerScreenPx)
         {
             if (!(mmPerScreenPx > 0) || double.IsInfinity(mmPerScreenPx)) return;
-            double pitchPx = TickPitchMm(45.0 * mmPerScreenPx) / mmPerScreenPx;
-            bool minors = pitchPx / 5.0 >= 9.0;
-            double step = minors ? pitchPx / 5.0 : pitchPx;
-            int perMajor = minors ? 5 : 1;
+            double pxPerMm = 1.0 / mmPerScreenPx;
+            int minorEveryMm = pxPerMm >= 4.0 ? 1 : (pxPerMm * 5.0 >= 4.0 ? 5 : 10);   // thin when dense
+            bool label = pxPerMm * 10.0 >= 22.0;                                        // room to read 10 mm labels
+            double half = extent / 2.0;
 
-            for (int k = 1; k * step <= extent / 2.0; k++)
+            for (int d = minorEveryMm; d * pxPerMm <= half; d += minorEveryMm)
             {
-                int len = k % perMajor == 0 ? 8 : 4;
-                int off = (int)Math.Round(k * step);
+                int off = (int)Math.Round(d * pxPerMm);
+                int len = d % 10 == 0 ? 12 : (d % 5 == 0 ? 8 : 4);
                 if (horizontal)
                 {
                     g.DrawLine(pen, cx + off, cy - len, cx + off, cy + len);
@@ -411,16 +417,22 @@ namespace NanotecController
                     g.DrawLine(pen, cx - len, cy + off, cx + len, cy + off);
                     g.DrawLine(pen, cx - len, cy - off, cx + len, cy - off);
                 }
-            }
-        }
 
-        // Smallest {1, 2, 5}×10ⁿ mm ≥ minMm.
-        private static double TickPitchMm(double minMm)
-        {
-            double p = Math.Pow(10, Math.Floor(Math.Log10(Math.Max(minMm, 1e-9))));
-            foreach (double m in new[] { 1.0, 2.0, 5.0 })
-                if (m * p >= minMm) return m * p;
-            return 10.0 * p;
+                if (label && d % 10 == 0)
+                {
+                    string s = d.ToString();
+                    if (horizontal)
+                    {
+                        g.DrawString(s, TickFont, Brushes.Lime, cx + off + 1, cy + 12);
+                        g.DrawString(s, TickFont, Brushes.Lime, cx - off + 1, cy + 12);
+                    }
+                    else
+                    {
+                        g.DrawString(s, TickFont, Brushes.Lime, cx + 13, cy + off - 7);
+                        g.DrawString(s, TickFont, Brushes.Lime, cx + 13, cy - off - 7);
+                    }
+                }
+            }
         }
 
         /// <summary>

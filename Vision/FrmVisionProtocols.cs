@@ -130,6 +130,7 @@ namespace NanotecController
             _live.Size = new Size(480, 440);
             _live.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             _live.ShowCrosshair = true;   // on by default here — the point of this view is alignment
+            _live.TickScaleProvider = () => VisionViewControl.MmPerPixel(_owner!.Calibration);   // 1 mm marks here too
 
             var capLabel = new Label { Text = "Captured (detection overlay)", Location = new Point(500, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
             _capturedBox.Location = new Point(500, 32);
