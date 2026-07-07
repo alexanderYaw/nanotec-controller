@@ -103,6 +103,7 @@ namespace NanotecController
             BuildAxisRows();
             BuildPositionButton();
             BuildVisionColumn();
+            BuildRelativeMovePanel();
             SetState(connected: false, busy: false, "Disconnected");
             if (calibWarning != null) AppendLog("WARN: " + calibWarning);
         }
@@ -402,6 +403,8 @@ namespace NanotecController
                 row.Neg.Enabled = en;
                 row.Pos.Enabled = en;
             }
+
+            RefreshRelativeMove();
         }
 
         // --- Log: capped ring buffer + status strip + on-demand FrmLog ------------

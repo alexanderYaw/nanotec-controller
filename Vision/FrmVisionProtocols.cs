@@ -13,9 +13,10 @@ namespace NanotecController
     /// (from FrmMain) and enqueues its detection jobs there. All motion is executed/serialized by
     /// <see cref="IMotionHost"/> (FrmMain); this window only reads position and requests moves.
     ///
-    /// The interactive jog + hold-to-rotate now live in the main motion cluster (RAW/VISION mode
-    /// switch), so this window has no hold-to-move controls and needs no focus-loss safety stop —
-    /// its remaining motion (Rotate by/to, Go to Centre) are bounded one-shot operations.
+    /// The interactive jog + hold-to-rotate also live in the main motion cluster (RAW/VISION mode
+    /// switch); this window keeps a convenience copy so the operator can nudge the stage while
+    /// watching the mirror during calibration. Because those are hold-to-move controls, this window
+    /// installs a focus-loss safety stop (Deactivate → VisionStop + StopHoldRotate).
     /// </summary>
     public sealed partial class FrmVisionProtocols : Form
     {
@@ -75,6 +76,22 @@ namespace NanotecController
         private readonly Label _signLabel = new() { AutoSize = true };
         private readonly Button _signTestBtn = new() { Text = "Sign test", Enabled = false };
 
+        // --- Vision motion controls (a convenience copy of the main-screen VISION mode, so the
+        // operator can jog / rotate while looking at this window during calibration): the drift-
+        // corrected X/Y jog (puck + d-pad) and hold-to-rotate about the crosshair. Everything runs
+        // through IMotionHost (FrmMain serializes all motion). Rotate SPEED is set on the main window
+        // (VISION-mode Θ slider → RotateThetaSpeed); this window just triggers the moves. ---
+        private readonly NumericUpDown _vSpeed = new() { Minimum = 0, Maximum = 6000, Value = 1000, Increment = 100, Enabled = false };
+        private readonly JoystickPad _vPad = new() { Enabled = false };
+        private readonly System.Windows.Forms.Timer _vPadTimer = new() { Interval = 50 };
+        private int _vLastVx, _vLastVy;
+        private readonly Button _vUp = new() { Text = "▲", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _vDown = new() { Text = "▼", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _vLeft = new() { Text = "◀", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _rotHoldCcwBtn = new() { Text = "⟲ Hold", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+        private readonly Button _rotHoldCwBtn = new() { Text = "Hold ⟳", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+
         public FrmVisionProtocols(IMotionHost owner, IVisionFrameSource view)
         {
             _owner = owner;
@@ -82,8 +99,8 @@ namespace NanotecController
             Text = "Vision - calibration & centre-find";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
-            ClientSize = new Size(1490, 640);
-            MinimumSize = new Size(1200, 680);
+            ClientSize = new Size(1490, 680);
+            MinimumSize = new Size(1200, 720);
 
             // ---- Live view (mirror) + captured pane (top row) --------------------
             // Left: a live MIRROR of the main-screen camera (crosshair toggle + shared zoom) so the
@@ -269,6 +286,49 @@ namespace NanotecController
             _signTestBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _signTestBtn.Click += async (s, e) => await SignTestAsync();
 
+            // ---- Drift-corrected vision jog (under the calibration column) -------
+            // The puck / d-pad command screen-space motion (right = +col, up = −row) mapped through
+            // the pixel→step affine, so the feature under the crosshair tracks the input regardless of
+            // the table's orientation. Speed here scales the puck; the d-pad uses it directly. Needs
+            // the camera-scale calibration (the maths reports via _status if it's missing/degenerate).
+            var vLabel = new Label { Text = "Vision jog (drift-corrected)", Location = new Point(1000, 490), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var vSpeedLabel = new Label { Text = "Speed:", Location = new Point(1000, 518), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            _vSpeed.Location = new Point(1052, 515);
+            _vSpeed.Size = new Size(80, 24);
+            _vSpeed.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+            _vPad.Location = new Point(1000, 544);
+            _vPad.Size = new Size(112, 112);
+            _vPad.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _vPadTimer.Tick += (s, e) => VisionPadTick();
+
+            void VisionPadBtn(Button b, int x, int y, int sx, int sy)
+            {
+                b.Location = new Point(x, y);
+                b.Size = new Size(36, 32);
+                b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+                b.MouseDown += (s, e) => VisionJog(sx, sy);
+                b.MouseUp += (s, e) => _owner?.VisionStop();
+            }
+            VisionPadBtn(_vUp, 1160, 548, 0, +1);
+            VisionPadBtn(_vLeft, 1124, 584, -1, 0);
+            VisionPadBtn(_vRight, 1196, 584, +1, 0);
+            VisionPadBtn(_vDown, 1160, 620, 0, -1);
+
+            // Hold-to-rotate about the crosshair (same as the main window's VISION Θ arrows). MouseDown
+            // starts a continuous turn at RotateThetaSpeed (set on the main window); MouseUp — or losing
+            // focus (Deactivate) — stops it.
+            _rotHoldCcwBtn.Location = new Point(1248, 612);
+            _rotHoldCcwBtn.Size = new Size(112, 30);
+            _rotHoldCcwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotHoldCcwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(-1); };
+            _rotHoldCcwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
+            _rotHoldCwBtn.Location = new Point(1364, 612);
+            _rotHoldCwBtn.Size = new Size(112, 30);
+            _rotHoldCwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _rotHoldCwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(+1); };
+            _rotHoldCwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
+
             Controls.Add(liveLabel);
             Controls.Add(_crosshairBtn);
             Controls.Add(zoomLabel);
@@ -303,6 +363,16 @@ namespace NanotecController
             Controls.Add(_rotToBtn);
             Controls.Add(_signLabel);
             Controls.Add(_signTestBtn);
+            Controls.Add(vLabel);
+            Controls.Add(vSpeedLabel);
+            Controls.Add(_vSpeed);
+            Controls.Add(_vPad);
+            Controls.Add(_vUp);
+            Controls.Add(_vDown);
+            Controls.Add(_vLeft);
+            Controls.Add(_vRight);
+            Controls.Add(_rotHoldCcwBtn);
+            Controls.Add(_rotHoldCwBtn);
             RefreshSignLabel();
 
             // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
@@ -326,6 +396,10 @@ namespace NanotecController
             OnCameraStateChanged();
             _view.FrameDisplayed += _live.PushFrame;   // mirror the main-screen live feed into _live
 
+            // Safety: the vision jog / hold-rotate are hold-to-move. If this window loses focus mid-hold
+            // (alt-tab, a dialog) the MouseUp may never arrive, so stop all continuous motion on deactivate.
+            Deactivate += (s, e) => { _owner?.VisionStop(); _owner?.StopHoldRotate(); };
+
             FormClosing += (s, e) => Teardown();
         }
 
@@ -339,6 +413,12 @@ namespace NanotecController
             _waferEdgeBtn.Enabled = open;
             _rotBy.Enabled = _rotByBtn.Enabled = open;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;
+
+            // Vision motion controls: live only while the camera streams. The puck poll runs only then.
+            _vSpeed.Enabled = _vPad.Enabled = open;
+            _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = open;
+            _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = open;
+            if (open) _vPadTimer.Start(); else { _vPadTimer.Stop(); _owner?.VisionStop(); }
         }
 
         // Puts a bitmap in the captured pane, taking ownership (disposes the previous one).
@@ -356,6 +436,9 @@ namespace NanotecController
 
         private void Teardown()
         {
+            _vPadTimer.Stop();
+            _owner?.VisionStop();
+            _owner?.StopHoldRotate();
             _view.CameraStateChanged -= OnCameraStateChanged;
             _view.FrameDisplayed -= _live.PushFrame;
             _capturedBox.Image?.Dispose();
