@@ -135,20 +135,26 @@ namespace NanotecController
                     Font = new Font("Segoe UI Symbol", 13F),
                     Enabled = false,
                 };
-                b.MouseDown += (s, e) => StartJog(id, dir);
-                b.MouseUp += (s, e) => StopJog(id);
+                // Dispatch is mode-aware (raw jog vs vision jog / rotate) — see ArrowDown/ArrowUp.
+                b.MouseDown += (s, e) => ArrowDown(id, dir);
+                b.MouseUp += (s, e) => ArrowUp(id);
                 (dir < 0 ? neg : pos)[id] = b;
                 axesPanel.Controls.Add(b);
                 return b;
             }
 
-            void Header(string text, int x) => axesPanel.Controls.Add(new Label
+            Label Header(string text, int x)
             {
-                Text = text,
-                Location = new Point(x, 0),
-                AutoSize = true,
-                Font = new Font("Segoe UI", 10F, FontStyle.Bold),
-            });
+                var lbl = new Label
+                {
+                    Text = text,
+                    Location = new Point(x, 0),
+                    AutoSize = true,
+                    Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+                };
+                axesPanel.Controls.Add(lbl);
+                return lbl;
+            }
 
             // XY cross (left)
             Header("X / Y", 50);
@@ -160,28 +166,37 @@ namespace NanotecController
             Header("Z", 196);
             Arrow("▲", 180, 36, AxisId.Z, +1);
             Arrow("▼", 180, 76, AxisId.Z, -1);
-            // Theta (rotary chuck)
-            Header("Θ", 292);
+            // Theta (rotary chuck) — header relabelled in VISION mode (rotate about crosshair)
+            _thetaHeader = Header("Θ", 292);
             Arrow("↻", 250, 56, AxisId.Theta, +1);   // clockwise
             Arrow("↺", 302, 56, AxisId.Theta, -1);   // counter-clockwise
 
+            // RAW / VISION mode switch (top-right of the cluster): RAW jogs the drive axes; VISION
+            // does the drift-corrected screen jog on X/Y and rotate-about-crosshair on Θ (Z stays raw).
+            _rawModeBtn = new Button { Text = "⚙ RAW", Location = new Point(372, 6), Size = new Size(78, 40), Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            _visionModeBtn = new Button { Text = "🎥 VISION", Location = new Point(454, 6), Size = new Size(96, 40), Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            _rawModeBtn.Click += (s, e) => { if (_jogMode != JogMode.Raw) ApplyJogMode(JogMode.Raw); };
+            _visionModeBtn.Click += (s, e) => { if (_jogMode != JogMode.Vision) ApplyJogMode(JogMode.Vision); };
+            axesPanel.Controls.Add(_rawModeBtn);
+            axesPanel.Controls.Add(_visionModeBtn);
+
             // Movement-inversion toggle: flips X/Y/Θ jog direction for every manual control
             // (d-pad, joystick, on-screen puck) so they match the inverted camera view. Z is
-            // unaffected. See InvertDir in FrmMain.Jog.cs.
-            var invertBtn = new Button
+            // unaffected; disabled in VISION mode (the drift-corrected jog ignores it). See InvertDir.
+            _invertMovementBtn = new Button
             {
                 Text = "Invert X/Y/Θ: Off",
                 Location = new Point(372, 56),
                 Size = new Size(150, 36),
                 Font = new Font("Segoe UI", 9F),
             };
-            invertBtn.Click += (s, e) =>
+            _invertMovementBtn.Click += (s, e) =>
             {
                 _invertMovement = !_invertMovement;
-                invertBtn.Text = _invertMovement ? "Invert X/Y/Θ: On" : "Invert X/Y/Θ: Off";
+                _invertMovementBtn.Text = _invertMovement ? "Invert X/Y/Θ: On" : "Invert X/Y/Θ: Off";
                 AppendLog($"Movement inversion {(_invertMovement ? "ON" : "OFF")} (X / Y / Θ).");
             };
-            axesPanel.Controls.Add(invertBtn);
+            axesPanel.Controls.Add(_invertMovementBtn);
 
             // separator between the d-pad and the speed/position rows
             axesPanel.Controls.Add(new Panel
@@ -219,7 +234,7 @@ namespace NanotecController
                 var speedValue = new Label { Text = speed.Value.ToString(), Location = new Point(204, rowY + 9), AutoSize = true };
                 var status = new Label { Text = "pos -", Location = new Point(260, rowY + 9), AutoSize = true, Font = new Font("Consolas", 9F) };
 
-                speed.Scroll += (s, e) => speedValue.Text = speed.Value.ToString();
+                speed.Scroll += (s, e) => OnSpeedScroll(id);
 
                 axesPanel.Controls.Add(name);
                 axesPanel.Controls.Add(speed);
@@ -228,8 +243,12 @@ namespace NanotecController
 
                 _axisRows[id] = new AxisRow(neg[id], pos[id], status, speed, speedValue);
                 _lastJoy[id] = (0, false);
+                _rawSpeedMax[id] = cfg.JogVelocityMax;   // raw slider ceiling, restored on RAW mode
+                _rawSpeedSaved[id] = speed.Value;         // seed the per-mode remembered value
                 rowY += 40;
             }
+
+            PaintModeButtons();   // start in RAW; highlight the active mode
         }
 
         // --- Shared op / timer helpers --------------------------------------------
@@ -286,10 +305,15 @@ namespace NanotecController
         /// </summary>
         private void FrmMain_Deactivate(object? sender, EventArgs e)
         {
-            // A running op (enable/disable, go-home, find-limits) owns the drives and has
-            // already paused the timers — don't stomp it with a focus-loss StopAll (which
-            // would also race the background thread on the single NanoLib channel). The
-            // calibration window taking focus is the common trigger here.
+            // A hold-rotate (VISION Θ) runs with _busy == true, so stop it BEFORE the _busy
+            // early-return — otherwise alt-tabbing mid-hold leaves Θ turning (the held button's
+            // MouseUp won't fire when focus is stolen). StopHoldRotate is a harmless flag set
+            // when no rotate is running.
+            StopHoldRotate();
+            // A running op (enable/disable, go-home, find-limits, hold-rotate) owns the drives and
+            // has already paused the timers — don't stomp it with a focus-loss StopAll (which would
+            // also race the background thread on the single NanoLib channel). The calibration window
+            // taking focus is the common trigger here.
             if (_busy) return;
             joystickTimer.Stop();
             if (_motion == null) return;
@@ -354,14 +378,29 @@ namespace NanotecController
             rbOff.Enabled = inputOk;
             rbUsb.Enabled = inputOk;
             rbScreen.Enabled = inputOk;
-            joystickPad.Enabled = inputOk && rbScreen.Checked;
+            // The puck needs the camera-scale calibration to do the vision jog.
+            joystickPad.Enabled = inputOk && rbScreen.Checked && (_jogMode == JogMode.Raw || _calib.PixelStep != null);
+
+            // Mode switch only when idle — ApplyJogMode stops motion and swaps the slider ranges.
+            _rawModeBtn.Enabled = !_busy;
+            _visionModeBtn.Enabled = !_busy;
 
             bool canJog = !_busy && conn && _drivesEnabled;
-            foreach (AxisRow row in _axisRows.Values)
+            bool visionXYok = canJog && _calib.PixelStep != null;      // vision X/Y needs the affine
+            bool visionThetaOk = canJog && CanRotate;                  // rotate needs affine + chuck centre
+            foreach ((AxisId id, AxisRow row) in _axisRows)
             {
                 row.Speed.Enabled = conn;   // adjustable whenever connected
-                row.Neg.Enabled = canJog;
-                row.Pos.Enabled = canJog;
+                bool en;
+                if (_jogMode == JogMode.Vision && id != AxisId.Z)
+                    en = id == AxisId.Theta ? visionThetaOk : visionXYok;
+                else
+                    en = canJog;
+                // Keep the Θ arrows live through a hold-rotate: _busy would otherwise disable them
+                // mid-hold, and a disabled button never fires MouseUp → StopHoldRotate never runs.
+                if (_holdRotating && id == AxisId.Theta) en = true;
+                row.Neg.Enabled = en;
+                row.Pos.Enabled = en;
             }
         }
 

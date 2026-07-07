@@ -103,6 +103,10 @@ namespace NanotecController
         // Set true (StopHoldRotate) to end a hold-to-rotate; the hold loop checks it each tick.
         private volatile bool _holdRotateStop;
 
+        // True while a hold-rotate is running. RefreshButtons keeps the Θ jog arrows enabled while
+        // it's set so the held arrow's MouseUp (→ StopHoldRotate) still fires despite _busy.
+        private volatile bool _holdRotating;
+
         /// <summary>Rotation needs the drives enabled/idle AND a full calibration (affine +
         /// chuck centre). The sign may still be unset — the test run is how it gets fixed.</summary>
         public bool CanRotate =>
@@ -416,6 +420,9 @@ namespace NanotecController
             int thetaDir = Math.Sign(direction);
 
             _holdRotateStop = false;
+            // Set BEFORE BeginBusy so the RefreshButtons it triggers keeps the Θ arrows enabled
+            // (RunDriveOp never throws, so the reset after the await always runs).
+            _holdRotating = true;
             using var busyScope = BeginBusy();
             AppendLog($"Rotate {(thetaDir > 0 ? "⟳" : "⟲")} about crosshair (hold; centre X={cx:N0} Y={cy:N0}, sign {sign:+0;-0}, lookahead {ROTATE_LOOKAHEAD_MS:0}ms)...");
             bool ok = await RunDriveOp(() =>
@@ -575,6 +582,7 @@ namespace NanotecController
                     catch (DriveException) { }
                 }
             });
+            _holdRotating = false;
             AppendLog(ok ? "Rotate (hold) stopped." : "Rotate (hold) FAILED — see error above.");
         }
 

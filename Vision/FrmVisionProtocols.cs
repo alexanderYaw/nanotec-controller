@@ -6,17 +6,16 @@ using HalconDotNet;
 namespace NanotecController
 {
     /// <summary>
-    /// Vision protocols window: the camera-scale calibration, chuck/wafer centre-find, and
-    /// rotate-about-crosshair operator surfaces, plus a captured pane where each detection's
-    /// overlay lands. It does NOT own the camera — the live view lives on the main screen; this
-    /// window is handed the shared <see cref="IVisionFrameSource"/> (from FrmMain) and enqueues
-    /// its detection jobs there. All motion is executed/serialized by <see cref="IMotionHost"/>
-    /// (FrmMain); this window only reads position and requests moves.
+    /// Vision protocols window: the camera-scale calibration, chuck/wafer centre-find, and the
+    /// rotate-about-crosshair setup (Rotate by/to + the one-time handedness Sign test), plus a
+    /// captured pane where each detection's overlay lands. It does NOT own the camera — the live
+    /// view lives on the main screen; this window is handed the shared <see cref="IVisionFrameSource"/>
+    /// (from FrmMain) and enqueues its detection jobs there. All motion is executed/serialized by
+    /// <see cref="IMotionHost"/> (FrmMain); this window only reads position and requests moves.
     ///
-    /// The drift-corrected vision jog and hold-to-rotate live here TEMPORARILY (Stage 4 moves
-    /// them into the main motion cluster) — which is why the form keeps its Deactivate safety
-    /// stop: a control can't tell a form-level focus loss from an in-form click, so the halt
-    /// must live on the form that owns those hold controls.
+    /// The interactive jog + hold-to-rotate now live in the main motion cluster (RAW/VISION mode
+    /// switch), so this window has no hold-to-move controls and needs no focus-loss safety stop —
+    /// its remaining motion (Rotate by/to, Go to Centre) are bounded one-shot operations.
     /// </summary>
     public sealed partial class FrmVisionProtocols : Form
     {
@@ -35,21 +34,6 @@ namespace NanotecController
         private readonly Button _clearBtn = new() { Text = "Clear", Enabled = false };
         private readonly TextBox _sampleList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
         private readonly Label _calibResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
-
-        // Drift-corrected "vision jog": commands X+Y together (via the calibration) so the
-        // on-screen motion is purely horizontal/vertical. Hold-to-jog like the main d-pad.
-        private readonly NumericUpDown _vSpeed = new() { Minimum = 0, Maximum = 6000, Value = 1000, Increment = 100, Enabled = false };
-        // Analog joystick for the drift-corrected jog: drag the puck (angle + distance) → the
-        // owner is commanded the drift-corrected X/Y velocity scaled by the deflection. Polled on
-        // a timer (the pad only reports state), send-on-change so an idle/centred puck is silent.
-        private readonly JoystickPad _vPad = new() { Enabled = false };
-        private readonly System.Windows.Forms.Timer _vPadTimer = new() { Interval = 50 };
-        private int _vLastVx, _vLastVy;
-        // Discrete d-pad alongside the puck (pure-axis jog at the full Speed setting).
-        private readonly Button _vUp = new() { Text = "▲", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
-        private readonly Button _vDown = new() { Text = "▼", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
-        private readonly Button _vLeft = new() { Text = "◀", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
-        private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
 
         // --- Wafer centre-find: capture >=3 wafer-rim points (step space), circle-fit, go to centre.
         // Same flow as the chuck centre-find but with WaferEdgeDetector and a separate stored centre.
@@ -73,20 +57,15 @@ namespace NanotecController
         private readonly Label _centreResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
         private (long X, long Y)? _chuckCentre;   // last computed/loaded centre (user frame)
 
-        // --- Rotate about crosshair: combine Θ + X/Y so the point under the crosshair stays
-        // pinned while the chuck turns. Relative ("Rotate by"), absolute ("Rotate to"), and the
-        // one-time handedness "Sign test". All gated/executed by FrmMain (serialized motion).
+        // --- Rotate about crosshair (setup): relative ("Rotate by"), absolute ("Rotate to"), and the
+        // one-time handedness "Sign test". All gated/executed by FrmMain (serialized motion). The
+        // interactive hold-to-rotate lives in the main motion cluster's VISION mode now.
         private readonly NumericUpDown _rotBy = new() { Minimum = -360, Maximum = 360, Value = 90, DecimalPlaces = 1, Increment = 5, Enabled = false };
         private readonly Button _rotByBtn = new() { Text = "Rotate by°", Enabled = false };
         private readonly NumericUpDown _rotTo = new() { Minimum = 0, Maximum = 360, Value = 0, DecimalPlaces = 1, Increment = 5, Enabled = false };
         private readonly Button _rotToBtn = new() { Text = "Rotate to°", Enabled = false };
         private readonly Label _signLabel = new() { AutoSize = true };
         private readonly Button _signTestBtn = new() { Text = "Sign test", Enabled = false };
-        // Hold-to-rotate: rotates about the crosshair while the button is held (like a jog button).
-        private readonly Button _rotHoldCcwBtn = new() { Text = "⟲ Hold", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
-        private readonly Button _rotHoldCwBtn = new() { Text = "Hold ⟳", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
-        private readonly TrackBar _rotSpeedSlider = new() { Minimum = 50, Maximum = 2000, Value = 800, TickFrequency = 50, Enabled = false };
-        private readonly Label _rotSpeedLabel = new() { Text = "Speed: 800", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
         public FrmVisionProtocols(IMotionHost owner, IVisionFrameSource view)
         {
@@ -110,9 +89,9 @@ namespace NanotecController
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Wafer centre-find (bottom strip) --------------------------------
-            // Jog so the wafer EDGE crosses the crosshair, Add Wafer Edge at several spots around the
-            // rim (detects via WaferEdgeDetector, converts to step space), then Compute Centre
-            // circle-fits them. Mirrors the chuck centre-find; the result overlays on the captured pane.
+            // Jog so the wafer EDGE crosses the crosshair (main window, VISION mode), Add Wafer Edge at
+            // several spots around the rim (detects via WaferEdgeDetector, converts to step space), then
+            // Compute Centre circle-fits them. Mirrors the chuck centre-find; result overlays on the pane.
             var waferLabel = new Label { Text = "Wafer centre-find", Location = new Point(12, 528), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
             _waferEdgeBtn.Location = new Point(12, 550);
@@ -193,37 +172,9 @@ namespace NanotecController
             _calibResult.Size = new Size(228, 110);
             _calibResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            // ---- Drift-corrected vision jog (uses the calibration) ---------------
-            // Drag the joystick puck: X+Y are driven together so the live view moves along the
-            // puck direction, with speed proportional to deflection × the Speed control. Spring-
-            // return puck → release = stop. Polled on _vPadTimer (send-on-change).
-            var vLabel = new Label { Text = "Vision jog (drift-corrected)", Location = new Point(1000, 470), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var vSpeedLabel = new Label { Text = "Speed:", Location = new Point(1000, 496), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            _vSpeed.Location = new Point(1060, 493);
-            _vSpeed.Size = new Size(80, 24);
-            _vSpeed.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-
-            _vPad.Location = new Point(1000, 510);
-            _vPad.Size = new Size(112, 112);
-            _vPad.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _vPadTimer.Tick += (s, e) => VisionPadTick();
-
-            void VisionPadBtn(Button b, int x, int y, int sx, int sy)
-            {
-                b.Location = new Point(x, y);
-                b.Size = new Size(36, 32);
-                b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-                b.MouseDown += (s, e) => VisionJog(sx, sy);
-                b.MouseUp += (s, e) => _owner?.VisionStop();
-            }
-            VisionPadBtn(_vUp, 1160, 514, 0, +1);
-            VisionPadBtn(_vLeft, 1124, 548, -1, 0);
-            VisionPadBtn(_vRight, 1196, 548, +1, 0);
-            VisionPadBtn(_vDown, 1160, 582, 0, -1);
-
             // ---- Chuck centre-find column (far right) ----------------------------
-            // Jog so the chuck EDGE is in view, Add Edge (detects the edge point nearest the
-            // crosshair, converts to step space via the calibration). After >=3 around the rim,
+            // Jog so the chuck EDGE is in view (main window), Add Edge (detects the edge point nearest
+            // the crosshair, converts to step space via the calibration). After >=3 around the rim,
             // Compute Centre circle-fits them; Go to Centre drives there.
             var centreLabel = new Label { Text = "Chuck centre-find", Location = new Point(1248, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
@@ -255,9 +206,10 @@ namespace NanotecController
             _centreResult.Size = new Size(228, 90);
             _centreResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            // ---- Rotate about crosshair (under the centre-find column) -----------
-            // Needs the camera-scale calibration + a chuck centre. "Sign test" fixes the
-            // image handedness once; "Rotate by/to" then pin the crosshair point while Θ turns.
+            // ---- Rotate about crosshair — setup (under the centre-find column) ---
+            // Needs the camera-scale calibration + a chuck centre. "Sign test" fixes the image
+            // handedness once; "Rotate by/to" pin the crosshair point while Θ turns. Interactive
+            // hold-to-rotate is on the main window (VISION mode, Θ arrows).
             var rotLabel = new Label { Text = "Rotate about crosshair", Location = new Point(1248, 490), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
             _rotBy.Location = new Point(1248, 516);
@@ -283,34 +235,6 @@ namespace NanotecController
             _signTestBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _signTestBtn.Click += async (s, e) => await SignTestAsync();
 
-            // Hold-to-rotate: MouseDown starts the compensated rotation in that direction, MouseUp
-            // (or focus loss) stops it. CCW = Θ direction −1, CW = +1 (swap visually if reversed).
-            _rotHoldCcwBtn.Location = new Point(1248, 608);
-            _rotHoldCcwBtn.Size = new Size(112, 30);
-            _rotHoldCcwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotHoldCcwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(-1); };
-            _rotHoldCcwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
-
-            _rotHoldCwBtn.Location = new Point(1364, 608);
-            _rotHoldCwBtn.Size = new Size(112, 30);
-            _rotHoldCwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotHoldCwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(+1); };
-            _rotHoldCwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
-
-            // Rotation speed control: slider to adjust ROTATE_THETA_SPEED dynamically.
-            var rotSpeedText = new Label { Text = "Rotation speed", Location = new Point(1248, 646), AutoSize = true, Font = new Font("Segoe UI", 9F), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            _rotSpeedSlider.Location = new Point(1248, 668);
-            _rotSpeedSlider.Size = new Size(228, 45);
-            _rotSpeedSlider.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotSpeedSlider.ValueChanged += (s, e) =>
-            {
-                _rotSpeedLabel.Text = $"Speed: {_rotSpeedSlider.Value}";
-                if (_owner != null) _owner.RotateThetaSpeed = _rotSpeedSlider.Value;
-            };
-
-            _rotSpeedLabel.Location = new Point(1352, 720);
-            _rotSpeedLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-
             Controls.Add(capLabel);
             Controls.Add(_capturedBox);
             Controls.Add(_status);
@@ -320,14 +244,6 @@ namespace NanotecController
             Controls.Add(_sampleList);
             Controls.Add(_computeBtn);
             Controls.Add(_calibResult);
-            Controls.Add(vLabel);
-            Controls.Add(vSpeedLabel);
-            Controls.Add(_vSpeed);
-            Controls.Add(_vPad);
-            Controls.Add(_vUp);
-            Controls.Add(_vDown);
-            Controls.Add(_vLeft);
-            Controls.Add(_vRight);
             Controls.Add(waferLabel);
             Controls.Add(_waferEdgeBtn);
             Controls.Add(_waferClearBtn);
@@ -348,11 +264,6 @@ namespace NanotecController
             Controls.Add(_rotToBtn);
             Controls.Add(_signLabel);
             Controls.Add(_signTestBtn);
-            Controls.Add(_rotHoldCcwBtn);
-            Controls.Add(_rotHoldCwBtn);
-            Controls.Add(rotSpeedText);
-            Controls.Add(_rotSpeedSlider);
-            Controls.Add(_rotSpeedLabel);
             RefreshSignLabel();
 
             // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
@@ -376,13 +287,9 @@ namespace NanotecController
             OnCameraStateChanged();
 
             FormClosing += (s, e) => Teardown();
-            // Safety: if this window loses focus mid-hold (e.g. alt-tab), stop the vision jog AND
-            // any hold-rotate (a held button's MouseUp may not fire when focus is stolen).
-            Deactivate += (s, e) => { _owner?.VisionStop(); _owner?.StopHoldRotate(); };
         }
 
-        // Camera opened or closed on the main screen: gate the protocol actions that need live
-        // frames (or, for the motion features, that only make sense while the operator sees it).
+        // Camera opened or closed on the main screen: gate the protocol actions that need live frames.
         private void OnCameraStateChanged()
         {
             if (IsDisposed) return;
@@ -390,14 +297,8 @@ namespace NanotecController
             _sampleBtn.Enabled = open;
             _edgeBtn.Enabled = open;
             _waferEdgeBtn.Enabled = open;
-            _vSpeed.Enabled = open;
-            _vPad.Enabled = open;
-            _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = open;
             _rotBy.Enabled = _rotByBtn.Enabled = open;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;
-            _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = open;
-            _rotSpeedSlider.Enabled = open;
-            if (open) _vPadTimer.Start(); else _vPadTimer.Stop();
         }
 
         // Puts a bitmap in the captured pane, taking ownership (disposes the previous one).
@@ -412,12 +313,9 @@ namespace NanotecController
         // Camera-scale calibration → FrmVisionProtocols.Calibration.cs
         // Chuck + wafer centre-find → FrmVisionProtocols.CentreFind.cs
         // Rotate-about-crosshair UI (sign label + sign test) → FrmVisionProtocols.Rotation.cs
-        // Drift-corrected vision jog (puck poll + discrete d-pad) → FrmVisionProtocols.Jog.cs
 
         private void Teardown()
         {
-            _vPadTimer.Stop();
-            _owner?.VisionStop();
             _view.CameraStateChanged -= OnCameraStateChanged;
             _capturedBox.Image?.Dispose();
         }
