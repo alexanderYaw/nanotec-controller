@@ -16,6 +16,10 @@ namespace NanotecController
         /// <summary>True while the framegrabber is open and streaming.</summary>
         bool IsCameraOpen { get; }
 
+        /// <summary>Raised (UI thread) when the camera opens or closes. A consumer window that
+        /// doesn't own the camera re-gates its controls on <see cref="IsCameraOpen"/> here.</summary>
+        event Action? CameraStateChanged;
+
         /// <summary>Current 180° display flip (camera is mounted inverted). Detection jobs run
         /// on the RAW frame; pass this as <c>flip</c> only for "what you see" captures.</summary>
         bool InvertView { get; }

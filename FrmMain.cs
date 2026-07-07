@@ -102,7 +102,7 @@ namespace NanotecController
             _calib = CalibrationStore.Load(out string? calibWarning);
             BuildAxisRows();
             BuildPositionButton();
-            BuildVisionButton();
+            BuildVisionColumn();
             SetState(connected: false, busy: false, "Disconnected");
             if (calibWarning != null) AppendLog("WARN: " + calibWarning);
         }
@@ -312,6 +312,10 @@ namespace NanotecController
         {
             statusTimer.Stop();
             joystickTimer.Stop();
+            // Stop the grab thread BEFORE tearing down the drives/connection: the camera is
+            // independent of NanoLib, but shutting it down first keeps teardown ordered and
+            // avoids a late BeginInvoke racing the closing form.
+            _visionView.StopCamera();
             if (_connection.IsConnected)
             {
                 try
@@ -321,6 +325,7 @@ namespace NanotecController
                 catch (DriveException) { /* already closing */ }
                 _connection.Disconnect(_log);
             }
+            _lastCapture?.Dispose();
         }
 
         // --- Shared UI state ------------------------------------------------------

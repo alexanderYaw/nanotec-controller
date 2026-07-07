@@ -1,29 +1,30 @@
 using System;
 using System.Drawing;
-using System.IO;
 using System.Windows.Forms;
 using HalconDotNet;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Vision window: hosts the live view (<see cref="VisionViewControl"/>, which owns the
-    /// camera and grab thread) plus the capture pane and the calibration / centre-find /
-    /// rotate-about-crosshair protocol columns. This form is the toolbar + protocol surface;
-    /// all frame plumbing lives in the control, reached via RequestFrame / PostFrameBitmap.
+    /// Vision protocols window: the camera-scale calibration, chuck/wafer centre-find, and
+    /// rotate-about-crosshair operator surfaces, plus a captured pane where each detection's
+    /// overlay lands. It does NOT own the camera — the live view lives on the main screen; this
+    /// window is handed the shared <see cref="IVisionFrameSource"/> (from FrmMain) and enqueues
+    /// its detection jobs there. All motion is executed/serialized by <see cref="IMotionHost"/>
+    /// (FrmMain); this window only reads position and requests moves.
+    ///
+    /// The drift-corrected vision jog and hold-to-rotate live here TEMPORARILY (Stage 4 moves
+    /// them into the main motion cluster) — which is why the form keeps its Deactivate safety
+    /// stop: a control can't tell a form-level focus loss from an in-form click, so the halt
+    /// must live on the form that owns those hold controls.
     /// </summary>
-    public sealed partial class FrmVision : Form
+    public sealed partial class FrmVisionProtocols : Form
     {
-        private readonly VisionViewControl _view = new();
+        // The shared live camera (owned by FrmMain). Detection jobs run against its RAW frames;
+        // results are marshalled back and overlaid on our captured pane.
+        private readonly IVisionFrameSource _view;
         private readonly PictureBox _capturedBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-        private readonly Button _captureBtn = new() { Text = "Capture Image", Enabled = false };
-        private readonly Button _saveBtn = new() { Text = "Save Image", Enabled = false };
-        private readonly Button _crosshairBtn = new() { Text = "Crosshair: Off" };
-        private readonly Button _invertBtn = new() { Text = "Invert: On" };
-        private readonly Button _monoBtn = new() { Text = "Mono: Off" };
-        private readonly Label _status = new() { Text = "Opening camera...", AutoSize = true };
-        private readonly Label _fpsLabel = new() { AutoSize = true, ForeColor = Color.DimGray };
-        private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Enabled = false };
+        private readonly Label _status = new() { Text = "Ready.", AutoSize = true };
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
         private readonly IMotionHost? _owner;
@@ -87,80 +88,25 @@ namespace NanotecController
         private readonly TrackBar _rotSpeedSlider = new() { Minimum = 50, Maximum = 2000, Value = 800, TickFrequency = 50, Enabled = false };
         private readonly Label _rotSpeedLabel = new() { Text = "Speed: 800", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
-        public FrmVision(IMotionHost owner)
+        public FrmVisionProtocols(IMotionHost owner, IVisionFrameSource view)
         {
             _owner = owner;
-            Text = "Vision - live view";
+            _view = view;
+            Text = "Vision - calibration & centre-find";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
             ClientSize = new Size(1490, 640);
             MinimumSize = new Size(1200, 680);
 
-            var liveLabel = new Label { Text = "Live", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
-            _fpsLabel.Location = new Point(52, 11);
-
-            var zoomLabel = new Label { Text = "Zoom:", Location = new Point(352, 10), AutoSize = true };
-            _zoomBox.Location = new Point(410, 4);
-            _zoomBox.Size = new Size(56, 24);
-            foreach (int z in VisionViewControl.ZoomFactors) _zoomBox.Items.Add($"{z}x");
-            _zoomBox.SelectedIndex = Array.IndexOf(VisionViewControl.ZoomFactors, _view.ZoomFactor);
-            _zoomBox.SelectedIndexChanged += (s, e) =>
-            {
-                if (_zoomBox.SelectedIndex >= 0) _view.ZoomFactor = VisionViewControl.ZoomFactors[_zoomBox.SelectedIndex];
-            };
-            var capLabel = new Label { Text = "Captured", Location = new Point(508, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
-
-            _view.Location = new Point(12, 32);
-            _view.Size = new Size(480, 440);
-            _view.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
-            _view.StatusChanged += text => _status.Text = text;
-            _view.FpsChanged += text => _fpsLabel.Text = text;
-            _view.CameraStateChanged += OnCameraStateChanged;
-            // Lazy so a calibration edit (affine or steps/mm) re-scales the ticks live.
-            _view.TickScaleProvider = () => _owner != null ? VisionViewControl.MmPerPixel(_owner.Calibration) : null;
-
-            _capturedBox.Location = new Point(508, 32);
-            _capturedBox.Size = new Size(480, 440);
+            // ---- Captured pane (overlays from Add Sample / Add Edge / Add Wafer Edge) --------
+            // The live view lives on the main screen now; this pane fills the freed space and
+            // shows each detection's result (crosshair + edge/mark overlay).
+            var capLabel = new Label { Text = "Captured (detection overlay)", Location = new Point(12, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
+            _capturedBox.Location = new Point(12, 32);
+            _capturedBox.Size = new Size(976, 440);
             _capturedBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
 
-            _captureBtn.Location = new Point(12, 484);
-            _captureBtn.Size = new Size(120, 40);
-            _captureBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _captureBtn.Click += (s, e) => CaptureFrame();
-
-            _saveBtn.Location = new Point(140, 484);
-            _saveBtn.Size = new Size(120, 40);
-            _saveBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _saveBtn.Click += (s, e) => SaveCaptured();
-
-            _crosshairBtn.Location = new Point(268, 484);
-            _crosshairBtn.Size = new Size(120, 40);
-            _crosshairBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _crosshairBtn.Click += (s, e) =>
-            {
-                _view.ShowCrosshair = !_view.ShowCrosshair;
-                _crosshairBtn.Text = _view.ShowCrosshair ? "Crosshair: On" : "Crosshair: Off";
-            };
-
-            _invertBtn.Location = new Point(396, 484);
-            _invertBtn.Size = new Size(120, 40);
-            _invertBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _invertBtn.Click += (s, e) =>
-            {
-                _view.InvertView = !_view.InvertView;
-                _invertBtn.Text = _view.InvertView ? "Invert: On" : "Invert: Off";
-            };
-
-            _monoBtn.Location = new Point(524, 484);
-            _monoBtn.Size = new Size(120, 40);
-            _monoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _monoBtn.Click += (s, e) =>
-            {
-                _view.MonoView = !_view.MonoView;
-                _monoBtn.Text = _view.MonoView ? "Mono: On" : "Mono: Off";
-            };
-
-            _status.Location = new Point(652, 496);
+            _status.Location = new Point(652, 484);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Wafer centre-find (bottom strip) --------------------------------
@@ -365,18 +311,8 @@ namespace NanotecController
             _rotSpeedLabel.Location = new Point(1352, 720);
             _rotSpeedLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            Controls.Add(liveLabel);
-            Controls.Add(_fpsLabel);
-            Controls.Add(zoomLabel);
-            Controls.Add(_zoomBox);
             Controls.Add(capLabel);
-            Controls.Add(_view);
             Controls.Add(_capturedBox);
-            Controls.Add(_captureBtn);
-            Controls.Add(_saveBtn);
-            Controls.Add(_crosshairBtn);
-            Controls.Add(_invertBtn);
-            Controls.Add(_monoBtn);
             Controls.Add(_status);
             Controls.Add(calibLabel);
             Controls.Add(_sampleBtn);
@@ -434,19 +370,23 @@ namespace NanotecController
                 _waferResult.Text = $"Saved wafer centre:\r\nX={wxLoaded}  Y={wyLoaded}";
             }
 
-            Load += (s, e) => _view.StartCamera();
+            // The camera is already streaming on the main screen; gate on its live state and
+            // follow open/close (e.g. a Retry on the main toolbar) while this window is open.
+            _view.CameraStateChanged += OnCameraStateChanged;
+            OnCameraStateChanged();
+
             FormClosing += (s, e) => Teardown();
             // Safety: if this window loses focus mid-hold (e.g. alt-tab), stop the vision jog AND
             // any hold-rotate (a held button's MouseUp may not fire when focus is stolen).
             Deactivate += (s, e) => { _owner?.VisionStop(); _owner?.StopHoldRotate(); };
         }
 
-        // Camera opened or closed: gate everything that needs live frames (or, for the motion
-        // features, that only makes sense while the operator can see the live view).
+        // Camera opened or closed on the main screen: gate the protocol actions that need live
+        // frames (or, for the motion features, that only make sense while the operator sees it).
         private void OnCameraStateChanged()
         {
+            if (IsDisposed) return;
             bool open = _view.IsCameraOpen;
-            _captureBtn.Enabled = open;
             _sampleBtn.Enabled = open;
             _edgeBtn.Enabled = open;
             _waferEdgeBtn.Enabled = open;
@@ -457,25 +397,7 @@ namespace NanotecController
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;
             _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = open;
             _rotSpeedSlider.Enabled = open;
-            _zoomBox.Enabled = open;
             if (open) _vPadTimer.Start(); else _vPadTimer.Stop();
-        }
-
-        // Asks the view to convert the next frame at full resolution; SetCaptured shows it.
-        private void CaptureFrame()
-        {
-            if (!_view.IsCameraOpen) return;
-            _view.CaptureFullRes(SetCaptured);
-            _status.Text = "Capturing full-resolution frame...";
-        }
-
-        // UI thread: takes ownership of the full-res capture. The captured pane is
-        // SizeMode.Zoom, so it shows the full image scaled to fit; saving keeps full res.
-        private void SetCaptured(Bitmap full)
-        {
-            if (IsDisposed) { full.Dispose(); return; }
-            ShowCaptured(full);
-            _status.Text = $"Captured {full.Width}x{full.Height} at {DateTime.Now:HH:mm:ss}.";
         }
 
         // Puts a bitmap in the captured pane, taking ownership (disposes the previous one).
@@ -485,41 +407,18 @@ namespace NanotecController
             Image? old = _capturedBox.Image;
             _capturedBox.Image = bmp;
             if (!ReferenceEquals(old, bmp)) old?.Dispose();
-            _saveBtn.Enabled = true;
         }
 
-        // Camera-scale calibration → FrmVision.Calibration.cs
-        // Chuck + wafer centre-find → FrmVision.CentreFind.cs
-
-        // Rotate-about-crosshair UI (sign label + sign test) → FrmVision.Rotation.cs
-
-        // Saves the captured frame as a PNG under Desktop\images (created if missing).
-        private void SaveCaptured()
-        {
-            if (_capturedBox.Image == null) { _status.Text = "Capture an image first."; return; }
-            try
-            {
-                string dir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "images");
-                Directory.CreateDirectory(dir);
-                string path = Path.Combine(dir,
-                    "capture_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".png");
-                _capturedBox.Image.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-                _status.Text = "Saved " + path;
-            }
-            catch (Exception ex)
-            {
-                _status.Text = "Save failed: " + ex.Message;
-            }
-        }
-
-        // Drift-corrected vision jog (puck poll + discrete d-pad) → FrmVision.Jog.cs
+        // Camera-scale calibration → FrmVisionProtocols.Calibration.cs
+        // Chuck + wafer centre-find → FrmVisionProtocols.CentreFind.cs
+        // Rotate-about-crosshair UI (sign label + sign test) → FrmVisionProtocols.Rotation.cs
+        // Drift-corrected vision jog (puck poll + discrete d-pad) → FrmVisionProtocols.Jog.cs
 
         private void Teardown()
         {
             _vPadTimer.Stop();
             _owner?.VisionStop();
-            _view.StopCamera();
+            _view.CameraStateChanged -= OnCameraStateChanged;
             _capturedBox.Image?.Dispose();
         }
     }

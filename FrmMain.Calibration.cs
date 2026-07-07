@@ -12,14 +12,37 @@ namespace NanotecController
     // NanoLib is single-channel and access must be serialized. (Partial of FrmMain.)
     public partial class FrmMain
     {
-        // --- Calibration (separate window) ----------------------------------------
+        // --- Calibration (chooser → two separate windows) -------------------------
+        // The button now offers a choice: the axis travel-limits/home window, or the vision
+        // camera-scale + centre-find window (which is fed the main-screen camera).
+
+        private ContextMenuStrip? _calibMenu;
+        private FrmVisionProtocols? _visionProtocolsFromCalib;
 
         private void calibButton_Click(object? sender, EventArgs e)
         {
-            if (_calibWindow == null || _calibWindow.IsDisposed)
-                _calibWindow = new FrmCalibration(this);
-            _calibWindow.Show();
-            _calibWindow.BringToFront();
+            _calibMenu ??= BuildCalibMenu();
+            _calibMenu.Show(calibButton, new Point(0, calibButton.Height));
+        }
+
+        private ContextMenuStrip BuildCalibMenu()
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Axes — travel limits && home…", null, (s, e) =>
+            {
+                if (_calibWindow == null || _calibWindow.IsDisposed)
+                    _calibWindow = new FrmCalibration(this);
+                _calibWindow.Show();
+                _calibWindow.BringToFront();
+            });
+            menu.Items.Add("Vision — camera scale && centres…", null, (s, e) =>
+            {
+                if (_visionProtocolsFromCalib == null || _visionProtocolsFromCalib.IsDisposed)
+                    _visionProtocolsFromCalib = new FrmVisionProtocols(this, _visionView) { Owner = this };
+                _visionProtocolsFromCalib.Show();
+                _visionProtocolsFromCalib.BringToFront();
+            });
+            return menu;
         }
 
         private async void homeAllButton_Click(object? sender, EventArgs e) => await HomeAllAsync();

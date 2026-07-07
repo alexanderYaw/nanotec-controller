@@ -7,8 +7,8 @@ namespace NanotecController
 {
     // FrmVision — camera-scale calibration: manually capture (motor X,Y ↔ detected fiducial pixel)
     // samples and solve the pixel→step affine, writing it to the shared CalibrationStore.
-    // (Partial of FrmVision; layout + grab loop live in FrmVision.cs.)
-    public sealed partial class FrmVision
+    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    public sealed partial class FrmVisionProtocols
     {
         // Asks the grab thread to detect the fiducial in the next frame (the table is held
         // still by the user during a manual sample).

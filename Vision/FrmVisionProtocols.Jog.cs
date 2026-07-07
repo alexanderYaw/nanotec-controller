@@ -5,8 +5,8 @@ namespace NanotecController
 {
     // FrmVision — drift-corrected vision jog: maps a screen-space direction (analog puck poll or the
     // discrete d-pad) through the pixel→step affine so the on-screen motion follows that direction.
-    // The actual axis commands run in FrmMain.VisionJogUser/VisionStop. (Partial of FrmVision.)
-    public sealed partial class FrmVision
+    // The actual axis commands run in FrmMain.VisionJogUser/VisionStop. (Partial of FrmVisionProtocols.)
+    public sealed partial class FrmVisionProtocols
     {
         // Polls the joystick puck and commands a drift-corrected jog: the puck's screen direction
         // (x right+, y up+) is mapped through the calibration so the on-screen motion is along that

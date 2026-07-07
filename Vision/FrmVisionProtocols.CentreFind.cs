@@ -11,8 +11,8 @@ namespace NanotecController
     // a centre, and drive there. The two features share CentreFinder plus the compute/go-to halves
     // (TryComputeAndSaveCentre / GoToCentreAsync); only the grab callbacks differ, because the chuck
     // edge (focus) and wafer edge (brightness) use different detectors and overlays.
-    // (Partial of FrmVision; layout + grab loop live in FrmVision.cs.)
-    public sealed partial class FrmVision
+    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    public sealed partial class FrmVisionProtocols
     {
         private void RequestEdge()
         {
