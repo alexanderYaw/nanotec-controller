@@ -23,16 +23,16 @@ namespace NanotecController
         private const int AI_MID            = 251;    // fallback centre only — real centre is auto-captured per axis (_aiMid)
         private const int AI_SPAN           = 75;     // centre → full-deflection swing (measured dev ≈ ±77–81)
         private const int AI_DEADBAND       = 10;     // ignore |reading − mid| below this (centre jitter)
-        private const int AI_MAX_SPEED      = 10000;  // drive velocity units at full deflection
-        private const int AI_QUANTIZE       = 200;    // round velocity to this so a steady stick doesn't re-command
+        private const int AI_SPEED_STEPS    = 30;     // discrete speed levels across the range (quantise → fewer re-commands on jitter)
         private const int AI_CENTRE_SAMPLES = 5;      // average the first N polls for the centre (robust to a stale first read)
+        // Full-deflection speed is NOT a constant — it's each axis's user jog-speed slider (_axisRows[id].Speed.Value).
 
         // Axes the joystick drives, each with a wiring sign (flip if that axis runs backwards). The
         // stick's two pots read on the X and Y drives' analogue input 1. The knob's twist is NOT wired
         // to any drive AI (Θ removed 2026-07-08 — twisting changed nothing), and Z was never on the stick.
         private static readonly (AxisId id, int sign)[] AnalogAxes =
         {
-            (AxisId.X, -1),
+            (AxisId.X, +1),   // inverted 2026-07-08 (was −1) — X ran backwards on the bench
             (AxisId.Y, +1),
         };
 
@@ -73,9 +73,11 @@ namespace NanotecController
                 int vel = 0;
                 if (enabled && Math.Abs(dev) > AI_DEADBAND)
                 {
-                    vel = sign * (AI_MAX_SPEED * dev / AI_SPAN);
-                    vel = Math.Clamp(vel, -AI_MAX_SPEED, AI_MAX_SPEED);
-                    vel = vel / AI_QUANTIZE * AI_QUANTIZE;                 // quantise → fewer re-commands
+                    int maxSpeed = _axisRows[id].Speed.Value;             // full deflection = this axis's jog-speed slider
+                    vel = sign * (maxSpeed * dev / AI_SPAN);
+                    vel = Math.Clamp(vel, -maxSpeed, maxSpeed);
+                    int quantum = Math.Max(1, maxSpeed / AI_SPEED_STEPS); // scale the quantum with the range so low speeds stay proportional
+                    vel = vel / quantum * quantum;                        // quantise → fewer re-commands on jitter
                     if (InvertDir(id, 1) < 0) vel = -vel;                 // movement-inversion toggle (X/Y)
                 }
 
