@@ -135,8 +135,8 @@ namespace NanotecController
         public void MoveRelative(AxisId id, long deltaPosition, int profileVelocity)
             => _axes[id].MoveRelative(deltaPosition, profileVelocity);
 
-        public bool WaitForMotionComplete(AxisId id, int timeoutMs)
-            => _axes[id].WaitForMotionComplete(timeoutMs);
+        public bool WaitForMotionComplete(AxisId id, int timeoutMs, Func<bool>? cancel = null)
+            => _axes[id].WaitForMotionComplete(timeoutMs, cancel);
 
         // --- Status ----------------------------------------------------------------
 

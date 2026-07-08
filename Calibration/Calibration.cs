@@ -18,6 +18,11 @@ namespace NanotecController
         /// <summary>Explicit home, used where Center doesn't apply (Z has no two references).</summary>
         public long? Home { get; set; }
 
+        /// <summary>Motor steps per millimetre of stage travel (user-entered, from the stage's
+        /// mechanical spec). Converts mm-relative moves and scales the crosshair mm ticks;
+        /// null until entered. Θ never uses this (degrees go via ChuckTicksPerRev).</summary>
+        public double? StepsPerMm { get; set; }
+
         /// <summary>Midpoint of the two limits, or null until both are set.</summary>
         [JsonIgnore]
         public long? Center => Min.HasValue && Max.HasValue ? (Min.Value + Max.Value) / 2 : null;

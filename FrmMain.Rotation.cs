@@ -63,8 +63,8 @@ namespace NanotecController
         // and the old fragility (a bad estimate fighting the P-term) is gone. ENABLED: FF carries the
         // baseline follow velocity and cancels the follower's constant time-lag, which is why
         // ROTATE_LOOKAHEAD_MS is 0 (running both would double-compensate). K is a single per-axis
-        // scalar — steps moved per velocity-unit per second — measured by the K-capture logged after
-        // each rotate; re-measure if the drives' velocity scaling ever changes.
+        // scalar — steps moved per velocity-unit per second — measured by a temporary K-capture
+        // diagnostic (since removed); re-measure if the drives' velocity scaling ever changes.
         private const double ROTATE_FOLLOW_FF_X = 39.84;   // measured via K-capture (1 vu = 1 step/s ⇒ ≈40)
         private const double ROTATE_FOLLOW_FF_Y = 39.60;
         // Master (Θ) lookahead: project Θ this many ms into the future (via the COMMANDED setpoint
@@ -102,6 +102,10 @@ namespace NanotecController
 
         // Set true (StopHoldRotate) to end a hold-to-rotate; the hold loop checks it each tick.
         private volatile bool _holdRotateStop;
+
+        // True while a hold-rotate is running. RefreshButtons keeps the Θ jog arrows enabled while
+        // it's set so the held arrow's MouseUp (→ StopHoldRotate) still fires despite _busy.
+        private volatile bool _holdRotating;
 
         /// <summary>Rotation needs the drives enabled/idle AND a full calibration (affine +
         /// chuck centre). The sign may still be unset — the test run is how it gets fixed.</summary>
@@ -185,11 +189,6 @@ namespace NanotecController
             long peakErrX = 0, peakErrY = 0;   // largest follow error seen — dominated by the start/stop transient
             long pinSumX = 0, pinSumY = 0; int pinN = 0;   // signed PIN error (actual − current-angle target) over the middle
             bool velSaturated = false;         // X/Y ever hit the velocity cap (can't keep up)
-            double kDispX = 0, kVtX = 0, kDispY = 0, kVtY = 0;   // TEMP K-capture: Σ|Δpos| and Σ|cmdVel|·dt per axis
-            // TEMP jitter probe (cruise only): Σ|Δvel| per tick (command noise), Σ|vel| (saturation
-            // margin vs VMAX), Σ|err|. Separates "P-gain amplifying error noise" from "axis riding
-            // the VMAX clamp" from "commands smooth ⇒ jitter is mechanical".
-            long jDvX = 0, jDvY = 0, jVelX = 0, jVelY = 0, jErrX = 0, jErrY = 0; int jN = 0;
             bool ok = await RunDriveOp(() =>
             {
                 _motion!.RecoverIfQuickStopped(AxisId.Theta);
@@ -224,11 +223,11 @@ namespace NanotecController
                     bool velSeeded = false;
                     double thetaModel = thetaStart;      // complementary-filtered Θ for the pin target
                     double thetaCmdVelPrev = thetaDir * (double)ROTATE_THETA_MIN_SPEED / 1000.0;   // vel in force over the elapsed dt
-                    long prevXUser = 0, prevYUser = 0; int prevVelX = 0, prevVelY = 0;   // TEMP K-capture
-                    bool kSeeded = false;
                     double maxThetaVel = 0.0;            // peak |thetaVel| seen (ticks/ms), for the ramp-down distance
                     while (true)
                     {
+                        // Operator STOP: abandon the rotate; the finally below halts all three axes.
+                        if (_stopRequested) throw new OperationCanceledException("Rotate stopped by operator.");
                         long currentTheta = _motion.GetPosition(AxisId.Theta);
                         long nowMs = ffClock.ElapsedMilliseconds;
                         long dtMs = nowMs - ffPrevMs;
@@ -301,16 +300,6 @@ namespace NanotecController
                         long errY = tyUser - curYUser;
                         lastErrX = errX; lastErrY = errY;
 
-                        // TEMP K-capture (FF calibration): pair THIS tick's user displacement with the
-                        // velocity commanded LAST tick, integrated over cruise. m = Σ|Δpos| / Σ|vel|·dt
-                        // (steps per velocity-unit·ms); suggested FF gain = 1/(m·ROTATE_FOLLOW_MS).
-                        if (kSeeded && !thetaDone && dtMs > 0)
-                        {
-                            if (prevVelX != 0) { kDispX += Math.Abs(curXUser - prevXUser); kVtX += Math.Abs((double)prevVelX) * dtMs; }
-                            if (prevVelY != 0) { kDispY += Math.Abs(curYUser - prevYUser); kVtY += Math.Abs((double)prevVelY) * dtMs; }
-                        }
-                        prevXUser = curXUser; prevYUser = curYUser; kSeeded = true;
-
                         // ANALYTIC velocity feedforward (gains per axis — see the FF_X/FF_Y note). The pin
                         // target's exact step-velocity is d(target)/d(angle) · d(angle)/dt, where the
                         // geometry derivative is closed-form (not a diff of quantized targets) and
@@ -340,8 +329,6 @@ namespace NanotecController
                             int velX = FollowVel(errX, ffX), velY = FollowVel(errY, ffY);
                             CommandFollow(AxisId.X, velX);
                             CommandFollow(AxisId.Y, velY);
-                            int dvX = Math.Abs(velX - prevVelX), dvY = Math.Abs(velY - prevVelY);   // TEMP jitter probe
-                            prevVelX = velX; prevVelY = velY;   // TEMP K-capture: for next tick's m estimate
 
                             // Tuning diagnostic. Peak error is dominated by the start/stop accel
                             // transient (the lookahead can't fully null it — soften Θ accel for that).
@@ -357,13 +344,6 @@ namespace NanotecController
                                 if (Math.Abs(velX) >= ROTATE_FOLLOW_VMAX || Math.Abs(velY) >= ROTATE_FOLLOW_VMAX)
                                     velSaturated = true;
                                 double curFrac = Math.Clamp((double)actualProg / totalThetaTicks, 0.0, 1.0);
-                                if (curFrac >= 0.25 && curFrac <= 0.75)   // TEMP jitter probe (cruise window)
-                                {
-                                    jDvX += dvX; jDvY += dvY;
-                                    jVelX += Math.Abs(velX); jVelY += Math.Abs(velY);
-                                    jErrX += Math.Abs(errX); jErrY += Math.Abs(errY);
-                                    jN++;
-                                }
                                 if (curFrac >= 0.4 && curFrac <= 0.6 &&
                                     CrosshairRotation.TryXyTarget(a, cx, cy, s0x, s0y, deltaRad * curFrac, sign,
                                                                   out long curTxUser, out long curTyUser))
@@ -409,11 +389,6 @@ namespace NanotecController
                 AppendLog($"  Θ {thetaStart:N0} → {thetaEnd:N0} (Δ {thetaEnd - thetaStart:+0;-0}); final X/Y follow err {lastErrX:N0},{lastErrY:N0}.");
                 AppendLog($"  mid-rotation pin err {pinAvgX:+0;-0},{pinAvgY:+0;-0}; peak follow {peakErrX:N0},{peakErrY:N0}{(velSaturated ? " — SATURATED: lower Θ speed / raise VMAX" : "")}.");
                 AppendLog($"  → tune ROTATE_LOOKAHEAD_MS to zero the pin err (feature leads → lower; lags → raise). Split per-axis if X and Y disagree.");
-                double mX = kVtX > 0 ? kDispX / kVtX : 0, mY = kVtY > 0 ? kDispY / kVtY : 0;
-                double ffXsug = mX > 0 ? 1.0 / (mX * ROTATE_FOLLOW_MS) : 0, ffYsug = mY > 0 ? 1.0 / (mY * ROTATE_FOLLOW_MS) : 0;
-                AppendLog($"  TEMP K-capture: m {mX:0.0000},{mY:0.0000} steps/(vu·ms) → set ROTATE_FOLLOW_FF_X={ffXsug:0.0000}, ROTATE_FOLLOW_FF_Y={ffYsug:0.0000}.");
-                int n = Math.Max(1, jN);
-                AppendLog($"  TEMP jitter: cruise mean |vel| {jVelX / n:N0},{jVelY / n:N0} vu (VMAX {ROTATE_FOLLOW_VMAX}); mean |Δvel| {jDvX / n:N0},{jDvY / n:N0} vu/tick; mean |err| {jErrX / n:N0},{jErrY / n:N0} steps (n={jN}).");
             }
             AppendLog(ok ? "Rotate complete." : "Rotate FAILED — see error above.");
         }
@@ -447,6 +422,9 @@ namespace NanotecController
             int thetaDir = Math.Sign(direction);
 
             _holdRotateStop = false;
+            // Set BEFORE BeginBusy so the RefreshButtons it triggers keeps the Θ arrows enabled
+            // (RunDriveOp never throws, so the reset after the await always runs).
+            _holdRotating = true;
             using var busyScope = BeginBusy();
             AppendLog($"Rotate {(thetaDir > 0 ? "⟳" : "⟲")} about crosshair (hold; centre X={cx:N0} Y={cy:N0}, sign {sign:+0;-0}, lookahead {ROTATE_LOOKAHEAD_MS:0}ms)...");
             bool ok = await RunDriveOp(() =>
@@ -606,6 +584,7 @@ namespace NanotecController
                     catch (DriveException) { }
                 }
             });
+            _holdRotating = false;
             AppendLog(ok ? "Rotate (hold) stopped." : "Rotate (hold) FAILED — see error above.");
         }
 

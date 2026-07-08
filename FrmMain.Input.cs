@@ -67,6 +67,8 @@ namespace NanotecController
         /// </summary>
         private void TickOnScreen()
         {
+            // VISION mode: the same puck drives the drift-corrected screen jog instead.
+            if (_jogMode == JogMode.Vision) { VisionPadTick(); return; }
             bool allow = _drivesEnabled && !_busy && _motion != null;
             PointF v = allow ? joystickPad.Vector : PointF.Empty;
             int vx = (int)Math.Round(v.X * _axisRows[AxisId.X].Speed.Value);
@@ -131,6 +133,7 @@ namespace NanotecController
         {
             foreach (AxisId id in new List<AxisId>(_lastJoy.Keys)) _lastJoy[id] = (0, false);
             _lastVx = _lastVy = 0;
+            _visionLastVx = _visionLastVy = 0;   // vision-puck send-on-change (VisionPadTick)
         }
     }
 }

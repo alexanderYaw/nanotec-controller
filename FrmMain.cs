@@ -102,7 +102,9 @@ namespace NanotecController
             _calib = CalibrationStore.Load(out string? calibWarning);
             BuildAxisRows();
             BuildPositionButton();
-            BuildVisionButton();
+            BuildVisionColumn();
+            BuildRelativeMovePanel();
+            BuildStopButton();
             SetState(connected: false, busy: false, "Disconnected");
             if (calibWarning != null) AppendLog("WARN: " + calibWarning);
         }
@@ -135,20 +137,26 @@ namespace NanotecController
                     Font = new Font("Segoe UI Symbol", 13F),
                     Enabled = false,
                 };
-                b.MouseDown += (s, e) => StartJog(id, dir);
-                b.MouseUp += (s, e) => StopJog(id);
+                // Dispatch is mode-aware (raw jog vs vision jog / rotate) — see ArrowDown/ArrowUp.
+                b.MouseDown += (s, e) => ArrowDown(id, dir);
+                b.MouseUp += (s, e) => ArrowUp(id);
                 (dir < 0 ? neg : pos)[id] = b;
                 axesPanel.Controls.Add(b);
                 return b;
             }
 
-            void Header(string text, int x) => axesPanel.Controls.Add(new Label
+            Label Header(string text, int x)
             {
-                Text = text,
-                Location = new Point(x, 0),
-                AutoSize = true,
-                Font = new Font("Segoe UI", 10F, FontStyle.Bold),
-            });
+                var lbl = new Label
+                {
+                    Text = text,
+                    Location = new Point(x, 0),
+                    AutoSize = true,
+                    Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+                };
+                axesPanel.Controls.Add(lbl);
+                return lbl;
+            }
 
             // XY cross (left)
             Header("X / Y", 50);
@@ -160,28 +168,57 @@ namespace NanotecController
             Header("Z", 196);
             Arrow("▲", 180, 36, AxisId.Z, +1);
             Arrow("▼", 180, 76, AxisId.Z, -1);
-            // Theta (rotary chuck)
-            Header("Θ", 292);
+            // Theta (rotary chuck) — header relabelled in VISION mode (rotate about crosshair)
+            _thetaHeader = Header("Θ", 292);
             Arrow("↻", 250, 56, AxisId.Theta, +1);   // clockwise
             Arrow("↺", 302, 56, AxisId.Theta, -1);   // counter-clockwise
 
+            // RAW / VISION mode switch (top-right of the cluster): RAW jogs the drive axes; VISION
+            // does the drift-corrected screen jog on X/Y and rotate-about-crosshair on Θ (Z stays raw).
+            _rawModeBtn = new Button { Text = "⚙ RAW", Location = new Point(372, 6), Size = new Size(78, 40), Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            _visionModeBtn = new Button { Text = "🎥 VISION", Location = new Point(454, 6), Size = new Size(96, 40), Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
+            _rawModeBtn.Click += (s, e) => { if (_jogMode != JogMode.Raw) ApplyJogMode(JogMode.Raw); };
+            _visionModeBtn.Click += (s, e) => { if (_jogMode != JogMode.Vision) ApplyJogMode(JogMode.Vision); };
+            axesPanel.Controls.Add(_rawModeBtn);
+            axesPanel.Controls.Add(_visionModeBtn);
+
             // Movement-inversion toggle: flips X/Y/Θ jog direction for every manual control
             // (d-pad, joystick, on-screen puck) so they match the inverted camera view. Z is
-            // unaffected. See InvertDir in FrmMain.Jog.cs.
-            var invertBtn = new Button
+            // unaffected; disabled in VISION mode (the drift-corrected jog ignores it). See InvertDir.
+            _invertMovementBtn = new Button
             {
                 Text = "Invert X/Y/Θ: Off",
                 Location = new Point(372, 56),
                 Size = new Size(150, 36),
                 Font = new Font("Segoe UI", 9F),
             };
-            invertBtn.Click += (s, e) =>
+            _invertMovementBtn.Click += (s, e) =>
             {
                 _invertMovement = !_invertMovement;
-                invertBtn.Text = _invertMovement ? "Invert X/Y/Θ: On" : "Invert X/Y/Θ: Off";
+                _invertMovementBtn.Text = _invertMovement ? "Invert X/Y/Θ: On" : "Invert X/Y/Θ: Off";
                 AppendLog($"Movement inversion {(_invertMovement ? "ON" : "OFF")} (X / Y / Θ).");
             };
-            axesPanel.Controls.Add(invertBtn);
+            axesPanel.Controls.Add(_invertMovementBtn);
+
+            // Dedicated VISION-jog speed (X/Y screen jog), under the mode switch. Greyed in RAW mode;
+            // in VISION mode it's enabled and the per-axis X/Y row sliders grey out (see RefreshButtons).
+            axesPanel.Controls.Add(new Label { Text = "Vision jog speed", Location = new Point(372, 96), AutoSize = true });
+            _visionSpeed = new TrackBar
+            {
+                Location = new Point(372, 112),
+                Size = new Size(150, 30),
+                Minimum = 0,
+                Maximum = 6000,
+                Value = 1000,
+                TickStyle = TickStyle.None,
+                SmallChange = 100,
+                LargeChange = 500,
+                Enabled = false,
+            };
+            _visionSpeedValue = new Label { Text = _visionSpeed.Value.ToString(), Location = new Point(528, 116), AutoSize = true };
+            _visionSpeed.Scroll += (s, e) => _visionSpeedValue.Text = _visionSpeed.Value.ToString();
+            axesPanel.Controls.Add(_visionSpeed);
+            axesPanel.Controls.Add(_visionSpeedValue);
 
             // separator between the d-pad and the speed/position rows
             axesPanel.Controls.Add(new Panel
@@ -219,7 +256,7 @@ namespace NanotecController
                 var speedValue = new Label { Text = speed.Value.ToString(), Location = new Point(204, rowY + 9), AutoSize = true };
                 var status = new Label { Text = "pos -", Location = new Point(260, rowY + 9), AutoSize = true, Font = new Font("Consolas", 9F) };
 
-                speed.Scroll += (s, e) => speedValue.Text = speed.Value.ToString();
+                speed.Scroll += (s, e) => OnSpeedScroll(id);
 
                 axesPanel.Controls.Add(name);
                 axesPanel.Controls.Add(speed);
@@ -228,8 +265,12 @@ namespace NanotecController
 
                 _axisRows[id] = new AxisRow(neg[id], pos[id], status, speed, speedValue);
                 _lastJoy[id] = (0, false);
+                _rawSpeedMax[id] = cfg.JogVelocityMax;   // raw slider ceiling, restored on RAW mode
+                _rawSpeedSaved[id] = speed.Value;         // seed the per-mode remembered value
                 rowY += 40;
             }
+
+            PaintModeButtons();   // start in RAW; highlight the active mode
         }
 
         // --- Shared op / timer helpers --------------------------------------------
@@ -243,6 +284,13 @@ namespace NanotecController
             {
                 await Task.Run(op);
                 return true;
+            }
+            catch (OperationCanceledException)
+            {
+                // Operator Stop: WaitOrStop / the rotate loops already halted the drives on the
+                // background thread; here we just report it (not as an error).
+                AppendLog("Motion STOPPED by operator.");
+                return false;
             }
             catch (Exception ex)
             {
@@ -273,8 +321,72 @@ namespace NanotecController
         private sealed class BusyScope : IDisposable
         {
             private readonly FrmMain _f;
-            public BusyScope(FrmMain f) { _f = f; f._busy = true; f.RefreshButtons(); }
+            // Clear any stale Stop request as the op begins, so the Stop button (enabled while busy)
+            // only cancels THIS op. RefreshButtons then enables the Stop button and greys the rest.
+            public BusyScope(FrmMain f) { _f = f; f._stopRequested = false; f._busy = true; f.RefreshButtons(); }
             public void Dispose() { _f._busy = false; _f.RestartTimers(); _f.RefreshButtons(); }
+        }
+
+        // Set by RequestStop (Stop button) to abort a preplanned move in progress. The background
+        // drive op notices it in its wait/poll loop, halts all axes, and unwinds. volatile: written
+        // on the UI thread, read on the drive-op thread.
+        private volatile bool _stopRequested;
+
+        /// <summary>
+        /// Aborts any preplanned movement in progress (Home All, Go Home, Move To, relative move,
+        /// rotate-about-crosshair, limit-find). Cooperative + safe: it only sets flags — it does NOT
+        /// touch the drives from the UI thread (that would race the background op on the single
+        /// NanoLib channel). The running op sees the flag at its next poll, halts all axes on its own
+        /// thread, and exits. No-op when nothing is running.
+        /// </summary>
+        public void RequestStop()
+        {
+            if (!_busy) return;
+            _stopRequested = true;
+            _holdRotateStop = true;   // ends a hold/continuous rotate too (its loop watches this)
+            AppendLog("STOP pressed - halting motion...");
+            RefreshButtons();          // grey the Stop button until the op actually ends
+        }
+
+        /// <summary>
+        /// Background-thread wait for an axis that honours an operator Stop: on Stop it halts ALL
+        /// axes and throws <see cref="OperationCanceledException"/> to abandon the op (and any
+        /// follow-on steps). Otherwise identical to <c>WaitForMotionComplete</c> (returns whether
+        /// Target-Reached was seen before the timeout). Call only from inside a RunDriveOp lambda.
+        /// </summary>
+        private bool WaitOrStop(AxisId id, int timeoutMs)
+        {
+            try
+            {
+                return _motion!.WaitForMotionComplete(id, timeoutMs, () => _stopRequested);
+            }
+            catch (OperationCanceledException)
+            {
+                _motion!.StopAll();   // best-effort halt on THIS (op-owning) thread
+                throw;
+            }
+        }
+
+        // Big red STOP (top-right of the left column): aborts a preplanned move in progress. Enabled
+        // only while an op is running (see RefreshButtons); a jog is momentary (released to stop).
+        private Button _stopButton = null!;
+
+        private void BuildStopButton()
+        {
+            _stopButton = new Button
+            {
+                Text = "STOP",
+                Location = new Point(694, 56),
+                Size = new Size(188, 84),
+                Font = new Font("Segoe UI", 20F, FontStyle.Bold),
+                BackColor = Color.Firebrick,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Enabled = false,
+                TabStop = false,
+            };
+            _stopButton.Click += (s, e) => RequestStop();
+            leftPanel.Controls.Add(_stopButton);
         }
 
         // --- Window lifecycle / focus safety --------------------------------------
@@ -286,10 +398,15 @@ namespace NanotecController
         /// </summary>
         private void FrmMain_Deactivate(object? sender, EventArgs e)
         {
-            // A running op (enable/disable, go-home, find-limits) owns the drives and has
-            // already paused the timers — don't stomp it with a focus-loss StopAll (which
-            // would also race the background thread on the single NanoLib channel). The
-            // calibration window taking focus is the common trigger here.
+            // A hold-rotate (VISION Θ) runs with _busy == true, so stop it BEFORE the _busy
+            // early-return — otherwise alt-tabbing mid-hold leaves Θ turning (the held button's
+            // MouseUp won't fire when focus is stolen). StopHoldRotate is a harmless flag set
+            // when no rotate is running.
+            StopHoldRotate();
+            // A running op (enable/disable, go-home, find-limits, hold-rotate) owns the drives and
+            // has already paused the timers — don't stomp it with a focus-loss StopAll (which would
+            // also race the background thread on the single NanoLib channel). The calibration window
+            // taking focus is the common trigger here.
             if (_busy) return;
             joystickTimer.Stop();
             if (_motion == null) return;
@@ -312,6 +429,10 @@ namespace NanotecController
         {
             statusTimer.Stop();
             joystickTimer.Stop();
+            // Stop the grab thread BEFORE tearing down the drives/connection: the camera is
+            // independent of NanoLib, but shutting it down first keeps teardown ordered and
+            // avoids a late BeginInvoke racing the closing form.
+            _visionView.StopCamera();
             if (_connection.IsConnected)
             {
                 try
@@ -321,6 +442,7 @@ namespace NanotecController
                 catch (DriveException) { /* already closing */ }
                 _connection.Disconnect(_log);
             }
+            _lastCapture?.Dispose();
         }
 
         // --- Shared UI state ------------------------------------------------------
@@ -349,20 +471,82 @@ namespace NanotecController
             rbOff.Enabled = inputOk;
             rbUsb.Enabled = inputOk;
             rbScreen.Enabled = inputOk;
-            joystickPad.Enabled = inputOk && rbScreen.Checked;
+            // The puck needs the camera-scale calibration to do the vision jog.
+            joystickPad.Enabled = inputOk && rbScreen.Checked && (_jogMode == JogMode.Raw || _calib.PixelStep != null);
+
+            // Mode switch only when idle — ApplyJogMode stops motion and swaps the slider ranges.
+            _rawModeBtn.Enabled = !_busy;
+            _visionModeBtn.Enabled = !_busy;
+            // Vision jog speed is live only in VISION mode (adjustable whenever connected, like the
+            // row sliders — it sets a speed, it doesn't command motion).
+            _visionSpeed.Enabled = conn && _jogMode == JogMode.Vision;
+            // STOP: live only while a preplanned op is running, and greyed once pressed (until it ends).
+            if (_stopButton != null) _stopButton.Enabled = _busy && !_stopRequested;
 
             bool canJog = !_busy && conn && _drivesEnabled;
-            foreach (AxisRow row in _axisRows.Values)
+            bool visionXYok = canJog && _calib.PixelStep != null;      // vision X/Y needs the affine
+            bool visionThetaOk = canJog && CanRotate;                  // rotate needs affine + chuck centre
+            foreach ((AxisId id, AxisRow row) in _axisRows)
             {
-                row.Speed.Enabled = conn;   // adjustable whenever connected
-                row.Neg.Enabled = canJog;
-                row.Pos.Enabled = canJog;
+                // X/Y row sliders are raw-only now: they grey out in VISION mode (the dedicated
+                // vision-speed slider takes over). Z and Θ row sliders stay adjustable when connected.
+                row.Speed.Enabled = conn && !(_jogMode == JogMode.Vision && (id == AxisId.X || id == AxisId.Y));
+                bool en;
+                if (_jogMode == JogMode.Vision && id != AxisId.Z)
+                    en = id == AxisId.Theta ? visionThetaOk : visionXYok;
+                else
+                    en = canJog;
+                // Keep the Θ arrows live through a hold-rotate: _busy would otherwise disable them
+                // mid-hold, and a disabled button never fires MouseUp → StopHoldRotate never runs.
+                if (_holdRotating && id == AxisId.Theta) en = true;
+                row.Neg.Enabled = en;
+                row.Pos.Enabled = en;
             }
+
+            RefreshRelativeMove();
         }
+
+        // --- Log: capped ring buffer + status strip + on-demand FrmLog ------------
+        // The log box is gone; the strip shows only the latest line. The full history lives in a
+        // bounded ring (so a long session can't grow unbounded) and is mirrored live to an open
+        // FrmLog. AppendLog is only ever called on the UI thread (drive ops marshal through
+        // _log/Progress or run their logging outside the background lambda), so no locking here.
+        private const int LOG_RING_MAX = 5000;
+        private readonly Queue<string> _logRing = new();
+        private FrmLog? _logWindow;
+
+        /// <summary>A snapshot of the buffered log lines (oldest first) for a newly-opened FrmLog.</summary>
+        public IReadOnlyCollection<string> LogSnapshot => _logRing.ToArray();
+
+        /// <summary>Raised (UI thread) for each new log line, so an open FrmLog can append it live.</summary>
+        public event Action<string>? LogLineAdded;
+
+        /// <summary>Raised (UI thread) when the log is cleared (e.g. on a new connect).</summary>
+        public event Action? LogCleared;
 
         private void AppendLog(string message)
         {
-            logBox.AppendText($"{DateTime.Now:HH:mm:ss}  {message}{Environment.NewLine}");
+            string line = $"{DateTime.Now:HH:mm:ss}  {message}";
+            _logRing.Enqueue(line);
+            while (_logRing.Count > LOG_RING_MAX) _logRing.Dequeue();
+            statusStripLabel.Text = message;
+            LogLineAdded?.Invoke(line);
+        }
+
+        /// <summary>Empties the log buffer + strip and notifies an open FrmLog.</summary>
+        private void ClearLog()
+        {
+            _logRing.Clear();
+            statusStripLabel.Text = "";
+            LogCleared?.Invoke();
+        }
+
+        private void logStripButton_Click(object? sender, EventArgs e)
+        {
+            if (_logWindow == null || _logWindow.IsDisposed)
+                _logWindow = new FrmLog(this) { Owner = this };
+            _logWindow.Show();
+            _logWindow.BringToFront();
         }
     }
 }

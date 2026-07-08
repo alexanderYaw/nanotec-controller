@@ -164,8 +164,10 @@ namespace NanotecController
             }
         }
 
-        /// <summary>Polls the statusword until <paramref name="predicate"/> holds or it times out.</summary>
-        private long WaitForStatus(Func<long, bool> predicate, int timeoutMs, string what)
+        /// <summary>Polls the statusword until <paramref name="predicate"/> holds or it times out.
+        /// If <paramref name="cancel"/> is supplied and returns true, throws
+        /// <see cref="OperationCanceledException"/> so the caller can abort (e.g. an operator Stop).</summary>
+        private long WaitForStatus(Func<long, bool> predicate, int timeoutMs, string what, Func<bool>? cancel = null)
         {
             int waited = 0;
             long sw = 0;
@@ -173,6 +175,7 @@ namespace NanotecController
             {
                 sw = Read(OD_Statusword, "statusword");
                 if (predicate(sw)) return sw;
+                if (cancel != null && cancel()) throw new OperationCanceledException($"cancelled waiting for {what}.");
                 Thread.Sleep(POLL_STEP_MS);
                 waited += POLL_STEP_MS;
             }
@@ -330,17 +333,19 @@ namespace NanotecController
         /// Target-Reached) before this is called. For step-and-settle scanning: issue a
         /// Move, then wait on this before grabbing a frame.
         /// </summary>
-        public bool WaitForMotionComplete(int timeoutMs)
+        public bool WaitForMotionComplete(int timeoutMs, Func<bool>? cancel = null)
         {
             try
             {
-                WaitForStatus(s => (s & SW_TARGET_REACHED) != 0, timeoutMs, "target reached");
+                WaitForStatus(s => (s & SW_TARGET_REACHED) != 0, timeoutMs, "target reached", cancel);
                 return true;
             }
             catch (DriveException)
             {
                 return false;
             }
+            // OperationCanceledException (operator Stop) is intentionally NOT caught — it propagates
+            // so the caller abandons the move (and its follow-on steps) instead of proceeding.
         }
 
         /// <summary>
