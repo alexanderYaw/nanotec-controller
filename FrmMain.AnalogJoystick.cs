@@ -36,6 +36,16 @@ namespace NanotecController
             (AxisId.Y, +1),
         };
 
+        // VISION-mode stick→screen mapping. In VISION jog mode the stick does NOT drive raw X/Y;
+        // its deflection is read as a SCREEN-space direction (right+/up+) and fed through the
+        // pixel→step affine (like the puck/d-pad) so that pushing the stick purely along X moves
+        // the chuck along the COMPENSATED (camera) X axis, cancelling the camera↔stage rotation.
+        // These signs map each pot's raw deflection to a screen direction — flip on the bench if
+        // pushing right/up steers the wrong way on screen. They are independent of the raw
+        // AnalogAxes signs above (which tune raw drive motion, a different frame).
+        private const int VISION_STICK_X = +1;   // pot-X deflection → screen right+
+        private const int VISION_STICK_Y = +1;   // pot-Y deflection → screen up+
+
         // Last velocity commanded per axis (send-on-change, so a held stick isn't re-commanded).
         private readonly Dictionary<AxisId, int> _lastAnalogVel = new();
 
@@ -47,29 +57,58 @@ namespace NanotecController
         private readonly Dictionary<AxisId, int>  _aiCentreCount = new();
 
         // One poll of the analog joystick (joystickTimer tick when the Joystick source is selected).
-        // No deadman (see class header): with the drives enabled, each driven axis (X, Y) is commanded
-        // from its pot deflection past the deadband; a centred stick reads dev≈0 → stop.
+        // No deadman (see class header): with the drives enabled, deflecting past the deadband moves,
+        // centring stops. Reads BOTH pots (X and Y drives' analogue input 1), keeps their centres
+        // auto-captured, then dispatches on jog mode: RAW = per-axis drive velocity (unchanged);
+        // VISION = the stick's deflection as a screen direction fed through the pixel→step affine, so
+        // a pure-X push moves the chuck along the compensated (camera) X axis — the same drift-corrected
+        // path the on-screen puck (VisionPadTick) and d-pad (VisionJog) use.
         private void TickAnalogJoystick()
         {
             if (_motion == null) return;
             bool enabled = _drivesEnabled && !_busy;
 
-            bool centresReady = true, anyMoving = false;
+            // Read both pots + keep auto-centring (both finish on the same tick — they start together
+            // at ResetJoy). Bail on a read error; wait until both centres are captured before moving.
+            int devX, devY;
+            try
+            {
+                bool okX = TryReadDeflection(AxisId.X, out devX);
+                bool okY = TryReadDeflection(AxisId.Y, out devY);
+                if (!okX || !okY) { joystickStatusLabel.Text = "Joystick: calibrating centre…"; return; }
+            }
+            catch (DriveException)
+            {
+                joystickStatusLabel.Text = "Joystick: read FAILED";
+                StopAnalogAxes();                                 // stop raw X/Y + clear its send-on-change cache
+                _visionLastVx = _visionLastVy = 0;                // and the vision cache (so a resume re-commands)
+                return;
+            }
+
+            if (_jogMode == JogMode.Vision) TickAnalogVision(devX, devY, enabled);
+            else                            TickAnalogRaw(devX, devY, enabled);
+        }
+
+        // Reads one pot, updates its auto-centre, and returns the signed deflection (raw − centre).
+        // Returns false while the centre is still being averaged. Throws DriveException on a read error.
+        private bool TryReadDeflection(AxisId id, out int dev)
+        {
+            dev = 0;
+            int raw = _motion!.GetAnalogInput1(id);
+            CaptureCentre(id, raw);
+            if (!_aiMid.TryGetValue(id, out int mid)) return false;
+            dev = raw - mid;
+            return true;
+        }
+
+        // RAW mode: each pot drives its own drive axis at a velocity proportional to its deflection,
+        // full deflection = that axis's jog-speed slider. (Unchanged behaviour, per-axis + quantised.)
+        private void TickAnalogRaw(int devX, int devY, bool enabled)
+        {
+            bool anyMoving = false;
             foreach ((AxisId id, int sign) in AnalogAxes)
             {
-                int raw;
-                try { raw = _motion.GetAnalogInput1(id); }
-                catch (DriveException)
-                {
-                    joystickStatusLabel.Text = "Joystick: read FAILED";
-                    StopAnalogAxes();   // safety: don't leave an axis running on a stale command
-                    return;
-                }
-
-                CaptureCentre(id, raw);
-                if (!_aiMid.TryGetValue(id, out int mid)) { centresReady = false; ApplyAnalogVel(id, 0); continue; }
-
-                int dev = raw - mid;
+                int dev = id == AxisId.X ? devX : devY;
                 int vel = 0;
                 if (enabled && Math.Abs(dev) > AI_DEADBAND)
                 {
@@ -85,10 +124,39 @@ namespace NanotecController
                 if (vel != 0) anyMoving = true;
             }
 
-            joystickStatusLabel.Text = !centresReady ? "Joystick: calibrating centre…"
-                                     : anyMoving      ? "Joystick: moving"
-                                                      : "Joystick: idle";
+            joystickStatusLabel.Text = anyMoving ? "Joystick: moving" : "Joystick: idle";
         }
+
+        // VISION mode: the stick's deflection is a SCREEN-space direction (right+/up+); it goes through
+        // the pixel→step affine so the chuck follows that screen direction (compensated for the camera
+        // rotation), speed scaled by deflection × the dedicated vision speed slider. Send-on-change,
+        // sharing _visionLastVx/Vy + VisionJogUser/VisionStop with the puck path (only one is live).
+        private void TickAnalogVision(int devX, int devY, bool enabled)
+        {
+            double sx = StickDeflection(devX) * VISION_STICK_X;   // screen right+
+            double sy = StickDeflection(devY) * VISION_STICK_Y;   // screen up+
+            double vmag = Math.Min(1.0, Math.Sqrt(sx * sx + sy * sy));
+
+            PixelStepAffine? a = _calib.PixelStep;
+            int vx = 0, vy = 0;
+            if (enabled && a != null && vmag > 0)                 // per-axis deadband already zeroed jitter
+                VisionJogMath.TryUserVelocity(a, sx, -sy, vmag * _visionSpeed.Value, out vx, out vy);
+
+            if (vx != _visionLastVx || vy != _visionLastVy)       // send-on-change
+            {
+                _visionLastVx = vx; _visionLastVy = vy;
+                if (vx == 0 && vy == 0) VisionStop();
+                else VisionJogUser(vx, vy);
+            }
+
+            joystickStatusLabel.Text = a == null ? "Joystick: needs camera-scale calibration"
+                                     : (vx != 0 || vy != 0) ? "Joystick: moving (vision)"
+                                                            : "Joystick: idle";
+        }
+
+        // Normalised signed deflection for one pot: 0 inside the deadband, ±1 at full swing (AI_SPAN).
+        private static double StickDeflection(int dev)
+            => Math.Abs(dev) <= AI_DEADBAND ? 0.0 : Math.Clamp((double)dev / AI_SPAN, -1.0, 1.0);
 
         // Auto-centre: average the first AI_CENTRE_SAMPLES readings, then freeze the centre for this axis.
         private void CaptureCentre(AxisId id, int raw)

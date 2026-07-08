@@ -88,6 +88,10 @@ namespace NanotecController
                 // On-screen XY velocity vector.
                 if (_lastVx != 0) try { _motion.Stop(AxisId.X); } catch (DriveException) { }
                 if (_lastVy != 0) try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
+                // VISION-mode screen jog (puck or analog joystick) drives X/Y through VisionJogUser,
+                // tracked separately from the raw caches above — stop those too on a source switch.
+                if (_visionLastVx != 0) try { _motion.Stop(AxisId.X); } catch (DriveException) { }
+                if (_visionLastVy != 0) try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
                 // Analog joystick axes (X / Y / Θ).
                 foreach ((AxisId id, int _) in AnalogAxes)
                     if (_lastAnalogVel.TryGetValue(id, out int v) && v != 0)
