@@ -297,7 +297,7 @@ namespace NanotecController
             rbUsb.Name = "rbUsb";
             rbUsb.Size = new Size(110, 24);
             rbUsb.TabIndex = 4;
-            rbUsb.Text = "USB joystick";
+            rbUsb.Text = "Joystick";
             rbUsb.UseVisualStyleBackColor = true;
             rbUsb.CheckedChanged += inputSourceChanged;
             //

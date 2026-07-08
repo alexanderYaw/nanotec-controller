@@ -36,6 +36,8 @@ namespace NanotecController
         private readonly OdIndex OD_HomingMethod = new OdIndex(0x6098, 0x00);
         // Digital Inputs status object (limit-switch bits used by the calibration find).
         private readonly OdIndex OD_DigitalInputs = new OdIndex(0x60FD, 0x00);
+        // Analogue input 1 (0x3220:01) — the analog joystick pot wired into this axis's drive.
+        private readonly OdIndex OD_AnalogInput1 = new OdIndex(0x3220, 0x01);
         // Store-parameters object: writing the "save" signature persists RAM values → NV.
         private readonly OdIndex OD_StoreParameters = new OdIndex(0x1010, 0x01);
 
@@ -386,6 +388,10 @@ namespace NanotecController
         /// watches bits 0/1 to detect a switch.
         /// </summary>
         public long ReadDigitalInputs() => Read(OD_DigitalInputs, "digital inputs 0x60FD");
+
+        /// <summary>Analogue input 1 (0x3220:01) — the drive-wired analog joystick pot, 16-bit
+        /// signed. Reads centre ≈ mid-scale; deflection swings it either side.</summary>
+        public int ReadAnalogInput1() => (short)Read(OD_AnalogInput1, "analog input 0x3220:01");
 
         /// <summary>
         /// True if the drive is held in Quick-Stop-Active (state 0x07) — what a limit hit

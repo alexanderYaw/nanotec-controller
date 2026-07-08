@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.Threading;
@@ -372,9 +373,15 @@ namespace NanotecController
             if (!_showCrosshair) return;
             int cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
             int cx = cw / 2, cy = ch / 2;
-            using var pen = new Pen(Color.Lime, 1f);
-            e.Graphics.DrawLine(pen, cx, 0, cx, ch);
-            e.Graphics.DrawLine(pen, 0, cy, cw, cy);
+            // The overlay is drawn in SCREEN pixels (constant across zoom). The measurement ticks are
+            // bumped WITH the zoom factor so they don't look thin against the magnified image at 3x/5x.
+            // The crosshair arms go the other way — slightly THINNER as zoom rises (floored at 1 px) —
+            // so the full-length arms don't dominate the finer view when magnified.
+            float zoom = Math.Max(1, _zoomWanted);
+            using var crossPen = new Pen(CrosshairGreen, Math.Max(1f, 2f - 0.2f * (zoom - 1f)));
+            using var tickPen = new Pen(CrosshairGreen, 1.5f + 0.5f * (zoom - 1f));
+            e.Graphics.DrawLine(crossPen, cx, 0, cx, ch);
+            e.Graphics.DrawLine(crossPen, 0, cy, cw, cy);
 
             (double mmPerPxCol, double mmPerPxRow)? mm = TickScaleProvider?.Invoke();
             int fw = _frameW, fh = _frameH;
@@ -383,30 +390,47 @@ namespace NanotecController
             // mm per SCREEN pixel = mm per image pixel ÷ displayed-pixels-per-image-pixel.
             // Zoom doesn't enter: the centred ROI leaves the image pixel size unchanged, only
             // the screen scale (box px / frame px) changes.
-            DrawMmTicks(e.Graphics, pen, horizontal: true, cx, cy, cw, mm.Value.mmPerPxCol * fw / cw);
-            DrawMmTicks(e.Graphics, pen, horizontal: false, cx, cy, ch, mm.Value.mmPerPxRow * fh / ch);
+            Font labelFont = TickFontFor(_zoomWanted);
+            DrawMmTicks(e.Graphics, tickPen, labelFont, horizontal: true, cx, cy, cw, mm.Value.mmPerPxCol * fw / cw);
+            DrawMmTicks(e.Graphics, tickPen, labelFont, horizontal: false, cx, cy, ch, mm.Value.mmPerPxRow * fh / ch);
         }
 
-        // Small label font for the mm markings (cached — DrawOverlay repaints per frame).
-        private static readonly Font TickFont = new("Segoe UI", 7f);
+        // Crosshair / tick colour and a matching label brush, cached (DrawOverlay repaints per frame).
+        private static readonly Color CrosshairGreen = Color.Lime;
+        private static readonly Brush TickBrush = new SolidBrush(CrosshairGreen);
 
-        // Markings at a FIXED 1 mm pitch along a crosshair arm: a short tick every 1 mm, a longer
-        // one every 5 mm, and the longest + a mm-distance label every 10 mm. If 1 mm is too few
-        // screen pixels to resolve (heavily zoomed out), the minor ticks are thinned to 5 mm — and
-        // 10 mm if even that is dense — so they don't smear into a solid bar. Zoom does not enter
-        // mmPerScreenPx (centred-ROI zoom leaves the image pixel size unchanged).
-        private static void DrawMmTicks(Graphics g, Pen pen, bool horizontal, int cx, int cy, int extent, double mmPerScreenPx)
+        // Label font, larger at higher magnification so the mm readings stay legible against the
+        // zoomed image. Cached per zoom level (only a few values) so paint doesn't allocate a font.
+        private static readonly Dictionary<int, Font> _tickFonts = new();
+        private static Font TickFontFor(int zoom)
+        {
+            if (!_tickFonts.TryGetValue(zoom, out Font? f))
+            {
+                f = new Font("Segoe UI", 7f + 1.5f * (Math.Max(1, zoom) - 1));   // 1x:7, 2x:8.5, 3x:10, 5x:13
+                _tickFonts[zoom] = f;
+            }
+            return f;
+        }
+
+        // Tick half-lengths (px), shortest → longest: 0.1 mm, 0.5 mm, 1 mm, 5 mm, 10 mm.
+        private const int TICK_TENTH = 3, TICK_HALF = 6, TICK_MM = 10, TICK_5MM = 14, TICK_10MM = 18;
+
+        // Markings along a crosshair arm at a FIXED 1 mm pitch: a long tick every 1 mm, longer every
+        // 5 mm, longest + a distance label every 10 mm (and the first 1 mm is labelled to anchor the
+        // scale). Between the centre and the first mm, 0.1 mm sub-ticks are added when zoomed in far
+        // enough to resolve them, with 0.5 mm drawn a little longer. If 1 mm is too few screen px to
+        // resolve (zoomed out), the mm ticks thin to 5 mm — then 10 mm — so they don't smear into a
+        // bar. Zoom does not enter mmPerScreenPx (centred-ROI zoom leaves the image pixel unchanged).
+        private static void DrawMmTicks(Graphics g, Pen pen, Font labelFont, bool horizontal, int cx, int cy, int extent, double mmPerScreenPx)
         {
             if (!(mmPerScreenPx > 0) || double.IsInfinity(mmPerScreenPx)) return;
             double pxPerMm = 1.0 / mmPerScreenPx;
-            int minorEveryMm = pxPerMm >= 4.0 ? 1 : (pxPerMm * 5.0 >= 4.0 ? 5 : 10);   // thin when dense
-            bool label = pxPerMm * 10.0 >= 22.0;                                        // room to read 10 mm labels
             double half = extent / 2.0;
 
-            for (int d = minorEveryMm; d * pxPerMm <= half; d += minorEveryMm)
+            // One tick of half-length len at signed pixel offset off from centre, on BOTH sides.
+            void Tick(double offPx, int len)
             {
-                int off = (int)Math.Round(d * pxPerMm);
-                int len = d % 10 == 0 ? 12 : (d % 5 == 0 ? 8 : 4);
+                int off = (int)Math.Round(offPx);
                 if (horizontal)
                 {
                     g.DrawLine(pen, cx + off, cy - len, cx + off, cy + len);
@@ -417,21 +441,42 @@ namespace NanotecController
                     g.DrawLine(pen, cx - len, cy + off, cx + len, cy + off);
                     g.DrawLine(pen, cx - len, cy - off, cx + len, cy - off);
                 }
+            }
 
-                if (label && d % 10 == 0)
+            // A distance label just past a tick of half-length len, on both sides.
+            void Label(int d, double offPx, int len)
+            {
+                string s = d.ToString();
+                int off = (int)Math.Round(offPx);
+                int vpad = labelFont.Height / 2;   // vertically centre the label on the arm
+                if (horizontal)
                 {
-                    string s = d.ToString();
-                    if (horizontal)
-                    {
-                        g.DrawString(s, TickFont, Brushes.Lime, cx + off + 1, cy + 12);
-                        g.DrawString(s, TickFont, Brushes.Lime, cx - off + 1, cy + 12);
-                    }
-                    else
-                    {
-                        g.DrawString(s, TickFont, Brushes.Lime, cx + 13, cy + off - 7);
-                        g.DrawString(s, TickFont, Brushes.Lime, cx + 13, cy - off - 7);
-                    }
+                    g.DrawString(s, labelFont, TickBrush, cx + off + 1, cy + len);
+                    g.DrawString(s, labelFont, TickBrush, cx - off + 1, cy + len);
                 }
+                else
+                {
+                    g.DrawString(s, labelFont, TickBrush, cx + len + 1, cy + off - vpad);
+                    g.DrawString(s, labelFont, TickBrush, cx + len + 1, cy - off - vpad);
+                }
+            }
+
+            // 0.1 mm sub-ticks between the centre and the first mm (0.5 mm a little longer), only
+            // when a tenth is at least a few screen px so they don't merge.
+            double pxPerTenth = pxPerMm / 10.0;
+            if (pxPerTenth >= 3.0)
+                for (int t = 1; t <= 9; t++)
+                    if (t * pxPerTenth <= half) Tick(t * pxPerTenth, t == 5 ? TICK_HALF : TICK_TENTH);
+
+            // Millimetre ticks (thinned when 1 mm is too dense to resolve).
+            int everyMm = pxPerMm >= 4.0 ? 1 : (pxPerMm * 5.0 >= 4.0 ? 5 : 10);
+            bool label10 = pxPerMm * 10.0 >= 22.0;
+            for (int d = everyMm; d * pxPerMm <= half; d += everyMm)
+            {
+                int len = d % 10 == 0 ? TICK_10MM : (d % 5 == 0 ? TICK_5MM : TICK_MM);
+                Tick(d * pxPerMm, len);
+                if (d == 1 && pxPerMm >= 16.0) Label(1, pxPerMm, len);           // anchor the scale
+                else if (d % 10 == 0 && label10) Label(d, d * pxPerMm, len);
             }
         }
 

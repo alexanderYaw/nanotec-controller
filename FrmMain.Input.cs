@@ -25,9 +25,9 @@ namespace NanotecController
             {
                 ResetJoy();
                 joystickTimer.Start();
-                joystickStatusLabel.Text = usb ? "USB: idle" : "On-screen: idle";
+                joystickStatusLabel.Text = usb ? "Joystick: idle" : "On-screen: idle";
                 AppendLog(usb
-                    ? "Input: USB joystick (hold button 1 = deadman; button 2 = fast)."
+                    ? "Input: analog joystick (wired to the drives; deflect to move, centre to stop)."
                     : "Input: on-screen joystick (drag the puck; release = stop).");
             }
             else
@@ -40,23 +40,7 @@ namespace NanotecController
         private void joystickTimer_Tick(object? sender, EventArgs e)
         {
             if (rbScreen.Checked) { TickOnScreen(); return; }   // on-screen puck path
-
-            JoystickState st = _joystick.Poll();
-
-            if (!st.Connected)
-            {
-                joystickStatusLabel.Text = "Joystick: NOT FOUND";
-                StopJoyAxes(); // safety: a vanished joystick must not leave an axis running
-                return;
-            }
-            joystickStatusLabel.Text = $"Joystick: {(st.Deadman ? "DEADMAN held" : "idle")}{(st.Fast ? " | FAST" : "")}";
-
-            bool allow = st.Deadman && _drivesEnabled && !_busy && _motion != null;
-
-            ApplyJoy(AxisId.X, allow ? st.X : 0, st.Fast);
-            ApplyJoy(AxisId.Y, allow ? st.Y : 0, st.Fast);
-            ApplyJoy(AxisId.Z, allow ? st.Z : 0, st.Fast);
-            ApplyJoy(AxisId.Theta, allow ? st.R : 0, st.Fast);
+            if (rbUsb.Checked) { TickAnalogJoystick(); return; }  // analog joystick wired to the drives
         }
 
         /// <summary>
@@ -75,23 +59,6 @@ namespace NanotecController
             int vy = (int)Math.Round(v.Y * _axisRows[AxisId.Y].Speed.Value);
             ApplyVector(vx, vy);
             joystickStatusLabel.Text = (vx != 0 || vy != 0) ? $"On-screen: {vx}, {vy}" : "On-screen: idle";
-        }
-
-        /// <summary>
-        /// Commands one axis from the joystick, but only when the command changes
-        /// (send-on-change). Speed comes from that axis's slider; the Fast button
-        /// multiplies it (capped at the slider max).
-        /// </summary>
-        private void ApplyJoy(AxisId id, int dir, bool fast)
-        {
-            dir = InvertDir(id, dir);                       // movement-inversion toggle (X/Y/Θ)
-            if (dir != 0 && _softLimits.IsBlocked(id, dir)) dir = 0; // soft limit -> treat as stop
-            (int dir, bool fast) last = _lastJoy[id];
-            if (last.dir == dir && (dir == 0 || last.fast == fast)) return; // unchanged
-            int speed = _axisRows[id].Speed.Value;
-            if (fast) speed = Math.Min(speed * FAST_FACTOR, _axisRows[id].Speed.Maximum);
-            CommandAxisVelocity(id, dir * speed, honorSoftLimit: false);   // block already applied above
-            _lastJoy[id] = (dir, fast);
         }
 
         // --- XY velocity-vector jog (on-screen joystick) --------------------------
@@ -113,18 +80,18 @@ namespace NanotecController
             CommandAxisVelocity(id, v, honorSoftLimit: true);
         }
 
-        /// <summary>Stops any axis the joystick was driving and clears its last-command cache.</summary>
+        /// <summary>Stops any axis an input source was driving and clears the last-command caches.</summary>
         private void StopJoyAxes()
         {
             if (_motion != null)
             {
-                foreach (AxisId id in _motion.Axes)
-                {
-                    if (_lastJoy[id].dir != 0)
-                        try { _motion.Stop(id); } catch (DriveException) { }
-                }
+                // On-screen XY velocity vector.
                 if (_lastVx != 0) try { _motion.Stop(AxisId.X); } catch (DriveException) { }
                 if (_lastVy != 0) try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
+                // Analog joystick axes (X / Y / Θ).
+                foreach ((AxisId id, int _) in AnalogAxes)
+                    if (_lastAnalogVel.TryGetValue(id, out int v) && v != 0)
+                        try { _motion.Stop(id); } catch (DriveException) { }
             }
             ResetJoy();
         }
@@ -134,6 +101,10 @@ namespace NanotecController
             foreach (AxisId id in new List<AxisId>(_lastJoy.Keys)) _lastJoy[id] = (0, false);
             _lastVx = _lastVy = 0;
             _visionLastVx = _visionLastVy = 0;   // vision-puck send-on-change (VisionPadTick)
+            foreach ((AxisId id, int _) in AnalogAxes) _lastAnalogVel[id] = 0;   // analog joystick send-on-change
+            _aiMid.Clear();          // analog joystick: re-average the centre on the next polls
+            _aiCentreSum.Clear();
+            _aiCentreCount.Clear();
         }
     }
 }
