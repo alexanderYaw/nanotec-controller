@@ -16,6 +16,7 @@ namespace NanotecController
         private Button _crosshairBtn = null!;
         private Button _invertBtn = null!;
         private Button _monoBtn = null!;
+        private Button _measureBtn = null!;
         private Button _captureBtn = null!;
         private Button _saveBtn = null!;
         private Button _retryCameraBtn = null!;
@@ -45,7 +46,7 @@ namespace NanotecController
             };
             toolbar.Controls.Add(_visionZoom);
 
-            _crosshairBtn = ToolbarButton("Crosshair", 118, 88);
+            _crosshairBtn = ToolbarButton("Crosshair", 112, 74);
             _crosshairBtn.Click += (s, e) =>
             {
                 _visionView.ShowCrosshair = !_visionView.ShowCrosshair;
@@ -53,7 +54,7 @@ namespace NanotecController
             };
             SetToggle(_crosshairBtn, _visionView.ShowCrosshair);
 
-            _invertBtn = ToolbarButton("Invert", 210, 76);
+            _invertBtn = ToolbarButton("Invert", 190, 58);
             _invertBtn.Click += (s, e) =>
             {
                 _visionView.InvertView = !_visionView.InvertView;
@@ -61,19 +62,26 @@ namespace NanotecController
             };
             SetToggle(_invertBtn, _visionView.InvertView);
 
-            _monoBtn = ToolbarButton("Mono", 290, 76);
+            _monoBtn = ToolbarButton("Mono", 252, 50);
             _monoBtn.Click += (s, e) =>
             {
                 _visionView.MonoView = !_visionView.MonoView;
                 SetToggle(_monoBtn, _visionView.MonoView);
             };
             SetToggle(_monoBtn, _visionView.MonoView);
-            _captureBtn = ToolbarButton("Capture", 370, 76, enabled: false);
+
+            _measureBtn = ToolbarButton("Measure", 306, 74);
+            _measureBtn.Click += (s, e) =>
+            {
+                _visionView.MeasureEnabled = !_visionView.MeasureEnabled;
+                SetToggle(_measureBtn, _visionView.MeasureEnabled);
+            };
+            SetToggle(_measureBtn, _visionView.MeasureEnabled);
+
+            _captureBtn = ToolbarButton("Capture", 384, 66, enabled: false);
             _captureBtn.Click += (s, e) => CaptureFrame();
-            _saveBtn = ToolbarButton("Save", 450, 60, enabled: false);
+            _saveBtn = ToolbarButton("Save", 454, 50, enabled: false);
             _saveBtn.Click += (s, e) => SaveCapture();
-            _fpsLabel = new Label { AutoSize = true, ForeColor = Color.DimGray, Location = new Point(518, 12) };
-            toolbar.Controls.Add(_fpsLabel);
 
             Button ToolbarButton(string text, int x, int w, bool enabled = true)
             {
@@ -103,6 +111,8 @@ namespace NanotecController
             _retryCameraBtn = new Button { Text = "Retry camera", Location = new Point(176, 24), Size = new Size(120, 32), Visible = false };
             _retryCameraBtn.Click += (s, e) => { _visionView.StartCamera(); RefreshCameraUi(); };
             bottom.Controls.Add(_retryCameraBtn);
+            _fpsLabel = new Label { AutoSize = true, ForeColor = Color.DimGray, Location = new Point(176, 70) };
+            bottom.Controls.Add(_fpsLabel);
 
             // --- live view fills the middle ---
             _visionView.Dock = DockStyle.Fill;

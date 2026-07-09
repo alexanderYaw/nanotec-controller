@@ -4,10 +4,13 @@ using System.Collections.Generic;
 namespace NanotecController
 {
     // FrmMain — analog joystick wired DIRECTLY into the Nanotec drives' I/O (not a USB HID device).
-    // Ported from the vendor demo (Station/Joystick.cs), then corrected to the measured hardware
-    // (2026-07-08): the stick's two pots read on the X and Y drives' analogue input 1 (0x3220:01).
+    // Ported from the vendor demo (Station/Joystick.cs), then corrected to the measured hardware:
+    // the stick's X/Y pots read on the X and Y drives' analogue input 1 (0x3220:01), and the knob's
+    // twist pot reads on the Z DRIVE's analogue input 1 (measured 2026-07-09) but commands the Θ axis.
     // Deflection past a small deadband commands a proportional velocity jog; centring the stick (or
-    // loss of focus) stops. The knob's twist is NOT wired to any drive AI, so Θ is not driven here.
+    // loss of focus) stops. Twist → Θ: in RAW jog mode it jogs Θ at a proportional velocity; in VISION
+    // jog mode it rotates the chuck ABOUT THE CROSSHAIR (the tuned HoldRotate follower), so the point
+    // under the crosshair stays put — the "compensated rotation" the user asked for.
     // Polled on joystickTimer (50 ms, UI thread), which is paused during drive ops, so the reads
     // never contend with a background op on the NanoLib channel.
     //
@@ -27,13 +30,16 @@ namespace NanotecController
         private const int AI_CENTRE_SAMPLES = 5;      // average the first N polls for the centre (robust to a stale first read)
         // Full-deflection speed is NOT a constant — it's each axis's user jog-speed slider (_axisRows[id].Speed.Value).
 
-        // Axes the joystick drives, each with a wiring sign (flip if that axis runs backwards). The
-        // stick's two pots read on the X and Y drives' analogue input 1. The knob's twist is NOT wired
-        // to any drive AI (Θ removed 2026-07-08 — twisting changed nothing), and Z was never on the stick.
-        private static readonly (AxisId id, int sign)[] AnalogAxes =
+        // Axes the joystick drives. Each entry is (axis to COMMAND, drive whose analogue input 1 supplies
+        // the pot, wiring sign). Read drive ≠ command axis for the twist: the knob's twist pot is wired
+        // into the Z DRIVE's analogue input 1 (measured 2026-07-09: twist-only test swung Z's 0x3220:01
+        // by ~±90 while every other channel stayed at noise), but it drives the Θ axis. The X/Y pots read
+        // on their own drives. (The Θ drive's own AI1 is the dead channel that sits at ~6.)
+        private static readonly (AxisId cmd, AxisId pot, int sign)[] AnalogAxes =
         {
-            (AxisId.X, +1),   // inverted 2026-07-08 (was −1) — X ran backwards on the bench
-            (AxisId.Y, +1),
+            (AxisId.X,     AxisId.X, +1),   // inverted 2026-07-08 (was −1) — X ran backwards on the bench
+            (AxisId.Y,     AxisId.Y, +1),
+            (AxisId.Theta, AxisId.Z, +1),   // twist pot lives on the Z drive's AI1; sign flips if Θ turns the wrong way
         };
 
         // VISION-mode stick→screen mapping. In VISION jog mode the stick does NOT drive raw X/Y;
@@ -45,6 +51,14 @@ namespace NanotecController
         // AnalogAxes signs above (which tune raw drive motion, a different frame).
         private const int VISION_STICK_X = +1;   // pot-X deflection → screen right+
         private const int VISION_STICK_Y = +1;   // pot-Y deflection → screen up+
+
+        // VISION-mode twist → rotate about the crosshair. The twist starts the tuned HoldRotate
+        // controller (Θ spins while X/Y follows to pin the crosshair); this sign maps the twist
+        // direction to the Θ rotate direction — flip on the bench if twisting one way rotates the
+        // other. TWIST_RELEASE_POLL_MS = how often the rotate loop re-reads the twist to detect the
+        // knob returning to centre (throttled because that read runs inside the rotate hot loop).
+        private const int VISION_TWIST_SIGN     = +1;
+        private const int TWIST_RELEASE_POLL_MS = 120;
 
         // Last velocity commanded per axis (send-on-change, so a held stick isn't re-commanded).
         private readonly Dictionary<AxisId, int> _lastAnalogVel = new();
@@ -68,73 +82,101 @@ namespace NanotecController
             if (_motion == null) return;
             bool enabled = _drivesEnabled && !_busy;
 
-            // Read both pots + keep auto-centring (both finish on the same tick — they start together
-            // at ResetJoy). Bail on a read error; wait until both centres are captured before moving.
-            int devX, devY;
+            ProbeAnalogInputs();   // TEMP: Θ-wiring verification (remove once the twist pot's drive is confirmed)
+
+            // Read every pot + keep auto-centring (they all finish on the same tick — they start together
+            // at ResetJoy). Bail on a read error; wait until all centres are captured before moving.
+            var dev = new Dictionary<AxisId, int>();
             try
             {
-                bool okX = TryReadDeflection(AxisId.X, out devX);
-                bool okY = TryReadDeflection(AxisId.Y, out devY);
-                if (!okX || !okY) { joystickStatusLabel.Text = "Joystick: calibrating centre…"; return; }
+                foreach ((AxisId cmd, AxisId pot, int _) in AnalogAxes)
+                {
+                    if (!TryReadDeflection(cmd, pot, out int d)) { joystickStatusLabel.Text = "Joystick: calibrating centre…"; return; }
+                    dev[cmd] = d;
+                }
             }
             catch (DriveException)
             {
                 joystickStatusLabel.Text = "Joystick: read FAILED";
-                StopAnalogAxes();                                 // stop raw X/Y + clear its send-on-change cache
+                StopAnalogAxes();                                 // stop raw axes + clear their send-on-change cache
                 _visionLastVx = _visionLastVy = 0;                // and the vision cache (so a resume re-commands)
                 return;
             }
 
-            if (_jogMode == JogMode.Vision) TickAnalogVision(devX, devY, enabled);
-            else                            TickAnalogRaw(devX, devY, enabled);
+            if (_jogMode == JogMode.Vision) TickAnalogVision(dev, enabled);
+            else                            TickAnalogRaw(dev, enabled);
         }
 
-        // Reads one pot, updates its auto-centre, and returns the signed deflection (raw − centre).
-        // Returns false while the centre is still being averaged. Throws DriveException on a read error.
-        private bool TryReadDeflection(AxisId id, out int dev)
+        // Reads one pot (analogue input 1 of the drive it's wired to), updates the centre of the axis
+        // it commands, and returns the signed deflection (raw − centre). Read drive ≠ command axis for Θ
+        // (twist pot on the Z drive). Returns false while the centre is still being averaged. Throws on a
+        // read error.
+        private bool TryReadDeflection(AxisId cmd, AxisId pot, out int dev)
         {
             dev = 0;
-            int raw = _motion!.GetAnalogInput1(id);
-            CaptureCentre(id, raw);
-            if (!_aiMid.TryGetValue(id, out int mid)) return false;
+            int raw = _motion!.GetAnalogInput1(pot);
+            CaptureCentre(cmd, raw);
+            if (!_aiMid.TryGetValue(cmd, out int mid)) return false;
             dev = raw - mid;
             return true;
         }
 
-        // RAW mode: each pot drives its own drive axis at a velocity proportional to its deflection,
-        // full deflection = that axis's jog-speed slider. (Unchanged behaviour, per-axis + quantised.)
-        private void TickAnalogRaw(int devX, int devY, bool enabled)
+        // RAW mode: each pot drives its command axis (X, Y, and Θ from the twist) at a velocity
+        // proportional to its deflection, full deflection = that axis's jog-speed slider. Per-axis,
+        // quantised, send-on-change.
+        private void TickAnalogRaw(Dictionary<AxisId, int> dev, bool enabled)
         {
             bool anyMoving = false;
-            foreach ((AxisId id, int sign) in AnalogAxes)
+            foreach ((AxisId cmd, AxisId _, int sign) in AnalogAxes)
             {
-                int dev = id == AxisId.X ? devX : devY;
+                int d = dev[cmd];
                 int vel = 0;
-                if (enabled && Math.Abs(dev) > AI_DEADBAND)
+                if (enabled && Math.Abs(d) > AI_DEADBAND)
                 {
-                    int maxSpeed = _axisRows[id].Speed.Value;             // full deflection = this axis's jog-speed slider
-                    vel = sign * (maxSpeed * dev / AI_SPAN);
+                    int maxSpeed = _axisRows[cmd].Speed.Value;            // full deflection = this axis's jog-speed slider
+                    vel = sign * (maxSpeed * d / AI_SPAN);
                     vel = Math.Clamp(vel, -maxSpeed, maxSpeed);
                     int quantum = Math.Max(1, maxSpeed / AI_SPEED_STEPS); // scale the quantum with the range so low speeds stay proportional
                     vel = vel / quantum * quantum;                        // quantise → fewer re-commands on jitter
-                    if (InvertDir(id, 1) < 0) vel = -vel;                 // movement-inversion toggle (X/Y)
+                    if (InvertDir(cmd, 1) < 0) vel = -vel;                // movement-inversion toggle (X/Y/Θ)
                 }
 
-                ApplyAnalogVel(id, vel);
+                ApplyAnalogVel(cmd, vel);
                 if (vel != 0) anyMoving = true;
             }
 
             joystickStatusLabel.Text = anyMoving ? "Joystick: moving" : "Joystick: idle";
         }
 
-        // VISION mode: the stick's deflection is a SCREEN-space direction (right+/up+); it goes through
+        // VISION mode. The stick's X/Y deflection is a SCREEN-space direction (right+/up+) fed through
         // the pixel→step affine so the chuck follows that screen direction (compensated for the camera
-        // rotation), speed scaled by deflection × the dedicated vision speed slider. Send-on-change,
-        // sharing _visionLastVx/Vy + VisionJogUser/VisionStop with the puck path (only one is live).
-        private void TickAnalogVision(int devX, int devY, bool enabled)
+        // rotation), speed scaled by deflection × the dedicated vision speed slider. The TWIST rotates
+        // the chuck ABOUT THE CROSSHAIR: it starts the tuned HoldRotate controller (Θ spins while X/Y
+        // follows to pin the point under the crosshair) — the "compensated rotation" option (b). Twist
+        // takes precedence over the X/Y screen jog (you do one or the other).
+        private void TickAnalogVision(Dictionary<AxisId, int> dev, bool enabled)
         {
-            double sx = StickDeflection(devX) * VISION_STICK_X;   // screen right+
-            double sy = StickDeflection(devY) * VISION_STICK_Y;   // screen up+
+            // Twist → rotate about the crosshair. HoldRotateAsync runs the whole rotation on a
+            // background thread (RunDriveOp stops the joystick timer meanwhile); since the joystick has
+            // no MouseUp to end it, we inject a predicate that stops the rotation when the knob
+            // re-centers. It resumes joystick polling once the rotation settles. One at a time.
+            int twist = dev[AxisId.Theta];
+            if (enabled && Math.Abs(twist) > AI_DEADBAND && !_holdRotating && !_busy)
+            {
+                if (!CanRotate)
+                    joystickStatusLabel.Text = "Joystick: twist needs a chuck centre + camera calibration";
+                else
+                {
+                    VisionStop();                       // hand X/Y to the rotate follower
+                    _visionLastVx = _visionLastVy = 0;
+                    joystickStatusLabel.Text = "Joystick: rotating about crosshair";
+                    _ = HoldRotateAsync(VISION_TWIST_SIGN * Math.Sign(twist), TwistReleasedPredicate());
+                }
+                return;                                 // twist takes precedence over the X/Y screen jog
+            }
+
+            double sx = StickDeflection(dev[AxisId.X]) * VISION_STICK_X;   // screen right+
+            double sy = StickDeflection(dev[AxisId.Y]) * VISION_STICK_Y;   // screen up+
             double vmag = Math.Min(1.0, Math.Sqrt(sx * sx + sy * sy));
 
             PixelStepAffine? a = _calib.PixelStep;
@@ -152,6 +194,28 @@ namespace NanotecController
             joystickStatusLabel.Text = a == null ? "Joystick: needs camera-scale calibration"
                                      : (vx != 0 || vy != 0) ? "Joystick: moving (vision)"
                                                             : "Joystick: idle";
+        }
+
+        // Builds the stop-predicate the twist-driven HoldRotate polls: true once the twist knob returns
+        // to centre. The knob's pot is on the Z drive's AI1; the read runs inside the rotate loop on the
+        // background thread, so it is throttled (TWIST_RELEASE_POLL_MS) to add little SDO load, and a
+        // failed read stops the rotation (fail-safe). Captures the centre so it never touches the shared
+        // _aiMid dict from the background thread.
+        private Func<bool> TwistReleasedPredicate()
+        {
+            int centre = _aiMid.TryGetValue(AxisId.Theta, out int c) ? c : AI_MID;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            long lastMs = long.MinValue;
+            bool released = false;
+            return () =>
+            {
+                long now = clock.ElapsedMilliseconds;
+                if (now - lastMs < TWIST_RELEASE_POLL_MS) return released;   // throttle in the hot loop
+                lastMs = now;
+                try { released = Math.Abs(_motion!.GetAnalogInput1(AxisId.Z) - centre) <= AI_DEADBAND; }
+                catch (DriveException) { released = true; }
+                return released;
+            };
         }
 
         // Normalised signed deflection for one pot: 0 inside the deadband, ±1 at full swing (AI_SPAN).
@@ -183,14 +247,55 @@ namespace NanotecController
             CommandAxisVelocity(id, vel, honorSoftLimit: false);   // block already applied above
         }
 
+        // --- TEMP Θ-wiring probe ---------------------------------------------------------
+        // Logs BOTH analogue inputs (0x3220:01 and 0x3220:02) of all four drives about once a
+        // second so twisting the joystick knob reveals which channel the twist pot is wired to.
+        // AI1 showed nothing on twist, so the twist pot is likely on AI2 (or a drive without it
+        // reads "—"). X and Y already move on stick push; the twist should move exactly one cell.
+        // Once the Θ pot's channel is confirmed, DELETE this method and its call in TickAnalogJoystick.
+        private int _aiProbeTick;
+        // Running min/max per (drive, analog-input) since the last source-select, so a twist that
+        // moves a channel only a little still shows up as a span. Cleared in ResetJoy (ResetAiSpans).
+        private readonly Dictionary<(AxisId, byte), (int min, int max)> _aiSpan = new();
+        private void ProbeAnalogInputs()
+        {
+            // Sample every tick (50 ms) so brief deflections are caught in the span.
+            foreach (AxisId id in new[] { AxisId.X, AxisId.Y, AxisId.Z, AxisId.Theta })
+                for (byte sub = 0x01; sub <= 0x02; sub++)
+                {
+                    if (!TryReadAi(id, sub, out int v)) continue;
+                    var key = (id, sub);
+                    if (_aiSpan.TryGetValue(key, out var mm)) _aiSpan[key] = (Math.Min(mm.min, v), Math.Max(mm.max, v));
+                    else                                      _aiSpan[key] = (v, v);
+                }
+
+            if (++_aiProbeTick % 20 != 0) return;   // print ~1 Hz
+            for (byte sub = 0x01; sub <= 0x02; sub++)
+                AppendLog($"AI{sub} span — X:{SpanText(AxisId.X, sub)}  Y:{SpanText(AxisId.Y, sub)}  " +
+                          $"Z:{SpanText(AxisId.Z, sub)}  Θ:{SpanText(AxisId.Theta, sub)}");
+        }
+
+        // "min..max(Δspan)" for one channel, or "—" if it hasn't read. A channel wired to whatever
+        // you're moving shows a large Δ; a flat channel shows Δ0.
+        private string SpanText(AxisId id, byte sub)
+            => _aiSpan.TryGetValue((id, sub), out var mm) ? $"{mm.min}..{mm.max}(Δ{mm.max - mm.min})" : "—";
+
+        private bool TryReadAi(AxisId id, byte sub, out int value)
+        {
+            try { value = (short)_motion!.GetObject(id, 0x3220, sub); return true; }
+            catch (DriveException) { value = 0; return false; }
+        }
+
+        private void ResetAiSpans() => _aiSpan.Clear();
+
         // Stops any axis the analog joystick was driving and clears its last-command cache.
         private void StopAnalogAxes()
         {
-            foreach ((AxisId id, int _) in AnalogAxes)
+            foreach ((AxisId cmd, AxisId _, int _) in AnalogAxes)
             {
-                if (_motion != null && _lastAnalogVel.TryGetValue(id, out int v) && v != 0)
-                    try { _motion.Stop(id); } catch (DriveException) { }
-                _lastAnalogVel[id] = 0;
+                if (_motion != null && _lastAnalogVel.TryGetValue(cmd, out int v) && v != 0)
+                    try { _motion.Stop(cmd); } catch (DriveException) { }
+                _lastAnalogVel[cmd] = 0;
             }
         }
     }

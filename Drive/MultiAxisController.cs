@@ -157,6 +157,9 @@ namespace NanotecController
         public void WriteObject(AxisId id, ushort index, byte subIndex, long value, uint bitLength)
             => _axes[id].WriteObject(index, subIndex, value, bitLength);
 
+        /// <summary>Reads an arbitrary OD entry on one axis (read counterpart to <see cref="WriteObject"/>).</summary>
+        public long GetObject(AxisId id, ushort index, byte subIndex) => _axes[id].ReadObject(index, subIndex);
+
         /// <summary>Persists one axis's current parameters to non-volatile memory (0x1010:01 = "save").</summary>
         public void SaveParametersToNV(AxisId id) => _axes[id].SaveParametersToNV();
     }

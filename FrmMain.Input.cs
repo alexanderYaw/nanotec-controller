@@ -93,9 +93,9 @@ namespace NanotecController
                 if (_visionLastVx != 0) try { _motion.Stop(AxisId.X); } catch (DriveException) { }
                 if (_visionLastVy != 0) try { _motion.Stop(AxisId.Y); } catch (DriveException) { }
                 // Analog joystick axes (X / Y / Θ).
-                foreach ((AxisId id, int _) in AnalogAxes)
-                    if (_lastAnalogVel.TryGetValue(id, out int v) && v != 0)
-                        try { _motion.Stop(id); } catch (DriveException) { }
+                foreach ((AxisId cmd, AxisId _, int _) in AnalogAxes)
+                    if (_lastAnalogVel.TryGetValue(cmd, out int v) && v != 0)
+                        try { _motion.Stop(cmd); } catch (DriveException) { }
             }
             ResetJoy();
         }
@@ -105,10 +105,11 @@ namespace NanotecController
             foreach (AxisId id in new List<AxisId>(_lastJoy.Keys)) _lastJoy[id] = (0, false);
             _lastVx = _lastVy = 0;
             _visionLastVx = _visionLastVy = 0;   // vision-puck send-on-change (VisionPadTick)
-            foreach ((AxisId id, int _) in AnalogAxes) _lastAnalogVel[id] = 0;   // analog joystick send-on-change
+            foreach ((AxisId cmd, AxisId _, int _) in AnalogAxes) _lastAnalogVel[cmd] = 0;   // analog joystick send-on-change
             _aiMid.Clear();          // analog joystick: re-average the centre on the next polls
             _aiCentreSum.Clear();
             _aiCentreCount.Clear();
+            ResetAiSpans();          // TEMP Θ-wiring probe: start each min/max test fresh
         }
     }
 }

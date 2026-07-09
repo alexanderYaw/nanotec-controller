@@ -413,6 +413,14 @@ namespace NanotecController
                      $"manual write 0x{index:X4}:{subIndex:X2}");
 
         /// <summary>
+        /// Reads an arbitrary object-dictionary entry (the read counterpart to
+        /// <see cref="WriteObject"/>). Returns the raw value NanoLib zero-extends into a long;
+        /// the caller casts to the object's signed type (e.g. (short) for a 16-bit analog input).
+        /// </summary>
+        public long ReadObject(ushort index, byte subIndex)
+            => Read(new OdIndex(index, subIndex), $"read 0x{index:X4}:{subIndex:X2}");
+
+        /// <summary>
         /// Persists the drive's CURRENT parameter values to non-volatile memory by writing the
         /// "save" signature to object 0x1010:01, so a prior <see cref="WriteObject"/> survives a
         /// power-cycle. Saves the whole parameter set, not just the last write.

@@ -24,7 +24,7 @@ namespace NanotecController
     public sealed class VisionViewControl : UserControl, IVisionFrameSource
     {
         /// <summary>Available centred-ROI digital zoom factors (see <see cref="VisionCamera.Zoom"/>).</summary>
-        public static readonly int[] ZoomFactors = { 1, 2, 3, 5 };
+        public static readonly int[] ZoomFactors = { 1, 2, 3, 5, 7, 10 };
 
         private readonly VisionCamera _camera = new();
         private readonly PictureBox _liveBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
@@ -49,6 +49,14 @@ namespace NanotecController
         private volatile bool _monoView;           // grey + full-range contrast stretch (display only)
         private bool _showCrosshair;
 
+        // Measurement ruler: endpoints stored as FRACTIONS of the live box [0..1] so they track the
+        // image across resizes / aspect re-layouts; the length is derived from the current screen→mm
+        // scale each paint, so digital zoom is accounted for automatically.
+        private bool _measureOn;
+        private PointF _measA = new(0.35f, 0.5f), _measB = new(0.65f, 0.5f);
+        private int _measDrag;                                 // 0 none · 1 end A · 2 end B · 3 whole-line
+        private PointF _measGrab, _measAAtGrab, _measBAtGrab;  // whole-line drag anchors
+
         // Actual grabbed frame dims: drive the aspect-correct live-box layout and the tick
         // scale. Never assume 3:2 — the zoom ROI rounds to multiples of 16, shifting the ratio.
         private volatile int _frameW, _frameH;
@@ -57,6 +65,9 @@ namespace NanotecController
         {
             BackColor = Color.Black;
             _liveBox.Paint += DrawOverlay;
+            _liveBox.MouseDown += MeasureMouseDown;
+            _liveBox.MouseMove += MeasureMouseMove;
+            _liveBox.MouseUp += MeasureMouseUp;
             _liveBox.Resize += (s, e) => { _viewW = Math.Max(1, _liveBox.Width); _viewH = Math.Max(1, _liveBox.Height); };
             Controls.Add(_liveBox);
             Relayout();
@@ -110,6 +121,24 @@ namespace NanotecController
         {
             get => _showCrosshair;
             set { _showCrosshair = value; _liveBox.Invalidate(); }
+        }
+
+        /// <summary>Toggles the interactive measurement ruler. Turning it on (re)spawns a default
+        /// horizontal segment across the middle of the pane; drag either end to re-aim it or the
+        /// middle to slide it. The live length readout accounts for the current digital zoom.</summary>
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public bool MeasureEnabled
+        {
+            get => _measureOn;
+            set
+            {
+                if (_measureOn == value) return;
+                _measureOn = value;
+                if (value) { _measA = new PointF(0.35f, 0.5f); _measB = new PointF(0.65f, 0.5f); }
+                _measDrag = 0;
+                _liveBox.Cursor = Cursors.Default;
+                _liveBox.Invalidate();
+            }
         }
 
         /// <summary>Centred-ROI digital zoom factor; applied by the grab thread between frames.</summary>
@@ -370,7 +399,12 @@ namespace NanotecController
         // are drawn along both arms; centre-symmetric, so the 180° display flip doesn't move them.
         private void DrawOverlay(object? sender, PaintEventArgs e)
         {
-            if (!_showCrosshair) return;
+            if (_showCrosshair) DrawCrosshair(e);
+            if (_measureOn) DrawMeasure(e);
+        }
+
+        private void DrawCrosshair(PaintEventArgs e)
+        {
             int cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
             int cx = cw / 2, cy = ch / 2;
             // The overlay is drawn in SCREEN pixels (constant across zoom). The measurement ticks are
@@ -412,8 +446,8 @@ namespace NanotecController
             return f;
         }
 
-        // Tick half-lengths (px), shortest → longest: 0.1 mm, 0.5 mm, 1 mm, 5 mm, 10 mm.
-        private const int TICK_TENTH = 3, TICK_HALF = 6, TICK_MM = 10, TICK_5MM = 14, TICK_10MM = 18;
+        // Tick half-lengths (px), shortest → longest: 0.01 mm, 0.1 mm, 0.5 mm, 1 mm, 5 mm, 10 mm.
+        private const int TICK_HUNDREDTH = 2, TICK_TENTH = 3, TICK_HALF = 6, TICK_MM = 10, TICK_5MM = 14, TICK_10MM = 18;
 
         // Markings along a crosshair arm at a FIXED 1 mm pitch: a long tick every 1 mm, longer every
         // 5 mm, longest + a distance label every 10 mm (and the first 1 mm is labelled to anchor the
@@ -428,18 +462,18 @@ namespace NanotecController
             double half = extent / 2.0;
 
             // One tick of half-length len at signed pixel offset off from centre, on BOTH sides.
-            void Tick(double offPx, int len)
+            void Tick(Pen p, double offPx, int len)
             {
                 int off = (int)Math.Round(offPx);
                 if (horizontal)
                 {
-                    g.DrawLine(pen, cx + off, cy - len, cx + off, cy + len);
-                    g.DrawLine(pen, cx - off, cy - len, cx - off, cy + len);
+                    g.DrawLine(p, cx + off, cy - len, cx + off, cy + len);
+                    g.DrawLine(p, cx - off, cy - len, cx - off, cy + len);
                 }
                 else
                 {
-                    g.DrawLine(pen, cx - len, cy + off, cx + len, cy + off);
-                    g.DrawLine(pen, cx - len, cy - off, cx + len, cy - off);
+                    g.DrawLine(p, cx - len, cy + off, cx + len, cy + off);
+                    g.DrawLine(p, cx - len, cy - off, cx + len, cy - off);
                 }
             }
 
@@ -466,7 +500,18 @@ namespace NanotecController
             double pxPerTenth = pxPerMm / 10.0;
             if (pxPerTenth >= 3.0)
                 for (int t = 1; t <= 9; t++)
-                    if (t * pxPerTenth <= half) Tick(t * pxPerTenth, t == 5 ? TICK_HALF : TICK_TENTH);
+                    if (t * pxPerTenth <= half) Tick(pen, t * pxPerTenth, t == 5 ? TICK_HALF : TICK_TENTH);
+
+            // 0.01 mm sub-ticks between the centre and the first 0.1 mm, only at very high zoom (a
+            // hundredth at least a few screen px). Drawn with a 1 px pen so the closely-spaced ticks
+            // stay separate even where the mm/tenth pen is thickened at high zoom.
+            double pxPerHundredth = pxPerMm / 100.0;
+            if (pxPerHundredth >= 3.0)
+            {
+                using var finePen = new Pen(pen.Color, 1f);
+                for (int t = 1; t <= 9; t++)
+                    if (t * pxPerHundredth <= half) Tick(finePen, t * pxPerHundredth, TICK_HUNDREDTH);
+            }
 
             // Millimetre ticks (thinned when 1 mm is too dense to resolve).
             int everyMm = pxPerMm >= 4.0 ? 1 : (pxPerMm * 5.0 >= 4.0 ? 5 : 10);
@@ -474,10 +519,164 @@ namespace NanotecController
             for (int d = everyMm; d * pxPerMm <= half; d += everyMm)
             {
                 int len = d % 10 == 0 ? TICK_10MM : (d % 5 == 0 ? TICK_5MM : TICK_MM);
-                Tick(d * pxPerMm, len);
+                Tick(pen, d * pxPerMm, len);
                 if (d == 1 && pxPerMm >= 16.0) Label(1, pxPerMm, len);           // anchor the scale
                 else if (d % 10 == 0 && label10) Label(d, d * pxPerMm, len);
             }
+        }
+
+        // --- measurement tool ----------------------------------------------------------
+
+        private static readonly Color MeasureColor = Color.Cyan;
+        private static readonly Font MeasureFont = new("Segoe UI", 9f, FontStyle.Bold);
+        private static readonly Brush MeasureLabelBrush = new SolidBrush(MeasureColor);
+        private static readonly Brush MeasureLabelBack = new SolidBrush(Color.FromArgb(170, 0, 0, 0));
+        private static readonly Brush MeasureHandleFill = new SolidBrush(Color.FromArgb(90, 0, 0, 0));
+        private const int MEAS_HIT = 12;   // px pick radius for an endpoint / the line body
+
+        // Draws the ruler in SCREEN pixels (endpoints are box fractions), with a live length label
+        // centred above the segment. The scale used for the label is identical to the crosshair
+        // ticks (see MeasureText), so the two always agree at any zoom.
+        private void DrawMeasure(PaintEventArgs e)
+        {
+            int cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
+            if (cw <= 0 || ch <= 0) return;
+            (PointF a, PointF b) = MeasureEndpointsPx();
+
+            Graphics g = e.Graphics;
+            System.Drawing.Drawing2D.SmoothingMode prev = g.SmoothingMode;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var pen = new Pen(MeasureColor, 2f))
+            {
+                g.DrawLine(pen, a, b);
+                DrawHandle(g, pen, a);
+                DrawHandle(g, pen, b);
+            }
+
+            string label = MeasureText(a, b);
+            SizeF sz = g.MeasureString(label, MeasureFont);
+            float mx = (a.X + b.X) / 2f, my = (a.Y + b.Y) / 2f;
+            float lx = Math.Clamp(mx - sz.Width / 2f, 1f, Math.Max(1f, cw - sz.Width - 1f));
+            float ly = my - sz.Height - 8f;
+            if (ly < 1f) ly = my + 8f;   // flip below the line if it would clip the top edge
+            g.FillRectangle(MeasureLabelBack, lx - 3f, ly - 1f, sz.Width + 6f, sz.Height + 2f);
+            g.DrawString(label, MeasureFont, MeasureLabelBrush, lx, ly);
+            g.SmoothingMode = prev;
+        }
+
+        private static void DrawHandle(Graphics g, Pen pen, PointF p)
+        {
+            const float r = 5f;
+            g.FillEllipse(MeasureHandleFill, p.X - r, p.Y - r, 2 * r, 2 * r);
+            g.DrawEllipse(pen, p.X - r, p.Y - r, 2 * r, 2 * r);
+        }
+
+        // Segment length as a display string in the calibrated frame; falls back to screen px until
+        // the pixel scale is known. mm per SCREEN pixel = mm per image pixel × (image px / screen px)
+        // per axis — the centred-ROI zoom shrinks the frame (fw/fh) while the box stays, so a more
+        // magnified view yields fewer mm per screen pixel with no special-casing.
+        private string MeasureText(PointF aPx, PointF bPx)
+        {
+            float dxPx = bPx.X - aPx.X, dyPx = bPx.Y - aPx.Y;
+            (double mmPerPxCol, double mmPerPxRow)? mm = TickScaleProvider?.Invoke();
+            int fw = _frameW, fh = _frameH, cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
+            if (mm == null || fw <= 0 || fh <= 0 || cw <= 0 || ch <= 0)
+                return $"{Math.Sqrt(dxPx * dxPx + dyPx * dyPx):0} px";
+
+            double dxMm = dxPx * mm.Value.mmPerPxCol * fw / cw;
+            double dyMm = dyPx * mm.Value.mmPerPxRow * fh / ch;
+            double lenMm = Math.Sqrt(dxMm * dxMm + dyMm * dyMm);
+            return lenMm >= 1.0 ? $"{lenMm:0.000} mm" : $"{lenMm * 1000.0:0.0} µm";
+        }
+
+        // --- measurement interaction ---------------------------------------------------
+
+        private void MeasureMouseDown(object? sender, MouseEventArgs e)
+        {
+            if (!_measureOn || e.Button != MouseButtons.Left) return;
+            (PointF a, PointF b) = MeasureEndpointsPx();
+            if (Dist(e.Location, a) <= MEAS_HIT) _measDrag = 1;
+            else if (Dist(e.Location, b) <= MEAS_HIT) _measDrag = 2;
+            else if (DistToSegment(e.Location, a, b) <= MEAS_HIT)
+            {
+                _measDrag = 3;
+                _measGrab = FracOf(e.Location);
+                _measAAtGrab = _measA; _measBAtGrab = _measB;
+            }
+            else { _measDrag = 0; return; }
+            _liveBox.Capture = true;
+        }
+
+        private void MeasureMouseMove(object? sender, MouseEventArgs e)
+        {
+            if (!_measureOn) return;
+            if (_measDrag == 0)   // idle: just reflect what's under the cursor
+            {
+                (PointF a, PointF b) = MeasureEndpointsPx();
+                bool onEnd = Dist(e.Location, a) <= MEAS_HIT || Dist(e.Location, b) <= MEAS_HIT;
+                _liveBox.Cursor = onEnd ? Cursors.Cross
+                                : DistToSegment(e.Location, a, b) <= MEAS_HIT ? Cursors.SizeAll
+                                : Cursors.Default;
+                return;
+            }
+            PointF f = FracOf(e.Location);
+            if (_measDrag == 1) _measA = Clamp01(f);
+            else if (_measDrag == 2) _measB = Clamp01(f);
+            else   // rigid whole-line slide: clamp the delta so both ends stay in view
+            {
+                float dx = ClampDelta(f.X - _measGrab.X, _measAAtGrab.X, _measBAtGrab.X);
+                float dy = ClampDelta(f.Y - _measGrab.Y, _measAAtGrab.Y, _measBAtGrab.Y);
+                _measA = new PointF(_measAAtGrab.X + dx, _measAAtGrab.Y + dy);
+                _measB = new PointF(_measBAtGrab.X + dx, _measBAtGrab.Y + dy);
+            }
+            _liveBox.Invalidate();
+        }
+
+        private void MeasureMouseUp(object? sender, MouseEventArgs e)
+        {
+            if (_measDrag == 0) return;
+            _measDrag = 0;
+            _liveBox.Capture = false;
+            _liveBox.Invalidate();
+        }
+
+        private (PointF a, PointF b) MeasureEndpointsPx()
+        {
+            int cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
+            return (new PointF(_measA.X * cw, _measA.Y * ch), new PointF(_measB.X * cw, _measB.Y * ch));
+        }
+
+        private PointF FracOf(Point p)
+        {
+            int cw = Math.Max(1, _liveBox.ClientSize.Width), ch = Math.Max(1, _liveBox.ClientSize.Height);
+            return new PointF((float)p.X / cw, (float)p.Y / ch);
+        }
+
+        private static PointF Clamp01(PointF p)
+            => new(Math.Clamp(p.X, 0f, 1f), Math.Clamp(p.Y, 0f, 1f));
+
+        // Largest delta keeping both fractional coords p,q inside [0,1] (rigid whole-line move).
+        private static float ClampDelta(float d, float p, float q)
+        {
+            float lo = Math.Min(p, q), hi = Math.Max(p, q);
+            if (lo + d < 0f) d = -lo;
+            if (hi + d > 1f) d = 1f - hi;
+            return d;
+        }
+
+        private static float Dist(PointF a, PointF b)
+        {
+            float dx = a.X - b.X, dy = a.Y - b.Y;
+            return MathF.Sqrt(dx * dx + dy * dy);
+        }
+
+        private static float DistToSegment(PointF p, PointF a, PointF b)
+        {
+            float vx = b.X - a.X, vy = b.Y - a.Y;
+            float len2 = vx * vx + vy * vy;
+            if (len2 <= 0.0001f) return Dist(p, a);
+            float t = Math.Clamp(((p.X - a.X) * vx + (p.Y - a.Y) * vy) / len2, 0f, 1f);
+            return Dist(p, new PointF(a.X + t * vx, a.Y + t * vy));
         }
 
         /// <summary>

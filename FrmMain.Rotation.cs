@@ -396,10 +396,13 @@ namespace NanotecController
         /// <summary>
         /// HOLD-to-rotate about the crosshair: Θ jogs continuously in <paramref name="direction"/>
         /// (+1/−1) while X/Y follows to pin the crosshair, until <see cref="StopHoldRotate"/> is
-        /// called (button released). Same controller as <see cref="RotateAboutCrosshairAsync"/> but
-        /// with no target angle. Always stops all three on exit. Call from a button MouseDown.
+        /// called (button released) OR the optional <paramref name="stopWhen"/> predicate returns
+        /// true. Same controller as <see cref="RotateAboutCrosshairAsync"/> but with no target angle.
+        /// <paramref name="stopWhen"/> is polled inside the loop on the background thread — used by the
+        /// analog-joystick twist (which has no MouseUp) to end the rotation when the knob re-centers;
+        /// keep it cheap/self-throttling since it runs in the hot loop. Always stops all three on exit.
         /// </summary>
-        public async Task HoldRotateAsync(int direction)
+        public async Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null)
         {
             if (!CanRotate)
             {
@@ -478,7 +481,7 @@ namespace NanotecController
                         thetaModel += thetaCmdVelPrev * dtMs;
                         thetaModel += ROTATE_THETA_BLEND * (currentTheta - thetaModel);
 
-                        if (_holdRotateStop && rampDownStartMs < 0)
+                        if ((_holdRotateStop || (stopWhen?.Invoke() ?? false)) && rampDownStartMs < 0)
                         {
                             rampDownStartMs = nowMs;      // begin the Θ ramp-down; X/Y keeps following
                             cmdAtRelease = lastThetaCmd;
