@@ -49,8 +49,8 @@ namespace NanotecController
         // These signs map each pot's raw deflection to a screen direction — flip on the bench if
         // pushing right/up steers the wrong way on screen. They are independent of the raw
         // AnalogAxes signs above (which tune raw drive motion, a different frame).
-        private const int VISION_STICK_X = +1;   // pot-X deflection → screen right+
-        private const int VISION_STICK_Y = +1;   // pot-Y deflection → screen up+
+        private const int VISION_STICK_X = -1;   // pot-X deflection → screen right+ (inverted on the bench 2026-07-09)
+        private const int VISION_STICK_Y = -1;   // pot-Y deflection → screen up+  (inverted on the bench 2026-07-09)
 
         // VISION-mode twist → rotate about the crosshair. The twist starts the tuned HoldRotate
         // controller (Θ spins while X/Y follows to pin the crosshair); this sign maps the twist
@@ -205,7 +205,7 @@ namespace NanotecController
         {
             int centre = _aiMid.TryGetValue(AxisId.Theta, out int c) ? c : AI_MID;
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            long lastMs = long.MinValue;
+            long lastMs = -TWIST_RELEASE_POLL_MS;   // negative (not MinValue) so the FIRST poll fires and now-lastMs can't overflow
             bool released = false;
             return () =>
             {
