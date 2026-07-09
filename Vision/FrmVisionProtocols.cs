@@ -31,7 +31,7 @@ namespace NanotecController
         // a feature to the crosshair without switching to the main window. The crosshair toggle is
         // local to this view; zoom drives the shared camera (so it also changes the main view).
         private readonly VisionViewControl _live = new() { OwnsCamera = false };
-        private readonly Button _crosshairBtn = new() { Text = "Crosshair: On" };
+        private readonly Button _crosshairBtn = new() { Text = "Crosshair" };
         private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList };
 
         // Camera-scale calibration (manual jog + capture; owner supplies motor position)
@@ -113,7 +113,7 @@ namespace NanotecController
             _crosshairBtn.Click += (s, e) =>
             {
                 _live.ShowCrosshair = !_live.ShowCrosshair;
-                _crosshairBtn.Text = _live.ShowCrosshair ? "Crosshair: On" : "Crosshair: Off";
+                SetToggle(_crosshairBtn, _live.ShowCrosshair);
             };
 
             var zoomLabel = new Label { Text = "Zoom:", Location = new Point(178, 10), AutoSize = true };
@@ -130,6 +130,7 @@ namespace NanotecController
             _live.Size = new Size(480, 440);
             _live.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             _live.ShowCrosshair = true;   // on by default here — the point of this view is alignment
+            SetToggle(_crosshairBtn, _live.ShowCrosshair);
             _live.TickScaleProvider = () => VisionViewControl.MmPerPixel(_owner!.Calibration);   // 1 mm marks here too
 
             var capLabel = new Label { Text = "Captured (detection overlay)", Location = new Point(500, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
@@ -310,6 +311,12 @@ namespace NanotecController
                 b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
                 b.MouseDown += (s, e) => VisionJog(sx, sy);
                 b.MouseUp += (s, e) => _owner?.VisionStop();
+            }
+
+            static void SetToggle(Button b, bool active)
+            {
+                if (active) b.BackColor = Color.LightGreen;
+                else { b.UseVisualStyleBackColor = true; b.BackColor = SystemColors.Control; }
             }
             VisionPadBtn(_vUp, 1160, 548, 0, +1);
             VisionPadBtn(_vLeft, 1124, 584, -1, 0);
