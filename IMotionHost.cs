@@ -44,7 +44,7 @@ namespace NanotecController
         void SetRotationSign(int sign);
         Task RotateToAngleAsync(double targetDegrees);
         Task RotateAboutCrosshairAsync(double deltaDegrees);
-        Task HoldRotateAsync(int direction);
+        Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null);
         void StopHoldRotate();
 
         // --- Drift-corrected vision jog (FrmMain.Vision.cs) ---

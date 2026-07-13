@@ -32,7 +32,6 @@ namespace NanotecController
     public partial class FrmMain : Form, IMotionHost
     {
         private readonly MultiAxisConnection _connection = new();
-        private readonly Joystick _joystick = new();
         private readonly IProgress<string> _log;
 
         private MultiAxisController? _motion;

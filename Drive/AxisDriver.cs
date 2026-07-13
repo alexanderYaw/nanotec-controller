@@ -36,6 +36,8 @@ namespace NanotecController
         private readonly OdIndex OD_HomingMethod = new OdIndex(0x6098, 0x00);
         // Digital Inputs status object (limit-switch bits used by the calibration find).
         private readonly OdIndex OD_DigitalInputs = new OdIndex(0x60FD, 0x00);
+        // Analogue input 1 (0x3220:01) — the analog joystick pot wired into this axis's drive.
+        private readonly OdIndex OD_AnalogInput1 = new OdIndex(0x3220, 0x01);
         // Store-parameters object: writing the "save" signature persists RAM values → NV.
         private readonly OdIndex OD_StoreParameters = new OdIndex(0x1010, 0x01);
 
@@ -387,6 +389,10 @@ namespace NanotecController
         /// </summary>
         public long ReadDigitalInputs() => Read(OD_DigitalInputs, "digital inputs 0x60FD");
 
+        /// <summary>Analogue input 1 (0x3220:01) — the drive-wired analog joystick pot, 16-bit
+        /// signed. Reads centre ≈ mid-scale; deflection swings it either side.</summary>
+        public int ReadAnalogInput1() => (short)Read(OD_AnalogInput1, "analog input 0x3220:01");
+
         /// <summary>
         /// True if the drive is held in Quick-Stop-Active (state 0x07) — what a limit hit
         /// leaves it in on this machine. While in this state the drive ignores motion
@@ -405,6 +411,14 @@ namespace NanotecController
         public void WriteObject(ushort index, byte subIndex, long value, uint bitLength)
             => Write(value, new OdIndex(index, subIndex), bitLength,
                      $"manual write 0x{index:X4}:{subIndex:X2}");
+
+        /// <summary>
+        /// Reads an arbitrary object-dictionary entry (the read counterpart to
+        /// <see cref="WriteObject"/>). Returns the raw value NanoLib zero-extends into a long;
+        /// the caller casts to the object's signed type (e.g. (short) for a 16-bit analog input).
+        /// </summary>
+        public long ReadObject(ushort index, byte subIndex)
+            => Read(new OdIndex(index, subIndex), $"read 0x{index:X4}:{subIndex:X2}");
 
         /// <summary>
         /// Persists the drive's CURRENT parameter values to non-volatile memory by writing the

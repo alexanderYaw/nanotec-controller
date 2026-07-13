@@ -148,11 +148,17 @@ namespace NanotecController
         /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
         public long GetDigitalInputs(AxisId id) => _axes[id].ReadDigitalInputs();
 
+        /// <summary>Analogue input 1 (0x3220:01) of one axis's drive — the wired analog joystick pot.</summary>
+        public int GetAnalogInput1(AxisId id) => _axes[id].ReadAnalogInput1();
+
         // --- Expert: arbitrary object write + NV save (the "Write Object" console) -----
 
         /// <summary>Writes an arbitrary OD entry on one axis. Expert/manual use only.</summary>
         public void WriteObject(AxisId id, ushort index, byte subIndex, long value, uint bitLength)
             => _axes[id].WriteObject(index, subIndex, value, bitLength);
+
+        /// <summary>Reads an arbitrary OD entry on one axis (read counterpart to <see cref="WriteObject"/>).</summary>
+        public long GetObject(AxisId id, ushort index, byte subIndex) => _axes[id].ReadObject(index, subIndex);
 
         /// <summary>Persists one axis's current parameters to non-volatile memory (0x1010:01 = "save").</summary>
         public void SaveParametersToNV(AxisId id) => _axes[id].SaveParametersToNV();
