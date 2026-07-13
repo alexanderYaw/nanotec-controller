@@ -70,6 +70,13 @@ namespace NanotecController
         private readonly Dictionary<AxisId, long> _aiCentreSum   = new();
         private readonly Dictionary<AxisId, int>  _aiCentreCount = new();
 
+        // Reject a centre capture whose samples spread more than this — the knob was being moved
+        // during the window, so the mean would be biased. A biased twist centre is the perpetual-
+        // rotation bug: rest then reads as a fixed deflection the release predicate can never clear.
+        // Tune on the bench: a twist swings the pot ~±90, rest noise is a few counts — set between.
+        private const int AI_CENTRE_MAX_SPREAD = 12;
+        private readonly Dictionary<AxisId, (int min, int max)> _aiCentreRange = new();
+
         // One poll of the analog joystick (joystickTimer tick when the Joystick source is selected).
         // No deadman (see class header): with the drives enabled, deflecting past the deadband moves,
         // centring stops. Reads BOTH pots (X and Y drives' analogue input 1), keeps their centres
@@ -91,9 +98,15 @@ namespace NanotecController
             {
                 foreach ((AxisId cmd, AxisId pot, int _) in AnalogAxes)
                 {
-                    if (!TryReadDeflection(cmd, pot, out int d)) { joystickStatusLabel.Text = "Joystick: calibrating centre…"; return; }
+                    if (!TryReadDeflection(cmd, pot, out int d))
+                    {
+                        joystickStatusLabel.Text = "Joystick: centring — leave the stick alone";
+                        _visionView.CenteringOverlay = true;   // warn on the live view until the centre is captured
+                        return;
+                    }
                     dev[cmd] = d;
                 }
+                _visionView.CenteringOverlay = false;   // all axes centred — clear the warning
             }
             catch (DriveException)
             {
@@ -223,13 +236,22 @@ namespace NanotecController
             => Math.Abs(dev) <= AI_DEADBAND ? 0.0 : Math.Clamp((double)dev / AI_SPAN, -1.0, 1.0);
 
         // Auto-centre: average the first AI_CENTRE_SAMPLES readings, then freeze the centre for this axis.
+        // Restarts the window if the samples spread (knob moving) so a mid-twist read can't bias the centre.
         private void CaptureCentre(AxisId id, int raw)
         {
             if (_aiMid.ContainsKey(id)) return;
+
+            var (min, max) = _aiCentreRange.TryGetValue(id, out var r) ? r : (raw, raw);
+            min = Math.Min(min, raw); max = Math.Max(max, raw);
+            if (max - min > AI_CENTRE_MAX_SPREAD)   // knob moved during the window → discard, restart from here
+            {
+                _aiCentreSum[id] = raw; _aiCentreCount[id] = 1; _aiCentreRange[id] = (raw, raw);
+                return;
+            }
+
             long sum = (_aiCentreSum.TryGetValue(id, out long s) ? s : 0) + raw;
             int count = (_aiCentreCount.TryGetValue(id, out int c) ? c : 0) + 1;
-            _aiCentreSum[id] = sum;
-            _aiCentreCount[id] = count;
+            _aiCentreSum[id] = sum; _aiCentreCount[id] = count; _aiCentreRange[id] = (min, max);
             if (count >= AI_CENTRE_SAMPLES)
             {
                 int mid = (int)(sum / count);

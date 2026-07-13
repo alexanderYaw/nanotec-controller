@@ -46,7 +46,8 @@ namespace NanotecController
             };
             toolbar.Controls.Add(_visionZoom);
 
-            _crosshairBtn = ToolbarButton("Crosshair", 112, 74);
+            int nextX = 112;   // running x cursor; starts just right of the zoom combo
+            _crosshairBtn = ToolbarButton("Crosshair");
             _crosshairBtn.Click += (s, e) =>
             {
                 _visionView.ShowCrosshair = !_visionView.ShowCrosshair;
@@ -54,7 +55,7 @@ namespace NanotecController
             };
             SetToggle(_crosshairBtn, _visionView.ShowCrosshair);
 
-            _invertBtn = ToolbarButton("Invert", 190, 58);
+            _invertBtn = ToolbarButton("Invert");
             _invertBtn.Click += (s, e) =>
             {
                 _visionView.InvertView = !_visionView.InvertView;
@@ -62,7 +63,7 @@ namespace NanotecController
             };
             SetToggle(_invertBtn, _visionView.InvertView);
 
-            _monoBtn = ToolbarButton("Mono", 252, 50);
+            _monoBtn = ToolbarButton("Mono");
             _monoBtn.Click += (s, e) =>
             {
                 _visionView.MonoView = !_visionView.MonoView;
@@ -70,7 +71,7 @@ namespace NanotecController
             };
             SetToggle(_monoBtn, _visionView.MonoView);
 
-            _measureBtn = ToolbarButton("Measure", 306, 74);
+            _measureBtn = ToolbarButton("Measure");
             _measureBtn.Click += (s, e) =>
             {
                 _visionView.MeasureEnabled = !_visionView.MeasureEnabled;
@@ -78,14 +79,16 @@ namespace NanotecController
             };
             SetToggle(_measureBtn, _visionView.MeasureEnabled);
 
-            _captureBtn = ToolbarButton("Capture", 384, 66, enabled: false);
+            _captureBtn = ToolbarButton("Capture", enabled: false);
             _captureBtn.Click += (s, e) => CaptureFrame();
-            _saveBtn = ToolbarButton("Save", 454, 50, enabled: false);
+            _saveBtn = ToolbarButton("Save", enabled: false);
             _saveBtn.Click += (s, e) => SaveCapture();
 
-            Button ToolbarButton(string text, int x, int w, bool enabled = true)
+            Button ToolbarButton(string text, bool enabled = true)
             {
-                var b = new Button { Text = text, Location = new Point(x, 6), Size = new Size(w, 28), Enabled = enabled };
+                int w = TextRenderer.MeasureText(text, toolbar.Font).Width + 22;
+                var b = new Button { Text = text, Location = new Point(nextX, 6), Size = new Size(w, 28), Enabled = enabled };
+                nextX += w + 4;
                 toolbar.Controls.Add(b);
                 return b;
             }

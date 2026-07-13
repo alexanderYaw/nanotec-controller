@@ -123,6 +123,17 @@ namespace NanotecController
             set { _showCrosshair = value; _liveBox.Invalidate(); }
         }
 
+        /// <summary>Translucent red "Centering — DO NOT TOUCH THE JOYSTICK" wash over the live view,
+        /// shown by the host while the analog joystick auto-captures its centre (touching it then
+        /// biases the centre — see FrmMain.CaptureCentre).</summary>
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public bool CenteringOverlay
+        {
+            get => _centeringOverlay;
+            set { if (_centeringOverlay == value) return; _centeringOverlay = value; if (!IsDisposed) _liveBox.Invalidate(); }
+        }
+        private bool _centeringOverlay;
+
         /// <summary>Toggles the interactive measurement ruler. Turning it on (re)spawns a default
         /// horizontal segment across the middle of the pane; drag either end to re-aim it or the
         /// middle to slide it. The live length readout accounts for the current digital zoom.</summary>
@@ -401,6 +412,26 @@ namespace NanotecController
         {
             if (_showCrosshair) DrawCrosshair(e);
             if (_measureOn) DrawMeasure(e);
+            if (_centeringOverlay) DrawCenteringOverlay(e);   // last: the "don't touch" wash sits on top
+        }
+
+        // Translucent red wash + centred warning, drawn while the joystick centre is being captured.
+        private static readonly Brush CenteringWash = new SolidBrush(Color.FromArgb(110, 200, 0, 0));
+        private static readonly Font CenteringTitleFont = new("Segoe UI", 24f, FontStyle.Bold);
+        private static readonly Font CenteringSubFont = new("Segoe UI", 14f, FontStyle.Bold);
+        private static readonly StringFormat CenteringTextFormat =
+            new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+        private void DrawCenteringOverlay(PaintEventArgs e)
+        {
+            int cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
+            if (cw <= 0 || ch <= 0) return;
+            Graphics g = e.Graphics;
+            g.FillRectangle(CenteringWash, 0, 0, cw, ch);
+            g.DrawString("Centering", CenteringTitleFont, Brushes.White,
+                         new RectangleF(0, ch / 2f - 44f, cw, 44f), CenteringTextFormat);
+            g.DrawString("DO NOT TOUCH THE JOYSTICK", CenteringSubFont, Brushes.White,
+                         new RectangleF(0, ch / 2f + 4f, cw, 30f), CenteringTextFormat);
         }
 
         private void DrawCrosshair(PaintEventArgs e)

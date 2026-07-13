@@ -24,6 +24,7 @@ namespace NanotecController
             if (usb || screen)
             {
                 ResetJoy();
+                if (usb) ResetJoyCentre();   // fresh analog-source select: re-capture the centre once
                 joystickTimer.Start();
                 joystickStatusLabel.Text = usb ? "Joystick: idle" : "On-screen: idle";
                 AppendLog(usb
@@ -100,16 +101,30 @@ namespace NanotecController
             ResetJoy();
         }
 
+        // Clears the send-on-change caches so the next poll re-commands (the drives were stopped while
+        // paused). Deliberately does NOT touch the auto-captured analog centre: that's a stable physical
+        // property of the pot, so it's re-captured only on an explicit source (re)select (ResetJoyCentre),
+        // NOT on every drive-op resume — which needlessly recentred after each rotation and reopened the
+        // mid-twist bias window. See CaptureCentre.
         private void ResetJoy()
         {
             foreach (AxisId id in new List<AxisId>(_lastJoy.Keys)) _lastJoy[id] = (0, false);
             _lastVx = _lastVy = 0;
             _visionLastVx = _visionLastVy = 0;   // vision-puck send-on-change (VisionPadTick)
             foreach ((AxisId cmd, AxisId _, int _) in AnalogAxes) _lastAnalogVel[cmd] = 0;   // analog joystick send-on-change
-            _aiMid.Clear();          // analog joystick: re-average the centre on the next polls
+            ResetAiSpans();          // TEMP Θ-wiring probe: start each min/max test fresh
+            _visionView.CenteringOverlay = false;   // clear the live-view warning on any stop/source switch
+        }
+
+        // Discards the auto-captured analog centres so the next polls re-average them. Called only when
+        // the analog joystick SOURCE is (re)selected — toggling the input source off and on is the
+        // deliberate "recentre" gesture; routine drive ops leave the captured centre intact.
+        private void ResetJoyCentre()
+        {
+            _aiMid.Clear();
             _aiCentreSum.Clear();
             _aiCentreCount.Clear();
-            ResetAiSpans();          // TEMP Θ-wiring probe: start each min/max test fresh
+            _aiCentreRange.Clear();   // spread guard that rejects a mid-twist centre
         }
     }
 }
