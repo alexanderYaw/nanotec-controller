@@ -59,10 +59,12 @@ namespace NanotecController
         private readonly ChuckEdgeDetector _edgeDetector = new();
         private readonly CentreFinder _chuckFinder = new();   // accumulates chuck edge points (user-frame steps)
         private readonly Button _edgeBtn = new() { Text = "Add Edge", Enabled = false };
+        private readonly Button _edgeAtCrossBtn = new() { Text = "Add at Crosshair", Enabled = false };
         private readonly Button _edgeClearBtn = new() { Text = "Clear Edges", Enabled = false };
+        private readonly Button _edgeDeleteBtn = new() { Text = "Delete Selected", Enabled = false };
         private readonly Button _centreBtn = new() { Text = "Compute Centre", Enabled = false };
         private readonly Button _goCentreBtn = new() { Text = "Go to Centre", Enabled = false };
-        private readonly TextBox _edgeList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
+        private readonly ListBox _edgeList = new() { Font = new Font("Consolas", 8F), BackColor = Color.White, IntegralHeight = false };
         private readonly Label _centreResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
         private (long X, long Y)? _chuckCentre;   // last computed/loaded centre (user frame)
 
@@ -231,19 +233,33 @@ namespace NanotecController
             // Compute Centre circle-fits them; Go to Centre drives there.
             var centreLabel = new Label { Text = "Chuck centre-find", Location = new Point(1248, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
+            // Two ways to add a rim point: "Add Edge" runs the detector; "Add at Crosshair" takes the
+            // current motor position directly (jog the edge onto the crosshair by eye first).
             _edgeBtn.Location = new Point(1248, 34);
-            _edgeBtn.Size = new Size(228, 30);
+            _edgeBtn.Size = new Size(112, 30);
             _edgeBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _edgeBtn.Click += (s, e) => RequestEdge();
 
-            _edgeClearBtn.Location = new Point(1248, 68);
-            _edgeClearBtn.Size = new Size(228, 26);
+            _edgeAtCrossBtn.Location = new Point(1364, 34);
+            _edgeAtCrossBtn.Size = new Size(112, 30);
+            _edgeAtCrossBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _edgeAtCrossBtn.Click += (s, e) => AddEdgeAtCrosshair();
+
+            _edgeList.Location = new Point(1248, 68);
+            _edgeList.Size = new Size(228, 178);
+            _edgeList.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _edgeList.SelectedIndexChanged += (s, e) => _edgeDeleteBtn.Enabled = _edgeList.SelectedIndex >= 0;
+
+            // Clear all points, or delete just the selected one (before computing the centre).
+            _edgeClearBtn.Location = new Point(1248, 250);
+            _edgeClearBtn.Size = new Size(112, 26);
             _edgeClearBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _edgeClearBtn.Click += (s, e) => ClearEdges();
 
-            _edgeList.Location = new Point(1248, 100);
-            _edgeList.Size = new Size(228, 210);
-            _edgeList.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _edgeDeleteBtn.Location = new Point(1364, 250);
+            _edgeDeleteBtn.Size = new Size(112, 26);
+            _edgeDeleteBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            _edgeDeleteBtn.Click += (s, e) => DeleteSelectedEdge();
 
             _centreBtn.Location = new Point(1248, 316);
             _centreBtn.Size = new Size(228, 32);
@@ -359,7 +375,9 @@ namespace NanotecController
             Controls.Add(_waferResult);
             Controls.Add(centreLabel);
             Controls.Add(_edgeBtn);
+            Controls.Add(_edgeAtCrossBtn);
             Controls.Add(_edgeClearBtn);
+            Controls.Add(_edgeDeleteBtn);
             Controls.Add(_edgeList);
             Controls.Add(_centreBtn);
             Controls.Add(_goCentreBtn);
@@ -418,6 +436,7 @@ namespace NanotecController
             bool open = _view.IsCameraOpen;
             _sampleBtn.Enabled = open;
             _edgeBtn.Enabled = open;
+            _edgeAtCrossBtn.Enabled = open;
             _waferEdgeBtn.Enabled = open;
             _rotBy.Enabled = _rotByBtn.Enabled = open;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;

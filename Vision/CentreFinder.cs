@@ -34,6 +34,21 @@ namespace NanotecController
             return (ex, ey);
         }
 
+        /// <summary>Stores a rim point directly in user-frame steps. Used when the edge was jogged
+        /// onto the crosshair by eye, so the point IS the current motor position (p_edge = p_cross ⇒
+        /// E = M) and no pixel→step conversion is needed. Returns the stored point.</summary>
+        public (double X, double Y) AddPoint(double x, double y)
+        {
+            _points.Add((x, y));
+            return (x, y);
+        }
+
+        /// <summary>Removes the stored point at <paramref name="index"/>; out-of-range is ignored.</summary>
+        public void RemoveAt(int index)
+        {
+            if (index >= 0 && index < _points.Count) _points.RemoveAt(index);
+        }
+
         /// <summary>Circle-fits the stored points (centre rounded to whole steps). False (+error) for
         /// &lt;3 points or a degenerate set.</summary>
         public bool TryComputeCentre(out long centreX, out long centreY, out CircleFit.Result fit, out string? error)
