@@ -35,7 +35,7 @@ same circle.
 > This method utilises the proprty of equidistance to construct a small system of
 > **simultaneous linear equations**.
 
-<iframe src="./CenterFindingVisualiser.html" width="100%" height="700px" style="border:none;">
+<iframe src="../CenterFindingVisualiser.html" width="100%" height="700px" style="border:none;">
     Your browser does not support iframes.
 </iframe>
 
