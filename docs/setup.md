@@ -1,3 +1,7 @@
+---
+title: EtherCAT Setup
+---
+
 # Nanotec Controller — EtherCAT Setup & Connection Guide
 
 How to connect this application to a Nanotec drive over **EtherCAT**, and how to

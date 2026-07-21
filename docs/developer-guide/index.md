@@ -1,7 +1,11 @@
+---
+title: Developer Guide
+---
+
 # Developer Guide — Nanotec Inspection-Table Controller
 
 How the application is built and how each feature works internally. For operator
-instructions, see **UserGuide.md**.
+instructions, see the **[User Guide](../user-guide/)**.
 
 The app is a **.NET 10 (Windows) WinForms** program targeting **x64**, controlling four
 Nanotec EtherCAT drives (X, Y, Z, Θ) through **NanoLib 1.4.0** over **EtherCAT / CoE

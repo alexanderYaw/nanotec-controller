@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
+  <style>
+    :root {
+      --fg: #1f2328;
+      --muted: #59636e;
+      --bg: #ffffff;
+      --accent: #0969da;
+      --border: #d1d9e0;
+      --code-bg: #f6f8fa;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #e6edf3;
+        --muted: #9198a1;
+        --bg: #0d1117;
+        --accent: #4493f8;
+        --border: #3d444d;
+        --code-bg: #161b22;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }
+    header.site {
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.25rem;
+    }
+    header.site a.brand {
+      font-weight: 600;
+      color: var(--fg);
+      text-decoration: none;
+    }
+    header.site nav { margin-top: .4rem; font-size: .9rem; }
+    header.site nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
+    header.site nav a:hover { color: var(--accent); }
+    main {
+      max-width: 56rem;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    a { color: var(--accent); }
+    h1, h2, h3 { line-height: 1.25; margin-top: 2rem; }
+    h1 { font-size: 1.9rem; }
+    h2 { border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
+    img { max-width: 100%; height: auto; }
+    blockquote {
+      margin: 1rem 0;
+      padding: .25rem 1rem;
+      border-left: 4px solid var(--border);
+      color: var(--muted);
+    }
+    code {
+      background: var(--code-bg);
+      padding: .15em .35em;
+      border-radius: 4px;
+      font-size: .9em;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; display: block; overflow-x: auto; }
+    th, td { border: 1px solid var(--border); padding: .4rem .6rem; }
+    .mermaid { overflow-x: auto; margin: 1.5rem 0; }
+    footer.site {
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: .85rem;
+      padding: 1.25rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header class="site">
+    <a class="brand" href="{{ '/' | relative_url }}">{{ site.title }}</a>
+    <nav>
+      <a href="{{ '/user-guide/' | relative_url }}">User Guide</a>
+      <a href="{{ '/developer-guide/' | relative_url }}">Developer Guide</a>
+      <a href="{{ '/setup/' | relative_url }}">EtherCAT Setup</a>
+    </nav>
+  </header>
+
+  <main>
+    {{ content }}
+  </main>
+
+  <footer class="site">
+    Built from
+    <a href="https://github.com/alexanderYaw/nanotec-controller">alexanderYaw/nanotec-controller</a>
+  </footer>
+
+  <!-- MathJax 3: the centre-finding analysis is written in $...$ / $$...$$ -->
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+      },
+      options: { skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'] }
+    };
+  </script>
+  <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+  <!-- Mermaid: kramdown emits ```mermaid as <pre><code class="language-mermaid">,
+       so convert those to .mermaid divs before initialising. -->
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    document.querySelectorAll('pre > code.language-mermaid').forEach((code) => {
+      const div = document.createElement('div');
+      div.className = 'mermaid';
+      div.textContent = code.textContent;
+      code.parentElement.replaceWith(div);
+    });
+    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'default' });
+  </script>
+</body>
+</html>

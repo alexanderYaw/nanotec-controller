@@ -1,3 +1,7 @@
+---
+title: Chuck Center-Finding Analysis
+---
+
 # Deriving the Geometric Centre of the Chuck
 
 Four ways to recover a circle's centre from sampled rim points, a recommendation for
