@@ -1,6 +1,5 @@
 using System;
 using System.Drawing;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
@@ -185,6 +184,48 @@ namespace NanotecController
 
         private Task GoToWaferCentreAsync() => GoToCentreAsync("wafer", _waferCentre);
 
+        // Adds a rim point WITHOUT running the detector: the operator has jogged the chuck edge onto
+        // the crosshair by eye, so the current motor position IS the point (p_edge = p_cross ⇒ E = M).
+        // Reads the motor position on the UI thread (stage is stationary while aligning), then grabs a
+        // frame purely to show the crosshair on the captured pane as a record.
+        private void AddEdgeAtCrosshair()
+        {
+            if (_owner == null) return;
+            if (!_owner.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
+            {
+                _status.Text = "Edge: motor position unavailable — connect & enable.";
+                return;
+            }
+
+            var (ex, ey) = _chuckFinder.AddPoint(mx, my);
+            RefreshEdgeUi();
+            _status.Text = $"Edge {_chuckFinder.Count} (crosshair): step=({ex:F0}, {ey:F0})";
+
+            if (!_view.IsCameraOpen) return;
+            _view.RequestFrame(frame =>
+            {
+                HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                _view.PostFrameBitmap(frame, flip: false, raw =>
+                {
+                    if (IsDisposed) { raw.Dispose(); return; }
+                    using (var g = Graphics.FromImage(raw))
+                        VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
+                    ShowCaptured(raw);
+                });
+            });
+        }
+
+        // Removes the point currently selected in the edge list (before computing the centre).
+        private void DeleteSelectedEdge()
+        {
+            int idx = _edgeList.SelectedIndex;
+            if (idx < 0) return;
+            _chuckFinder.RemoveAt(idx);
+            RefreshEdgeUi();
+            _status.Text = $"Deleted edge point {idx + 1}.";
+        }
+
         private void ClearEdges()
         {
             _chuckFinder.Clear();
@@ -194,13 +235,17 @@ namespace NanotecController
 
         private void RefreshEdgeUi()
         {
-            var sb = new StringBuilder();
+            int sel = _edgeList.SelectedIndex;
+            _edgeList.BeginUpdate();
+            _edgeList.Items.Clear();
             int i = 1;
             foreach ((double X, double Y) p in _chuckFinder.Points)
-                sb.AppendLine($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
-            _edgeList.Text = sb.ToString();
+                _edgeList.Items.Add($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
+            _edgeList.EndUpdate();
+            if (sel >= 0 && sel < _edgeList.Items.Count) _edgeList.SelectedIndex = sel;
             _centreBtn.Enabled = _chuckFinder.Count >= 3;
             _edgeClearBtn.Enabled = _chuckFinder.Count > 0;
+            _edgeDeleteBtn.Enabled = _edgeList.SelectedIndex >= 0;
         }
 
         // Circle-fits the chuck edge points (step space) and persists the centre.
