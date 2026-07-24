@@ -134,13 +134,13 @@ $$
 (x^2 + y^2) + E\,x + F\,y + G = 0
 $$
 
-The error of each sample point $i$ to the best fit circle can be modelled by $f_i = x_i^2 + y_i^2 + D\,x + E\,y + F,$ where $f_i = 0$ means that the point lies on the circle.
+The error of each sample point $i$ to the best fit circle can be modelled by $f_i = x_i^2 + y_i^2 + E\,x + F\,y + G,$ where $f_i = 0$ means that the point lies on the circle.
 
 > To find the best fit circle, we minimise $\Phi \,,\, where\, \Phi = \sum f_i^2$
 
 <div align="center">
 
-![Model of Error Phi](./Images/sumOfPhi.jpg)
+![Model of Error Phi](../Images/sumOfPhi.jpg)
 
 </div>
 
@@ -323,7 +323,7 @@ with residual $\varepsilon = \big\lVert \bar{\mathbf{C}} + R(-\theta)(\mathbf{E}
 
 <div align="center">
 
-![Visual of Residual](./Images/ResidualVisual.png)
+![Visual of Residual](../Images/ResidualVisual.png)
 
 </div>
 
