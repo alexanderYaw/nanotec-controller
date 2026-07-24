@@ -19,7 +19,7 @@ production, and the sampling/validation steps that make the result repeatable.
 ## 0. Problem setup
 
 Given $n \ge 3$ points $\{(x_i, y_i)\}$ nominally on a circle, find $(a, b)$ and $R$.
-Two equivalent forms (Geometric and ):
+Two equivalent forms (Geometric and algebraic):
 
 $$(x - a)^2 + (y - b)^2 = R^2
 \qquad\Longleftrightarrow\qquad
@@ -32,7 +32,7 @@ same circle.
 
 ## 1. Exact Interpolation (exact solution from 3 points)
 
-> This method utilises the proprty of equidistance to construct a small system of
+> This method utilises the property of equidistance to construct a small system of
 > **simultaneous linear equations**.
 
 <iframe src="../CenterFindingVisualiser.html" width="100%" height="700px" style="border:none;">
@@ -107,22 +107,59 @@ $R = \sqrt{(x_1 - a)^2 + (y_1 - b)^2}$.
   solve for a system that is overdetermined (i.e. >3 points)
 - **Zero noise rejection.** Because it interpolates exactly, it fits the noise as
   faithfully as the signal — the returned circle passes *through* all three points,
-  errors included. There is no residual to inspect, so a bad sample set it unidentifiable.
+  errors included. There is no residual to inspect, so a bad sample set is unidentifiable.
 - **Degenerate near collinear.** If the three points are nearly in a line the bisectors
   become almost parallel and meet far away, so the centre is numerically ill-defined
   (the code guards this via $\lvert D\rvert \to 0$). This is the geometric reason rim
   points must be spread around the arc.
+
+### Considerations
+**Averaging the result of sets of 3 samples.** This method allows for a sample set of >3 points, where all permutations of 3 points are considered and used to calculate their respective centers. The centers are simply averaged to produce a true center estimate. However, an unweighted center means greatly disrupt the true center calculation - near-collinear points in the sample set will greatly throw off the center averaging if left unweighted.
 
 So it is the tool for **visualising and sanity-checking** what "the centre" means, and
 the exact solver for the deliberate three-point case — but not the production
 estimator, where we want all captured points to contribute and noise to average out.
 For that, generalise to Section 2 and beyond.
 
-## 2. Kåsa algebraic least-squares
+## 2. Kåsa algebraic least-squares (n-generalised method)
 
-Fix the scale with $A = 1$, giving residual $f_i = x_i^2 + y_i^2 + D x_i + E y_i + F$
-and the objective $\Phi = \sum_i f_i^2$. Since $f_i$ is linear in $(D, E, F)$, the
-normal equations are linear:
+> Recall $A\,(x^2 + y^2) + B\,x + C\,y + D = 0$
+
+$$
+A\,(x^2 + y^2) + B\,x + C\,y + D = 0
+$$
+$$
+(x^2 + y^2) + \frac BA\,x + \frac CA\,y + \frac DA = 0
+$$
+$$
+(x^2 + y^2) + E\,x + F\,y + G = 0
+$$
+
+The error of each sample point $i$ to the best fit circle can be modelled by $f_i = x_i^2 + y_i^2 + D\,x + E\,y + F,$ where $f_i = 0$ means that the point lies on the circle.
+
+> To find the best fit circle, we minimise $\Phi \,,\, where\, \Phi = \sum f_i^2$
+
+<div align="center">
+
+![Model of Error Phi](./Images/sumOfPhi.jpg)
+
+</div>
+
+To minimise $\Phi ,$ we find $E,\, F,\, G$ such that $\frac {d\Phi}{dE} = \frac {d\Phi}{dF} = \frac {d\Phi}{dG} = 0$
+
+$$
+\sum f_ix_i = 0
+$$
+$$
+\sum f_iy_i = 0
+$$
+$$
+\sum f_i = 0
+$$
+
+<div align="center">
+&#8942;
+</div>
 
 $$
 \begin{pmatrix}
@@ -130,7 +167,7 @@ $$
 \sum x_i y_i & \sum y_i^2 & \sum y_i \\
 \sum x_i & \sum y_i & n
 \end{pmatrix}
-\begin{pmatrix} D \\ E \\ F \end{pmatrix}
+\begin{pmatrix} E \\ F \\ G \end{pmatrix}
 = -\begin{pmatrix}
 \sum x_i(x_i^2 + y_i^2) \\
 \sum y_i(x_i^2 + y_i^2) \\
@@ -138,68 +175,103 @@ $$
 \end{pmatrix},
 $$
 
-then $a = -D/2$, $b = -E/2$, $R = \sqrt{(D^2 + E^2)/4 - F}$.
+Derive $E,\, F\, and\, G$ using Gaussian elimination, then $a = -E/2$, $b = -F/2$, $R = \sqrt{(E^2 + F^2)/4 - G}$
 
-> Centre the points on their centroid before summing, then shift the result back.
-> Motor-step coordinates are $\sim10^4$–$10^5$, so their squares dominate the sums and
-> ruin the conditioning otherwise.
+### Advantages
+- Adding more sample points averages out the noise
+- Calculates the minimum squared error across all the points
 
-Linear, closed-form, fast; identical to the circumcircle at $n = 3$. Its weakness:
-minimising the *algebraic* residual $f_i$ (units of distance$^2$) over-weights distant
-points and **biases the radius low on short arcs**, and $A \equiv 1$ cannot represent
-a line, so it degrades badly near collinear. On a **full** rim the bias largely
-cancels and Kåsa is adequate — this is the current implementation.
+### Shortcomings
+- Supplying exactly 3 points still causes overfitting by forcing the circle to fit exactly all 3 sample points
+- Outliers are incorporated into the squared error, causing the plotted circle to shift significantly towards massive outliers
+- Short arc bias - many points clustered around a small arc causes the prediction to systematically predict a smaller than expected radius
 
-## 3. Taubin
+### Small-radius bias
+> Recall $f_i = (x_i - a)^2 + (y_i - b)^2 - R^2,$ where $(x_i - a)^2 + (y_i - b)^2\,$ is the squared distance, $r_i^2$ of any point $(x,\, y)$ to the center $(a,\, b)$
 
-Same residual, but a scale constraint that makes $f_i$ an approximate *geometric*
-distance. Using $\text{dist} \approx f_i / \lVert\nabla f_i\rVert$ with
-$\nabla f_i = (2Ax_i + B,\ 2Ay_i + C)$, Taubin normalises the mean squared gradient:
+$$f_i = r_i^2 - R^2$$
+$$f_i=(r_i + R)(r_i - R)$$
 
-$$\min \sum_i f_i^2 \quad\text{s.t.}\quad
-\frac{1}{n}\sum_i \big[(2Ax_i + B)^2 + (2Ay_i + C)^2\big] = 1.$$
+We can assume that in a well-sampled circle, $r_i\approx R\,,$ and therefore $(r_i + R)\approx 2R$
+<br>
+We can also let $d_i = (r_i - R),\,$ where $d_i$ is the geometric error (distance between a point and the circumference of the circle)
 
-With $\mathbf{a} = (A, B, C, D)^\mathsf{T}$, $\mathbf{z}_i = (x_i^2 + y_i^2, x_i, y_i, 1)$,
-$M = \sum_i \mathbf{z}_i \mathbf{z}_i^\mathsf{T}$, and $N$ the gradient constraint
-matrix, this is the generalised eigenproblem $M\mathbf{a} = \lambda N\mathbf{a}$,
-taking the smallest $\lambda \ge 0$. In practice it reduces to the smallest positive
-root of a **cubic** (Newton from $0$, a few steps), reusing Kåsa's moments plus
-$\sum z_i^2$. **Essentially unbiased, near the geometric optimum, no initial guess.**
+$$f_i = d_i\cdot 2R$$
+$$f_i^2 = 4d_i^2R^2$$
 
-## 4. Pratt
+Thus, it can be seen that the algebraic error of this model is proportional to the geometric error, $d_i^2$ and the radius, $R^2$. Given 2 projected circles with identical geometric errors, this model would favour one with a smaller radius.
 
-Fix the scale with $B^2 + C^2 - 4AD = 1$, which equals $4A^2R^2$ — translation/rotation
-invariant and finite as $A \to 0$, so a line is the limiting case rather than a
-singularity. The constraint matrix is
+## 3. Pratt
 
-$$N_\text{Pratt} =
-\begin{pmatrix} 0 & 0 & 0 & -2 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \\ -2 & 0 & 0 & 0 \end{pmatrix},$$
+### Goal
+Address the small-radius bias of the Kåsa model by making approximating the algebraic error as closely to the geometric error as much as possible, $f_{pratt}\approx d_i$
 
-and the solve is again a small generalised eigenproblem (smallest root of a
-**quartic**). Accuracy is similar to Taubin, with a slight edge to Taubin in most
-studies; Pratt is the more stable of the two when points span only a small arc.
+> The Pratt model is simply the algebraic expression, $A\,(x^2 + y^2) + B\,x + C\,y + D$
+
+Hence, the relationship between the Pratt model and Kåsa model is as such, $F(pratt) = A\cdot F(kåsa)$
+<br>
+Therefore, their algebraic errors have the following relationship as well, $f_{pratt} = A\cdot f_{kåsa}$
+
+$$f_{pratt} = A\cdot f_{kåsa}$$
+$$f_{pratt} = A\cdot (d_i\cdot 2R)$$
+$$f_{pratt} = 2AR\cdot d_i$$
+
+For $f_{pratt}\approx d_i\,,\,$ we set the condition $2AR\approx 1$
+<br>
+Additionally, since $A$ can be negative, the final condition should be
+$$(2AR)^2\approx 1$$
+$$4A^2R^2\approx 1$$
+
+### Implementing the constraint
+
+> Recall that $E = \frac BA\,,\, F = \frac CA\,,\, G = \frac DA$
+
+$$4R^2 = E^2 + F^2 - 4G$$
+$$4R^2 = \frac {B^2}{A^2} + \frac {C^2}{A^2} - \frac {4D}A$$
+$$4R^2 = \frac {B^2 + C^2 - 4AD}{A^2}$$
+$$4A^2R^2 = B^2 + C^2 - 4AD$$
+$$B^2 + C^2 -4AD\approx 1$$
+
+This can be represented in matrices
+
+$$u^TNu\approx 1\,,$$
+$$where\, N = \begin{bmatrix}0 & 0 & 0 & -2 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \\ -2 & 0 & 0 & 0\end{bmatrix},\, and\, u = \begin{bmatrix}A \\ B \\ C \\ D\end{bmatrix}$$
+
+### Solving with the Lagrange Multiplier
+
+> We solve using the Lagrange Multiplier $(\lambda )$ to find the minimum point in our objective cost function, $\Phi_p\,,$ within the constraint bounds
+
+$$\Phi_p = u^TMu\,,\,$$
+$$where\, M = \sum_{i=0}^n \, v_i^Tv_i\,, \,and\, v_i^T = \begin{bmatrix} x_i^2 + y_i^2 \\ x_i \\ y_i \\ 1\end{bmatrix}$$
+
+We construct the Lagrangian function
+
+$$L(u,\, \lambda ) = u^TMu - \lambda (u^TNu - 1)$$
+
+and find the solution for
+
+$$\frac {dL}{du} = 2Mu - 2\lambda Nu = 0$$
+$$2Mu = 2\lambda Nu$$
+$$Mu = \lambda Nu$$
 
 ## 5. Comparison and recommendation
 
-| Method | Scale fix / criterion | Solve | $n>3$? | Arc / near-line | Accuracy |
+| Method | Scale fix / constraint | Solve | $n>3$? | Arc / near-line | Accuracy |
 |---|---|---|---|---|---|
-| Circumcircle (bisectors) | interpolate 3 pts, $A = 1$ | $2\times2$ linear | ✗ | fails collinear; no averaging | exact at $n{=}3$; = Kåsa there |
-| Kåsa | $A = 1$ | linear normal eqns | ✓ | radius biased low; poor near line | good on full rim |
-| Taubin | unit mean gradient | gen. eigen (cubic) | ✓ | near-unbiased, graceful | best |
-| Pratt | $B^2{+}C^2{-}4AD = 1$ | gen. eigen (quartic) | ✓ | near-unbiased, stable near line | very good |
+| Exact Interpolation | Interpolate 3 pts, $A = 1$ | $2\times2$ linear | ✗ | Fails collinear; No averaging | Exact at $n{=}3$; Accurate for 3 **perfect** sample points |
+| Kåsa | $A = 1$ | Linear normal eqns | ✓ | Small-radius bias; Poor near-collinear performance | Good on full rim; Inaccurate for partial arcs and highly noisy data |
+| Pratt | $B^2{+}C^2{-}4AD = 1$ | Generalised eigenvalue quadratics | ✓ | Near-unbiased; Stable near line | Provides highly stable, nearly unbiased fit regardless if the data forms a full circle or small arc |
 
-All four approximate the **geometric fit** — the MLE under isotropic pixel noise,
+**Recommendation: Pratt**
+<br>
 
-$$\min_{a,b,R} \sum_i \Big(\sqrt{(x_i - a)^2 + (y_i - b)^2} - R\Big)^2,$$
-
-which is nonlinear (Levenberg–Marquardt) and is normally **seeded with Taubin**.
-
-**Recommendation: Taubin.** Near-unbiased and closest to the geometric optimum, no
-arc bias, deterministic (one root-find, no seed), and reuses moments already computed.
-It stays honest if the rim is ever sampled over a narrow angular range. The current
-code uses **Kåsa**, which is fine *given* the full-rim sampling below cancels its arc
-bias — but Taubin is the safer default because it does not depend on that assumption,
-and swapping is a localised change to the fitting routine.
+- **No essential bias.** Kåsa under-estimates the radius under noise even on uniform
+  360° data; Pratt's constraint $B^2 + C^2 - 4AD = 1$ removes that bias.
+- **Robust.** Stable on flat data, partial arcs, and noisy scatter — a shallow arc is
+  read as a large-radius circle instead of failing.
+- **Numerically stable.** The generalised eigenvalue solve tolerates floating-point
+  error where Kåsa's normal equations degrade.
+- **Cheap.** The eigenproblem is a fixed $4\times4$, so its cost is constant in $O(n)$.
 
 ## 6. Reliability — concentric rings and averaging
 
@@ -216,12 +288,6 @@ Each ring is measured at a different stage configuration, so its detection noise
 backlash, and local calibration error are largely independent — averaging cuts the
 centre's standard error by $\approx 1/\sqrt{3}$. All three are concentric about the
 same physical centre, so the spread
-
-$$\sigma_C = \max_k \lVert \mathbf{C}_k - \bar{\mathbf{C}} \rVert$$
-
-is itself a health metric: if it exceeds a few steps, something systematic is wrong
-(mis-calibrated $A$, stage non-orthogonality, drift) and the offending ring is
-re-sampled before averaging.
 
 ## 7. Validation — rotational-invariance test
 
@@ -240,6 +306,12 @@ $$\bar{\mathbf{C}} + R(-\theta)\,(\mathbf{E}_1 - \bar{\mathbf{C}})
 
 with residual $\varepsilon = \big\lVert \bar{\mathbf{C}} + R(-\theta)(\mathbf{E}_1 - \bar{\mathbf{C}}) - \mathbf{E}_0 \big\rVert$.
 
+<div align="center">
+
+![Visual of Residual](./Images/ResidualVisual.png)
+
+</div>
+
 A wrong centre offset by $\boldsymbol{\delta}$ gives
 $\varepsilon \approx 2\lVert\boldsymbol{\delta}\rVert\,\lvert\sin(\theta/2)\rvert$, so a
 larger test angle amplifies the error and sharpens the check. Crucially, this tests
@@ -247,12 +319,3 @@ the centre against the **physical rotation axis** — not the same points used t
 — so it catches biases the fit's RMS cannot, such as a skewed calibration $A$. Sweep a
 few angles (e.g. $30°, 90°, 180°$) and require $\varepsilon$ within tolerance for all;
 if it fails, the residual points toward the correction and Section 6 is repeated.
-
-## Summary
-
-- **Circumcircle (bisectors)** for exact 3-point visualisation — really Kåsa's $n{=}3$
-  special case, no noise rejection; **Kåsa** for a fast linear fit (arc-biased, fine on
-  a full rim); **Taubin**/**Pratt** for near-unbiased fits via a small eigenproblem.
-- **Recommended: Taubin** — best accuracy for the effort, no arc bias, deterministic.
-- **Repeatability** from three concentric-ring fits averaged, with their spread as a health check.
-- **Validation** from the rotational-invariance test against the physical $\Theta$ axis.

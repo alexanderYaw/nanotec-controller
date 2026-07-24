@@ -25,7 +25,5 @@ an **Npcap soft master**.
 
 ## Tools
 
-* **[Center-Finding Visualiser](developer-guide/CenterFindingVisualiser.html)** —
-  interactive page for exploring circle-centre fitting from sampled edge points.
 * **[Chuck Center-Finding Analysis](developer-guide/ChuckCenterFindingAnalysis/)** —
   write-up of the centre-finding approach and its error behaviour.
