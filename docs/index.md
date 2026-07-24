@@ -9,9 +9,6 @@ inspection table's four EtherCAT axes — **X, Y, Z, and Θ (the rotary chuck)**
 through Nanotec drives using **NanoLib** over **EtherCAT (CoE / CiA 402)** with
 an **Npcap soft master**.
 
-> **Status:** this application is still being brought up on real hardware. Treat
-> every first motion on a new machine as a commissioning step.
-
 ## Guides
 
 * **[User Guide](user-guide/)** — operator instructions: jogging, homing,
