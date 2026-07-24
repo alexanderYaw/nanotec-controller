@@ -4,17 +4,17 @@ title: Chuck Center-Finding Analysis
 
 # Deriving the Geometric Centre of the Chuck
 
-Four ways to recover a circle's centre from sampled rim points, a recommendation for
+Three ways to recover a circle's centre from sampled rim points, a recommendation for
 production, and the sampling/validation steps that make the result repeatable.
 
-> **Frame.** All points $(x, y)$ are **motor-step** coordinates, not pixels. Each
+> **Frame.** All points $(x, y)$ are **motor-step** coordinates. Each
 > detected edge pixel is converted to the stage position that would bring it onto the
 > fixed crosshair,
 > $$\mathbf{E} = \mathbf{M} + A\,(\mathbf{p}_\text{cross} - \mathbf{p}_\text{edge}),$$
 > with $\mathbf{M}$ the current stage position and $A$ the calibrated $2\times2$
 > pixel$\rightarrow$step affine. Every rim point sits at radius $R$ from the chuck
 > centre, so the $\mathbf{E}$ values lie on a circle whose centre is the stage
-> position that puts the *chuck* centre on the crosshair — the quantity we want.
+> position that puts the *chuck* centre on the crosshair.
 
 ## 0. Problem setup
 
