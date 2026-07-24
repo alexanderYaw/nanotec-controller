@@ -140,7 +140,7 @@ The error of each sample point $i$ to the best fit circle can be modelled by $f_
 
 <div align="center">
 
-![Model of Error Phi](../Images/sumOfPhi.jpg)
+<img src="../Images/sumOfPhi.jpg" alt="Model of Error Phi" style="max-width:100%;">
 
 </div>
 
@@ -323,7 +323,7 @@ with residual $\varepsilon = \big\lVert \bar{\mathbf{C}} + R(-\theta)(\mathbf{E}
 
 <div align="center">
 
-![Visual of Residual](../Images/ResidualVisual.png)
+<img src="../Images/ResidualVisual.png" alt="Visual of Residual" style="max-width:100%;">
 
 </div>
 
