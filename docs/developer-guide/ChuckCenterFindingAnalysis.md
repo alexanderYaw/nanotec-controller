@@ -116,10 +116,7 @@ $R = \sqrt{(x_1 - a)^2 + (y_1 - b)^2}$.
 ### Considerations
 **Averaging the result of sets of 3 samples.** This method allows for a sample set of >3 points, where all permutations of 3 points are considered and used to calculate their respective centers. The centers are simply averaged to produce a true center estimate. However, an unweighted center means greatly disrupt the true center calculation - near-collinear points in the sample set will greatly throw off the center averaging if left unweighted.
 
-So it is the tool for **visualising and sanity-checking** what "the centre" means, and
-the exact solver for the deliberate three-point case — but not the production
-estimator, where we want all captured points to contribute and noise to average out.
-For that, generalise to Section 2 and beyond.
+So it is the tool for **visualising** what "the centre" means. It is an exact solver for deliberate three-point cases — but not an accurate or reliable estimator for real-world use, where we want all captured points to contribute and noise to average out. For that, generalise to Section 2 and beyond.
 
 ## 2. Kåsa algebraic least-squares (n-generalised method)
 
@@ -128,9 +125,11 @@ For that, generalise to Section 2 and beyond.
 $$
 A\,(x^2 + y^2) + B\,x + C\,y + D = 0
 $$
+
 $$
 (x^2 + y^2) + \frac BA\,x + \frac CA\,y + \frac DA = 0
 $$
+
 $$
 (x^2 + y^2) + E\,x + F\,y + G = 0
 $$
@@ -150,9 +149,11 @@ To minimise $\Phi ,$ we find $E,\, F,\, G$ such that $\frac {d\Phi}{dE} = \frac 
 $$
 \sum f_ix_i = 0
 $$
+
 $$
 \sum f_iy_i = 0
 $$
+
 $$
 \sum f_i = 0
 $$
@@ -190,6 +191,7 @@ Derive $E,\, F\, and\, G$ using Gaussian elimination, then $a = -E/2$, $b = -F/2
 > Recall $f_i = (x_i - a)^2 + (y_i - b)^2 - R^2,$ where $(x_i - a)^2 + (y_i - b)^2\,$ is the squared distance, $r_i^2$ of any point $(x,\, y)$ to the center $(a,\, b)$
 
 $$f_i = r_i^2 - R^2$$
+
 $$f_i=(r_i + R)(r_i - R)$$
 
 We can assume that in a well-sampled circle, $r_i\approx R\,,$ and therefore $(r_i + R)\approx 2R$
@@ -197,6 +199,7 @@ We can assume that in a well-sampled circle, $r_i\approx R\,,$ and therefore $(r
 We can also let $d_i = (r_i - R),\,$ where $d_i$ is the geometric error (distance between a point and the circumference of the circle)
 
 $$f_i = d_i\cdot 2R$$
+
 $$f_i^2 = 4d_i^2R^2$$
 
 Thus, it can be seen that the algebraic error of this model is proportional to the geometric error, $d_i^2$ and the radius, $R^2$. Given 2 projected circles with identical geometric errors, this model would favour one with a smaller radius.
@@ -213,13 +216,17 @@ Hence, the relationship between the Pratt model and Kåsa model is as such, $F(p
 Therefore, their algebraic errors have the following relationship as well, $f_{pratt} = A\cdot f_{kåsa}$
 
 $$f_{pratt} = A\cdot f_{kåsa}$$
+
 $$f_{pratt} = A\cdot (d_i\cdot 2R)$$
+
 $$f_{pratt} = 2AR\cdot d_i$$
 
 For $f_{pratt}\approx d_i\,,\,$ we set the condition $2AR\approx 1$
 <br>
 Additionally, since $A$ can be negative, the final condition should be
+
 $$(2AR)^2\approx 1$$
+
 $$4A^2R^2\approx 1$$
 
 ### Implementing the constraint
@@ -227,14 +234,19 @@ $$4A^2R^2\approx 1$$
 > Recall that $E = \frac BA\,,\, F = \frac CA\,,\, G = \frac DA$
 
 $$4R^2 = E^2 + F^2 - 4G$$
+
 $$4R^2 = \frac {B^2}{A^2} + \frac {C^2}{A^2} - \frac {4D}A$$
+
 $$4R^2 = \frac {B^2 + C^2 - 4AD}{A^2}$$
+
 $$4A^2R^2 = B^2 + C^2 - 4AD$$
+
 $$B^2 + C^2 -4AD\approx 1$$
 
 This can be represented in matrices
 
 $$u^TNu\approx 1\,,$$
+
 $$where\, N = \begin{bmatrix}0 & 0 & 0 & -2 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \\ -2 & 0 & 0 & 0\end{bmatrix},\, and\, u = \begin{bmatrix}A \\ B \\ C \\ D\end{bmatrix}$$
 
 ### Solving with the Lagrange Multiplier
@@ -242,6 +254,7 @@ $$where\, N = \begin{bmatrix}0 & 0 & 0 & -2 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \\
 > We solve using the Lagrange Multiplier $(\lambda )$ to find the minimum point in our objective cost function, $\Phi_p\,,$ within the constraint bounds
 
 $$\Phi_p = u^TMu\,,\,$$
+
 $$where\, M = \sum_{i=0}^n \, v_i^Tv_i\,, \,and\, v_i^T = \begin{bmatrix} x_i^2 + y_i^2 \\ x_i \\ y_i \\ 1\end{bmatrix}$$
 
 We construct the Lagrangian function
@@ -251,7 +264,9 @@ $$L(u,\, \lambda ) = u^TMu - \lambda (u^TNu - 1)$$
 and find the solution for
 
 $$\frac {dL}{du} = 2Mu - 2\lambda Nu = 0$$
+
 $$2Mu = 2\lambda Nu$$
+
 $$Mu = \lambda Nu$$
 
 ## 5. Comparison and recommendation
@@ -266,12 +281,12 @@ $$Mu = \lambda Nu$$
 <br>
 
 - **No essential bias.** Kåsa under-estimates the radius under noise even on uniform
-  360° data; Pratt's constraint $B^2 + C^2 - 4AD = 1$ removes that bias.
+  360° data; Pratt's constraint $B^2 + C^2 - 4AD = 1$ removes that bias, especially when there is high noise - which is to be expected when locating edge points via visual methods.
 - **Robust.** Stable on flat data, partial arcs, and noisy scatter — a shallow arc is
   read as a large-radius circle instead of failing.
 - **Numerically stable.** The generalised eigenvalue solve tolerates floating-point
   error where Kåsa's normal equations degrade.
-- **Cheap.** The eigenproblem is a fixed $4\times4$, so its cost is constant in $O(n)$.
+- **Computationally cheap.** The eigenproblem is a fixed $4\times4$, so its cost is constant in $O(n)$.
 
 ## 6. Reliability — concentric rings and averaging
 
