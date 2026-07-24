@@ -114,7 +114,7 @@ $R = \sqrt{(x_1 - a)^2 + (y_1 - b)^2}$.
   points must be spread around the arc.
 
 ### Considerations
-**Averaging the result of sets of 3 samples.** This method allows for a sample set of >3 points, where all permutations of 3 points are considered and used to calculate their respective centers. The centers are simply averaged to produce a true center estimate. However, an unweighted center means greatly disrupt the true center calculation - near-collinear points in the sample set will greatly throw off the center averaging if left unweighted.
+**Averaging the result of sets of 3 samples.** This method allows for a sample set of >3 points, where all permutations of 3 points are considered and used to calculate their respective centers. The centers are simply averaged to produce a true center estimate. However, an unweighted center can greatly disrupt the true center calculation - near-collinear points in the sample set will greatly throw off the center averaging if left unweighted.
 
 So it is the tool for **visualising** what "the centre" means. It is an exact solver for deliberate three-point cases — but not an accurate or reliable estimator for real-world use, where we want all captured points to contribute and noise to average out. For that, generalise to Section 2 and beyond.
 
@@ -134,7 +134,7 @@ $$
 (x^2 + y^2) + E\,x + F\,y + G = 0
 $$
 
-The error of each sample point $i$ to the best fit circle can be modelled by $f_i = x_i^2 + y_i^2 + E\,x + F\,y + G,$ where $f_i = 0$ means that the point lies on the circle.
+The error of each sample point $i$ to the best fit circle can be modelled by $f_i = x_i^2 + y_i^2 + E\,x_i + F\,y_i + G,$ where $f_i = 0$ means that the point lies on the circle.
 
 > To find the best fit circle, we minimise $\Phi \,,\, where\, \Phi = \sum f_i^2$
 
@@ -202,12 +202,12 @@ $$f_i = d_i\cdot 2R$$
 
 $$f_i^2 = 4d_i^2R^2$$
 
-Thus, it can be seen that the algebraic error of this model is proportional to the geometric error, $d_i^2$ and the radius, $R^2$. Given 2 projected circles with identical geometric errors, this model would favour one with a smaller radius.
+Thus, it can be seen that the squared algebraic error of this model, $f_i^2$, is proportional to the squared geometric error, $d_i^2$, and the squared radius, $R^2$. Given 2 projected circles with identical geometric errors, this model would favour one with a smaller radius.
 
 ## 3. Pratt
 
 ### Goal
-Address the small-radius bias of the Kåsa model by making approximating the algebraic error as closely to the geometric error as much as possible, $f_{pratt}\approx d_i$
+Address the small-radius bias of the Kåsa model by approximating the algebraic error as closely to the geometric error as possible, $f_{pratt}\approx d_i$
 
 > The Pratt model is simply the algebraic expression, $A\,(x^2 + y^2) + B\,x + C\,y + D$
 
@@ -255,7 +255,7 @@ $$where\, N = \begin{bmatrix}0 & 0 & 0 & -2 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 & 0 \\
 
 $$\Phi_p = u^TMu\,,\,$$
 
-$$where\, M = \sum_{i=0}^n \, v_i^Tv_i\,, \,and\, v_i^T = \begin{bmatrix} x_i^2 + y_i^2 \\ x_i \\ y_i \\ 1\end{bmatrix}$$
+$$where\, M = \sum_{i=1}^n \, v_i^Tv_i\,, \,and\, v_i^T = \begin{bmatrix} x_i^2 + y_i^2 \\ x_i \\ y_i \\ 1\end{bmatrix}$$
 
 We construct the Lagrangian function
 
@@ -269,13 +269,13 @@ $$2Mu = 2\lambda Nu$$
 
 $$Mu = \lambda Nu$$
 
-## 5. Comparison and recommendation
+## 4. Comparison and recommendation
 
 | Method | Scale fix / constraint | Solve | $n>3$? | Arc / near-line | Accuracy |
 |---|---|---|---|---|---|
 | Exact Interpolation | Interpolate 3 pts, $A = 1$ | $2\times2$ linear | ✗ | Fails collinear; No averaging | Exact at $n{=}3$; Accurate for 3 **perfect** sample points |
 | Kåsa | $A = 1$ | Linear normal eqns | ✓ | Small-radius bias; Poor near-collinear performance | Good on full rim; Inaccurate for partial arcs and highly noisy data |
-| Pratt | $B^2{+}C^2{-}4AD = 1$ | Generalised eigenvalue quadratics | ✓ | Near-unbiased; Stable near line | Provides highly stable, nearly unbiased fit regardless if the data forms a full circle or small arc |
+| Pratt | $B^2{+}C^2{-}4AD = 1$ | Generalised eigenvalue problem | ✓ | Near-unbiased; Stable near line | Provides highly stable, nearly unbiased fit regardless if the data forms a full circle or small arc |
 
 **Recommendation: Pratt**
 <br>
@@ -286,7 +286,7 @@ $$Mu = \lambda Nu$$
   read as a large-radius circle instead of failing.
 - **Numerically stable.** The generalised eigenvalue solve tolerates floating-point
   error where Kåsa's normal equations degrade.
-- **Computationally cheap.** The eigenproblem is a fixed $4\times4$, so its cost is constant in $O(n)$.
+- **Computationally cheap.** The eigenproblem is a fixed $4\times4$, so its cost is constant in $n$ — only the moment accumulation is $O(n)$, the same pass Kåsa already needs.
 
 ## 6. Reliability — concentric rings and averaging
 
@@ -302,7 +302,7 @@ average:
 Each ring is measured at a different stage configuration, so its detection noise,
 backlash, and local calibration error are largely independent — averaging cuts the
 centre's standard error by $\approx 1/\sqrt{3}$. All three are concentric about the
-same physical centre, so the spread
+same physical centre.
 
 ## 7. Validation — rotational-invariance test
 
