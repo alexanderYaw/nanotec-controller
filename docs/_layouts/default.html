@@ -49,6 +49,14 @@
       padding: 2rem 1.25rem 4rem;
     }
     a { color: var(--accent); }
+    a.back {
+      display: inline-block;
+      margin-bottom: 1.5rem;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .9rem;
+    }
+    a.back:hover { color: var(--accent); }
     h1, h2, h3 { line-height: 1.25; margin-top: 2rem; }
     h1 { font-size: 1.9rem; }
     h2 { border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
@@ -95,6 +103,9 @@
   </header>
 
   <main>
+    {% unless page.url == '/' %}
+    <a class="back" href="{{ '/' | relative_url }}">&larr; Back to home</a>
+    {% endunless %}
     {{ content }}
   </main>
 
