@@ -4,13 +4,20 @@ using System.Collections.Generic;
 namespace NanotecController
 {
     /// <summary>
-    /// Least-squares circle fit (algebraic / Kåsa method) to ≥3 points in a plane. Used to find
+    /// Least-squares circle fit (algebraic / Pratt method) to ≥3 points in a plane. Used to find
     /// the chuck centre from edge points expressed in motor-step space: each edge point is a
     /// point on the chuck rim, so the circle through them is centred on the chuck centre.
     ///
-    /// Exact for 3 non-collinear points; averages noise for more (so the centre-find can take
-    /// more than 3 captures). Rejects fewer than 3 points or collinear/coincident sets — a line
-    /// has no unique circle, which is why the captures must be spread around the rim.
+    /// Pratt fixes the arbitrary scale of the algebraic circle A(x²+y²)+Bx+Cy+D=0 with the
+    /// constraint B²+C²−4AD=1, which keeps the algebraic error close to the true geometric error.
+    /// Unlike Kåsa (A=1) this removes the small-radius / arc bias, so partial arcs and noisy edge
+    /// points are fit without systematically under-estimating the radius. Solved here by Newton's
+    /// method on Pratt's characteristic polynomial (Chernov's PrattNewton) — needs only the 4×4
+    /// moment matrix, no SVD or eigen-decomposition.
+    ///
+    /// Exact for 3 non-collinear points; averages noise for more (so the centre-find can take more
+    /// than 3 captures). Rejects fewer than 3 points or collinear/coincident sets — a line has no
+    /// unique circle, which is why the captures must be spread around the rim.
     /// </summary>
     public static class CircleFit
     {
@@ -30,42 +37,62 @@ namespace NanotecController
             int n = points.Count;
             if (n < 3) { error = $"Need at least 3 edge points (have {n})."; return false; }
 
-            // Centre the data (improves conditioning and makes the collinearity test meaningful).
+            // Centre the data (improves conditioning and makes the moment matrix well-scaled).
             double mx = 0, my = 0;
             foreach ((double X, double Y) p in points) { mx += p.X; my += p.Y; }
             mx /= n; my /= n;
 
-            // Sums over the centred coordinates u = x-mx, v = y-my, with z = u²+v².
-            double Suu = 0, Suv = 0, Svv = 0, Su = 0, Sv = 0, Suz = 0, Svz = 0, Sz = 0;
+            // Moments over centred coordinates u = x-mx, v = y-my, with z = u²+v², normalised by n.
+            // Because the data is centred, Σu = Σv = 0, so those moments drop out of the system.
+            double Muu = 0, Mvv = 0, Muv = 0, Muz = 0, Mvz = 0, Mzz = 0;
             foreach ((double X, double Y) p in points)
             {
                 double u = p.X - mx, v = p.Y - my, z = u * u + v * v;
-                Suu += u * u; Suv += u * v; Svv += v * v; Su += u; Sv += v;
-                Suz += u * z; Svz += v * z; Sz += z;
+                Muu += u * u; Mvv += v * v; Muv += u * v;
+                Muz += u * z; Mvz += v * z; Mzz += z * z;
             }
+            Muu /= n; Mvv /= n; Muv /= n; Muz /= n; Mvz /= n; Mzz /= n;
 
-            // Collinearity guard: the centred pixel covariance must span 2D.
-            if (Suu <= 0 || Svv <= 0 || Suu * Svv - Suv * Suv <= 1e-6 * Suu * Svv)
+            double Mz = Muu + Mvv;                 // mean of z
+            double covUV = Muu * Mvv - Muv * Muv;  // spans 2D only if the points are not collinear
+
+            // Collinearity guard: the centred covariance must span 2D.
+            if (Muu <= 0 || Mvv <= 0 || covUV <= 1e-6 * Muu * Mvv)
             {
                 error = "Edge points are collinear — spread the captures around the rim.";
                 return false;
             }
 
-            // Solve [[Suu,Suv,Su],[Suv,Svv,Sv],[Su,Sv,n]]·[D;E;F] = -[Suz;Svz;Sz].
-            double[,] m =
+            // Pratt's characteristic polynomial P(x) = A0 + A1·x + A2·x² + 4·x⁴ (Chernov). Its
+            // smallest non-negative root is the eigenvalue that gives the Pratt-constrained fit.
+            double Muz2 = Muz * Muz, Mvz2 = Mvz * Mvz;
+            double A2 = 4 * covUV - 3 * Mz * Mz - Mzz;
+            double A1 = Mzz * Mz + 4 * covUV * Mz - Muz2 - Mvz2 - Mz * Mz * Mz;
+            double A0 = Muz2 * Mvv + Mvz2 * Muu - Mzz * covUV - 2 * Muz * Mvz * Muv + Mz * Mz * covUV;
+            double A22 = A2 + A2;
+
+            // Newton iteration for that root, starting from x = 0.
+            double x = 0, yPrev = double.MaxValue;
+            for (int iter = 0; iter < 99; iter++)
             {
-                { Suu, Suv, Su, -Suz },
-                { Suv, Svv, Sv, -Svz },
-                { Su,  Sv,  n,  -Sz  },
-            };
-            if (!Solve3(m, out double d, out double e, out double f))
-            {
-                error = "Degenerate point set (singular fit).";
-                return false;
+                double y = A0 + x * (A1 + x * (A2 + 4 * x * x));
+                if (Math.Abs(y) >= Math.Abs(yPrev)) break;   // no longer improving — stop
+                yPrev = y;
+                double dy = A1 + x * (A22 + 16 * x * x);
+                if (dy == 0) break;
+                double xNew = x - y / dy;
+                if (xNew < 0) { x = 0; break; }               // Pratt's root is non-negative
+                if (Math.Abs(xNew - x) < 1e-12 * Math.Max(1, Math.Abs(xNew))) { x = xNew; break; }
+                x = xNew;
             }
 
-            double cu = -d / 2, cv = -e / 2;
-            double r2 = cu * cu + cv * cv - f;
+            double det = x * x - x * Mz + covUV;
+            if (Math.Abs(det) < 1e-12) { error = "Degenerate point set (singular fit)."; return false; }
+
+            // Centre in the centred frame, then radius (both from Chernov's closed form).
+            double cu = (Muz * (Mvv - x) - Mvz * Muv) / det / 2;
+            double cv = (Mvz * (Muu - x) - Muz * Muv) / det / 2;
+            double r2 = cu * cu + cv * cv + Mz + 2 * x;
             if (r2 <= 0) { error = "Degenerate fit (non-positive radius)."; return false; }
 
             double radius = Math.Sqrt(r2);
@@ -78,31 +105,6 @@ namespace NanotecController
                 sse += dist * dist;
             }
             result = new Result(cx, cy, radius, Math.Sqrt(sse / n));
-            return true;
-        }
-
-        // Gaussian elimination with partial pivoting on an augmented 3×4 matrix. False if singular.
-        private static bool Solve3(double[,] m, out double x0, out double x1, out double x2)
-        {
-            x0 = x1 = x2 = 0;
-            for (int col = 0; col < 3; col++)
-            {
-                int piv = col;
-                for (int r = col + 1; r < 3; r++)
-                    if (Math.Abs(m[r, col]) > Math.Abs(m[piv, col])) piv = r;
-                if (Math.Abs(m[piv, col]) < 1e-12) return false;
-                if (piv != col)
-                    for (int c = 0; c < 4; c++) (m[col, c], m[piv, c]) = (m[piv, c], m[col, c]);
-                for (int r = 0; r < 3; r++)
-                {
-                    if (r == col) continue;
-                    double factor = m[r, col] / m[col, col];
-                    for (int c = col; c < 4; c++) m[r, c] -= factor * m[col, c];
-                }
-            }
-            x0 = m[0, 3] / m[0, 0];
-            x1 = m[1, 3] / m[1, 1];
-            x2 = m[2, 3] / m[2, 2];
             return true;
         }
     }
