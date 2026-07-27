@@ -24,3 +24,6 @@ an **Npcap soft master**.
 
 * **[Chuck Center-Finding Analysis](developer-guide/ChuckCenterFindingAnalysis/)** —
   write-up of the centre-finding approach and its error behaviour.
+* **[Automated Chuck Centre-Finding](developer-guide/ChuckCenterFindingAutomation/)** —
+  driving the rim-point collection automatically: outward scans, safety guards, and how it
+  reuses the manual centre-find pipeline.
