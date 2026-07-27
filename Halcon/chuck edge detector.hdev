@@ -1,17 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<hdevelop file_version="1.2" halcon_version="24.11.2.0">
+<hdevelop file_version="1.2" halcon_version="26.05.0.0">
 <procedure name="main">
 <interface/>
 <body>
-<l>* Chuck-edge detector (FOCUS/TEXTURE based) - HDevelop tuning script.</l>
-<l>* The two sides are nearly the same colour, so brightness can't separate them. The</l>
-<l>* discriminator is FOCUS: the in-focus side is full of sharp texture (high local detail),</l>
-<l>* the out-of-focus side is smooth/blurry. We build a "focus energy" map (bright = in focus),</l>
-<l>* threshold it to split the two sides, and take the boundary = the chuck edge.</l>
-<l>* Step with Run (F5); it pauses at each stop().</l>
+<c>* Chuck-edge detector (FOCUS/TEXTURE based) - HDevelop tuning script.</c>
+<c>* The two sides are nearly the same colour, so brightness can't separate them. The</c>
+<c>* discriminator is FOCUS: the in-focus side is full of sharp texture (high local detail),</c>
+<c>* the out-of-focus side is smooth/blurry. We build a "focus energy" map (bright = in focus),</c>
+<c>* threshold it to split the two sides, and take the boundary = the chuck edge.</c>
+<c>* Step with Run (F5); it pauses at each stop().</c>
 <l>SobelWidth := 3</l>
 <l>EnergyWindow := 41</l>
-<l>CleanRadius := 5</l>
+<l>FineWindow := 9</l>
+<l>LineSigma := 1.5</l>
+<l>LineLow := 0.5</l>
+<l>LineHigh := 1.5</l>
+<l>MinLineLength := 500</l>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
 <l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/Edge_sample1.png')</l>
@@ -22,7 +26,7 @@
 <l>dev_display (Image)</l>
 <l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<l>* 1. Red channel (the markers/illumination are red).</l>
+<c>* 1. Red channel (the markers/illumination are red).</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
 <l>    access_channel (Image, Gray, 1)</l>
@@ -32,41 +36,69 @@
 <l>dev_display (Gray)</l>
 <l>disp_message (WindowHandle, '1: red channel', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<l>* 2. Focus-energy map: gradient magnitude (high where sharp), smoothed over a window.</l>
-<l>*    Bright = in focus, dark = blurry. This is the key step - tune EnergyWindow so the two</l>
-<l>*    sides come out as cleanly different brightnesses.</l>
+<c>* 2. Focus-energy map: gradient magnitude (high where sharp), smoothed over a window.</c>
+<c>*    Bright = in focus, dark = blurry. This is the key step - tune EnergyWindow so the two</c>
+<c>*    sides come out as cleanly different brightnesses.</c>
 <l>sobel_amp (Gray, Amp, 'sum_abs', SobelWidth)</l>
 <l>mean_image (Amp, Energy, EnergyWindow, EnergyWindow)</l>
 <l>dev_display (Energy)</l>
 <l>disp_message (WindowHandle, '2: focus energy (bright=in focus, dark=blurry)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<l>* 3. Auto-threshold the energy map: keep the bright (in-focus) side.</l>
-<l>binary_threshold (Energy, Sharp, 'max_separability', 'light', UsedThreshold)</l>
-<l>dev_display (Gray)</l>
-<l>dev_set_draw ('margin')</l>
-<l>dev_set_line_width (2)</l>
+<c>* 2b. DIAGNOSTIC: same gradient amplitude, but pooled at a FINE scale (FineWindow).</c>
+<c>*     Coarse pooling (EnergyWindow) smears the dark band's sharp edges into the fuzzy</c>
+<c>*     halo above it; a small window keeps in-focus detail crisp and lets the</c>
+<c>*     out-of-focus halo stay dark. LOOK HERE: does the in-focus dark band stand out</c>
+<c>*     from the fuzzy dark halo? If yes, 2-3 (band/halo) edge is recoverable; if the</c>
+<c>*     band's interior is as dark as the halo, it is not.</c>
+<l>mean_image (Amp, FineSharp, FineWindow, FineWindow)</l>
+<l>dev_display (FineSharp)</l>
+<l>disp_message (WindowHandle, '2b: fine sharpness - does the dark band separate from the fuzzy halo?', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 2c. DIAGNOSTIC: extract that thin bright ridge directly as a sub-pixel line - this IS</c>
+<c>*     the edge we want (top of the in-focus dark band). lines_gauss finds bright</c>
+<c>*     curvilinear ridges; select_contours_xld then keeps only long contours so the</c>
+<c>*     short texture responses below the ridge are dropped.</c>
+<l>lines_gauss (FineSharp, RidgeLines, LineSigma, LineLow, LineHigh, 'light', 'true', 'bar-shaped', 'true')</l>
+<l>select_contours_xld (RidgeLines, RidgeLong, 'contour_length', MinLineLength, 1000000, -0.5, 0.5)</l>
+<l>count_obj (RidgeLines, NumRaw)</l>
+<l>count_obj (RidgeLong, NumSel)</l>
+<l>dev_display (FineSharp)</l>
 <l>dev_set_color ('green')</l>
-<l>dev_display (Sharp)</l>
-<l>disp_message (WindowHandle, '3: in-focus region (energy threshold=' + UsedThreshold + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_display (RidgeLong)</l>
+<l>disp_message (WindowHandle, '2c: lines_gauss raw=' + NumRaw + ' contours, after length filter=' + NumSel + ' (shown: filtered, green on FineSharp)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<l>* 4. Clean specks, fill, keep the largest region.</l>
-<l>opening_circle (Sharp, Opened, CleanRadius)</l>
-<l>fill_up (Opened, Filled)</l>
-<l>connection (Filled, Conn)</l>
-<l>select_shape_std (Conn, Biggest, 'max_area', 0)</l>
-<l>dev_display (Gray)</l>
-<l>dev_set_color ('cyan')</l>
-<l>dev_display (Biggest)</l>
-<l>disp_message (WindowHandle, '4: largest in-focus region', 'window', 12, 12, 'yellow', 'false')</l>
-<l>stop ()</l>
-<l>* 5. The chuck edge = the boundary of that region (ignore the segments that run along the</l>
-<l>*    frame border; the centre-find only uses the boundary point nearest the crosshair).</l>
-<l>gen_contour_region_xld (Biggest, Boundary, 'border')</l>
+<c>* 3. Edge point closest to the image centre. Gather every point from the ridge</c>
+<c>*    contour(s), then pick the one with the smallest distance to the centre.</c>
+<l>CenterRow := Height / 2.0</l>
+<l>CenterCol := Width / 2.0</l>
+<l>AllRow := []</l>
+<l>AllCol := []</l>
+<l>count_obj (RidgeLong, NumEdge)</l>
+<l>for K := 1 to NumEdge by 1</l>
+<l>    select_obj (RidgeLong, OneContour, K)</l>
+<l>    get_contour_xld (OneContour, ContRow, ContCol)</l>
+<l>    AllRow := [AllRow, ContRow]</l>
+<l>    AllCol := [AllCol, ContCol]</l>
+<l>endfor</l>
+<l>Dist := sqrt((AllRow - CenterRow) * (AllRow - CenterRow) + (AllCol - CenterCol) * (AllCol - CenterCol))</l>
+<l>tuple_sort_index (Dist, SortIdx)</l>
+<l>Nearest := SortIdx[0]</l>
+<l>NearRow := AllRow[Nearest]</l>
+<l>NearCol := AllCol[Nearest]</l>
+<l>NearDist := Dist[Nearest]</l>
 <l>dev_display (Image)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_display (RidgeLong)</l>
+<l>gen_cross_contour_xld (CenterCross, CenterRow, CenterCol, 60, 0.785)</l>
+<l>dev_set_color ('yellow')</l>
+<l>dev_display (CenterCross)</l>
+<l>gen_cross_contour_xld (NearCross, NearRow, NearCol, 60, 0.785)</l>
 <l>dev_set_color ('red')</l>
 <l>dev_set_line_width (3)</l>
-<l>dev_display (Boundary)</l>
-<l>disp_message (WindowHandle, '5: chuck edge = region boundary', 'window', 12, 12, 'yellow', 'false')</l>
+<l>dev_display (NearCross)</l>
+<l>disp_message (WindowHandle, '3: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 </body>
 <docu id="main">

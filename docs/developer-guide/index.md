@@ -665,13 +665,16 @@ such points gives the centre. **Requires a camera-scale
 calibration first** (the affine `A`); the result is persisted as `ChuckCenterX/Y` in
 `calibration.json` (§13) and gates `CanRotate`.
 
-### A. The edge detector — focus/texture, not brightness (`ChuckEdgeDetector.cs`)
+### A. The edge detector — a focus RIDGE, not brightness (`ChuckEdgeDetector.cs`)
 
-The two sides of the chuck edge are **nearly the same colour**, so brightness can't separate
-them. The discriminator is **focus**: the in-focus side is full of sharp, high-frequency
-texture; the out-of-focus side is smooth/blurry. The detector builds a **focus-energy map**
-that is bright where the image is sharp, thresholds it to keep the in-focus side, and takes that
-region's boundary as the chuck edge. The HDevelop tuning script
+Across the rim there are **three** zones: the in-focus, sharply-textured chuck face; a thin
+in-focus **dark band**; and beyond it the **out-of-focus** (blurry) background. The true edge is
+the boundary between the in-focus and out-of-focus sides. The two sides are nearly the same
+colour, so brightness can't separate them — and a *coarse* focus-energy map smears the thin dark
+band into the blur, landing the edge on the wrong side of the band. But in a **fine-scale
+sharpness map** (gradient magnitude pooled over a *small* window) that boundary shows up as a
+thin, continuous **bright ridge**: sharp on the chuck side, dark on the blurry side. The detector
+extracts that ridge directly as a sub-pixel line. The HDevelop tuning script
 `Halcon/chuck edge detector.hdev` mirrors this pipeline stage for stage (with
 `dev_display`/`stop` after each), so it can be tuned against representative captures.
 
@@ -679,33 +682,35 @@ region's boundary as the chuck edge. The HDevelop tuning script
 
 1. **Red channel → byte.** The scene is red-lit, so channel 1 carries the contrast; mono frames
    pass through (`Preprocess`).
-2. **Focus-energy map.** `sobel_amp('sum_abs', SobelWidth)` → gradient magnitude (high where
-   sharp), then `mean_image(EnergyWindow, EnergyWindow)` smooths it into "how much sharp detail
-   is in this neighbourhood." **Bright = in focus, dark = blurry.** `EnergyWindow` is the key
+2. **Fine sharpness map.** `sobel_amp('sum_abs', SobelWidth)` → gradient magnitude (high where
+   sharp), then `mean_image(FineWindow, FineWindow)` with a **small** window so in-focus detail
+   stays crisp and the in-focus/out-of-focus boundary reads as a thin bright ridge. A coarse
+   window (the old `EnergyWindow`) would blur that ridge into the halo — `FineWindow` is the key
    knob.
-3. **Auto-threshold.** `binary_threshold('max_separability', 'light')` (Otsu-style — no
-   hand-tuned grey) keeps the in-focus side. `InFocusIsBright = false` flips to `'dark'` if the
-   blurry side happens to read brighter.
-4. **Clean + keep largest.** `opening_circle(CleanRadius)` drops specks, `fill_up` fills holes,
-   `connection` + `select_shape_std('max_area')` keeps the one largest in-focus region.
-5. **Boundary = chuck edge.** `gen_contour_region_xld('border')` traces the region outline. This
-   includes segments that run along the **frame border**, but those are far from the crosshair
-   and so are never selected in the next step.
-6. **Nearest point wins.** Of every boundary pixel, return the one **nearest the crosshair** as
-   the `EdgePoint(Row, Column)`. That single point is a true point on the rim — which is all the
-   centre-find needs, and it sidesteps the aperture problem (a smooth arc only reveals motion
-   along its normal, so you can't localise *along* it — but you can localise the one point under
-   the crosshair). The boundary contour is optionally returned for overlay; **the caller owns
-   and disposes it**. The input frame is never modified, and every HALCON temp is disposed in a
-   `finally`.
+3. **Extract ridges.** `lines_gauss(LineSigma, LineLow, LineHigh, 'light', …)` traces bright
+   curvilinear ridges at **sub-pixel** accuracy. `LineSigma` ≈ the ridge half-width;
+   `LineLow`/`LineHigh` are the hysteresis thresholds on line response (low, because the pooled
+   map has a modest response scale).
+4. **Keep the edge, drop the texture.** `select_contours_xld('contour_length', MinLineLength, …)`
+   keeps only long contours: the chuck edge is one long continuous ridge, while the sharp texture
+   below it produces many short responses that fall away.
+5. **Nearest point wins.** Of every point on the surviving ridge contour(s), return the one
+   **nearest the crosshair** as the `EdgePoint(Row, Column)`. That single point is a true
+   (sub-pixel) point on the rim — which is all the centre-find needs, and it sidesteps the
+   aperture problem (a smooth arc only reveals motion along its normal, so you can't localise
+   *along* it — but you can localise the one point under the crosshair). The ridge contour is
+   optionally returned for overlay; **the caller owns and disposes it**. The input frame is never
+   modified, and every HALCON temp is disposed in a `finally`.
 
 ```
-red channel → sobel_amp (sharp=high) → mean_image (focus energy, bright=in focus)
-  → threshold (keep in-focus) → open+fill+largest → boundary → point nearest crosshair
+red channel → sobel_amp (sharp=high) → mean_image (FINE window → ridge=bright)
+  → lines_gauss (extract bright ridge, sub-pixel) → select by length (drop texture)
+  → point nearest crosshair
 ```
 
-> **Tunables** (`SobelWidth=3`, `EnergyWindow=41`, `CleanRadius=5`, `InFocusIsBright`) are
-> properties that mirror the `.hdev` script's variables; tune them there first, then copy across.
+> **Tunables** (`SobelWidth=3`, `FineWindow=9`, `LineSigma=1.5`, `LineLow=0.5`, `LineHigh=1.5`,
+> `MinLineLength=500`) are properties that mirror the `.hdev` script's variables; tune them there
+> first, then copy across.
 
 ### B. Collecting rim points in step space (`FrmVision.cs`, "Add Edge")
 
