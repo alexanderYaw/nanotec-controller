@@ -133,7 +133,8 @@ namespace NanotecController
         // the per-feature setter, and persists. Returns false (with display text) on a fit/save failure;
         // on success, text is the result readout and centre is set. The grab callbacks differ per
         // detector (overlay + type), but the compute and go-to halves are identical modulo label/field.
-        private bool TryComputeAndSaveCentre(CentreFinder finder, string label, Action<long, long> store,
+        private bool TryComputeAndSaveCentre(CentreFinder finder, string label,
+                                             Action<long, long, CircleFit.Result> store,
                                              out (long X, long Y)? centre, out string text)
         {
             centre = null;
@@ -144,7 +145,7 @@ namespace NanotecController
             }
             if (_owner != null)
             {
-                store(cx, cy);
+                store(cx, cy, fit);
                 try { _owner.Calibration.Save(); }
                 catch (Exception ex) { text = $"Computed but SAVE failed:\r\n{ex.Message}"; return false; }
             }
@@ -171,7 +172,7 @@ namespace NanotecController
         private void ComputeWaferCentre()
         {
             bool ok = TryComputeAndSaveCentre(_waferFinder, "Wafer",
-                (x, y) => { _owner!.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
+                (x, y, fit) => { _owner!.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
                 out (long X, long Y)? centre, out string text);
             if (ok)
             {
@@ -243,16 +244,28 @@ namespace NanotecController
                 _edgeList.Items.Add($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
             _edgeList.EndUpdate();
             if (sel >= 0 && sel < _edgeList.Items.Count) _edgeList.SelectedIndex = sel;
-            _centreBtn.Enabled = _chuckFinder.Count >= 3;
-            _edgeClearBtn.Enabled = _chuckFinder.Count > 0;
-            _edgeDeleteBtn.Enabled = _edgeList.SelectedIndex >= 0;
+            // Everything that edits the point set is locked out while the auto centre-find is
+            // collecting into it (RefreshAutoUi routes through here, so this is the single gate).
+            bool manual = !_autoRunning;
+            _edgeBtn.Enabled = manual && _view.IsCameraOpen;
+            _edgeAtCrossBtn.Enabled = manual && _view.IsCameraOpen;
+            _centreBtn.Enabled = manual && _chuckFinder.Count >= 3;
+            _edgeClearBtn.Enabled = manual && _chuckFinder.Count > 0;
+            _edgeDeleteBtn.Enabled = manual && _edgeList.SelectedIndex >= 0;
         }
 
         // Circle-fits the chuck edge points (step space) and persists the centre.
         private void ComputeCentre()
         {
             bool ok = TryComputeAndSaveCentre(_chuckFinder, "Chuck",
-                (x, y) => { _owner!.Calibration.ChuckCenterX = x; _owner.Calibration.ChuckCenterY = y; },
+                (x, y, fit) =>
+                {
+                    _owner!.Calibration.ChuckCenterX = x;
+                    _owner.Calibration.ChuckCenterY = y;
+                    // Persisted so the auto centre-find's nominal radius — which arms its travel guard
+                    // — defaults from a measurement instead of being re-typed each session.
+                    _owner.Calibration.ChuckRadius = (long)Math.Round(fit.Radius);
+                },
                 out (long X, long Y)? centre, out string text);
             if (ok)
             {
