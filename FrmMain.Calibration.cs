@@ -98,6 +98,37 @@ namespace NanotecController
         }
 
         /// <summary>
+        /// Reads X and Y from the drives RIGHT NOW (USER frame), bypassing the <see cref="_lastPos"/>
+        /// cache, and refreshes that cache. The cache is fed by statusTimer, which RunDriveOp stops for
+        /// the duration of every drive op and only restarts on BusyScope.Dispose — so for at least one
+        /// timer period after an awaited move it still holds the PRE-MOVE position. The manual
+        /// centre-find never noticed (the operator clicks with the stage long parked), but the auto
+        /// centre-find pairs a position with a freshly-grabbed frame: a stale M would build every rim
+        /// point E = M + A·(p_cross − p_edge) against the wrong place. False if the link is down, an
+        /// op is in progress, or the read fails.
+        /// </summary>
+        public bool TryReadUserXyNow(out long x, out long y)
+        {
+            x = y = 0;
+            if (!CanCaptureCalibration) return false;
+            try
+            {
+                long rawX = _motion!.GetStatus(AxisId.X).Position;
+                long rawY = _motion.GetStatus(AxisId.Y).Position;
+                _lastPos[AxisId.X] = rawX;
+                _lastPos[AxisId.Y] = rawY;
+                x = ToUser(AxisId.X, rawX);
+                y = ToUser(AxisId.Y, rawY);
+                return true;
+            }
+            catch (DriveException ex)
+            {
+                AppendLog($"ERROR: read X/Y position: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// An axis's travel limits in the USER frame, or null if both ends aren't set. The Y
         /// negation flips min/max order, so they're re-sorted before returning.
         /// </summary>

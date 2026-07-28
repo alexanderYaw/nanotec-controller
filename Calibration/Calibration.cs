@@ -63,6 +63,11 @@ namespace NanotecController
         public long? ChuckCenterX { get; set; }
         public long? ChuckCenterY { get; set; }
 
+        /// <summary>Chuck radius in motor steps, or null until a centre-find has measured one. Written
+        /// from the circle fit's radius; read back as the auto centre-find's nominal radius, which arms
+        /// its travel guard and its approach jump. Persisted so the guard survives a restart.</summary>
+        public long? ChuckRadius { get; set; }
+
         /// <summary>Wafer centre in motor steps (USER frame), or null until found — same meaning as
         /// the chuck centre but circle-fit from WAFER rim points. Kept separate from the chuck centre.</summary>
         public long? WaferCenterX { get; set; }
