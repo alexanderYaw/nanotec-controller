@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
@@ -70,33 +71,45 @@ namespace NanotecController
             var tcs = new TaskCompletionSource<AutoDetection>(TaskCreationOptions.RunContinuationsAsynchronously);
             _view.RequestFrame(frame =>
             {
-                HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
-                double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
-                bool found;
-                ChuckEdgeDetector.EdgePoint edge;
-                try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
-                catch (HOperatorException) { found = false; edge = default; }
-
-                var result = new AutoDetection(found, edge.Row, edge.Column, crossRow, crossCol, fw.D, fh.D);
-                _view.PostFrameBitmap(frame, flip: false, raw =>
+                // The WHOLE job body is guarded: anything that escapes here is swallowed by GrabLoop,
+                // which would leave the TCS uncompleted and stall the probe for the full timeout.
+                // GetImageSize sitting outside this try was exactly that hole.
+                try
                 {
-                    if (IsDisposed) { raw.Dispose(); tcs.TrySetResult(result); return; }
-                    if (found)
+                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                    bool found;
+                    ChuckEdgeDetector.EdgePoint edge;
+                    try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
+                    catch (HOperatorException) { found = false; edge = default; }
+
+                    var result = new AutoDetection(found, edge.Row, edge.Column, crossRow, crossCol, fw.D, fh.D);
+                    _view.PostFrameBitmap(frame, flip: false, raw =>
                     {
-                        DrawEdgeOverlay(raw, new ChuckEdgeDetector.EdgePoint(result.Row, result.Column), crossRow, crossCol);
-                    }
-                    else
-                    {
-                        using var g = Graphics.FromImage(raw);
-                        VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
-                    }
-                    ShowCaptured(raw);
-                    tcs.TrySetResult(result);
-                });
+                        if (IsDisposed) { raw.Dispose(); tcs.TrySetResult(result); return; }
+                        if (found)
+                        {
+                            DrawEdgeOverlay(raw, new ChuckEdgeDetector.EdgePoint(result.Row, result.Column), crossRow, crossCol);
+                        }
+                        else
+                        {
+                            using var g = Graphics.FromImage(raw);
+                            VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
+                        }
+                        ShowCaptured(raw);
+                        tcs.TrySetResult(result);
+                    });
+                }
+                catch (HOperatorException) { tcs.TrySetResult(default); }
             });
 
-            Task done = await Task.WhenAny(tcs.Task, Task.Delay(AUTO_GRAB_TIMEOUT_MS));
-            return ReferenceEquals(done, tcs.Task) ? tcs.Task.Result : default;
+            // Cancel the timeout on the fast path: an uncancelled Task.Delay keeps a live timer (and
+            // everything its continuation captures) for the full 8 s on EVERY hop of every probe.
+            using var timeout = new CancellationTokenSource();
+            Task done = await Task.WhenAny(tcs.Task, Task.Delay(AUTO_GRAB_TIMEOUT_MS, timeout.Token));
+            if (!ReferenceEquals(done, tcs.Task)) return default;
+            timeout.Cancel();
+            return await tcs.Task;
         }
 
         // --- Motion helpers ---------------------------------------------------------
@@ -105,14 +118,14 @@ namespace NanotecController
         // reports nothing back (an out-of-range target just logs "Move cancelled" and completes), so
         // arrival is verified by the caller against a fresh position read.
         private Task MoveToUserAsync(double x, double y)
-            => _owner!.MoveToAsync(((long)Math.Round(x)).ToString(), ((long)Math.Round(y)).ToString(), "");
+            => _owner.MoveToAsync(((long)Math.Round(x)).ToString(), ((long)Math.Round(y)).ToString(), "");
 
         // Pre-flight bounds check against the STORED travel envelope. The drives' own soft limits read
         // a fake ±9999999, so this — plus the radius guard — is the whole of the protection.
         private bool WithinTravel(double x, double y, out string why)
         {
             why = "";
-            if (_owner!.UserLimits(AxisId.X) is { } bx && (x < bx.min || x > bx.max))
+            if (_owner.UserLimits(AxisId.X) is { } bx && (x < bx.min || x > bx.max))
             { why = $"target X {x:F0} outside travel {bx.min:N0}..{bx.max:N0}"; return false; }
             if (_owner.UserLimits(AxisId.Y) is { } by && (y < by.min || y > by.max))
             { why = $"target Y {y:F0} outside travel {by.min:N0}..{by.max:N0}"; return false; }
@@ -166,7 +179,7 @@ namespace NanotecController
                 // Fresh read, NOT TryCurrentUser: the cached position is stale for at least one status
                 // period after every move (RunDriveOp pauses that timer), and this M is what every rim
                 // point is built from.
-                if (!_owner!.TryReadUserXyNow(out long mx, out long my))
+                if (!_owner.TryReadUserXyNow(out long mx, out long my))
                 {
                     AutoLog($"{label}: motor position unavailable — run aborted.");
                     return (ProbeOutcome.Aborted, default);
@@ -206,7 +219,7 @@ namespace NanotecController
 
         private async Task RunAutoCentreAsync()
         {
-            if (_owner == null || _autoRunning) return;
+            if (_autoRunning) return;
 
             PixelStepAffine? a = _owner.Calibration.PixelStep;
             if (a == null) { _status.Text = "Auto centre-find: needs the camera-scale calibration first."; return; }
@@ -237,6 +250,11 @@ namespace NanotecController
             _autoCancel = false;
             _autoRunning = true;
             RefreshAutoUi();
+            // Lock the MAIN window's manual controls too: _autoRunning only gates this window's
+            // buttons, and between hops FrmMain's own busy flag is clear, so the d-pad and the
+            // polled analog joystick would otherwise stay live and could move the stage between a
+            // move and the capture paired with it.
+            using IDisposable hostLock = _owner.BeginExternalOp("Auto chuck centre-find");
             try { await AutoCentreCoreAsync(a, rNom); }
             finally
             {
@@ -263,7 +281,7 @@ namespace NanotecController
             double hop = HopSteps(a, start.FrameW, start.FrameH);
             if (hop < 1.0) { _status.Text = "Auto centre-find: the calibration affine gives a degenerate hop size."; return; }
 
-            if (!_owner!.TryReadUserXyNow(out long c0x, out long c0y))
+            if (!_owner.TryReadUserXyNow(out long c0x, out long c0y))
             { _status.Text = "Auto centre-find: motor position unavailable — connect & enable."; return; }
             (double X, double Y) c0 = (c0x, c0y);
 
@@ -304,7 +322,7 @@ namespace NanotecController
             // The radius is the MEAN DISTANCE of the four cardinal points from C₁ — not half the N–S
             // span. Each E lies on the rim by construction, so |E − C₁| is the radius once C₁ is right,
             // whereas the N–S span shortens to 2·√(R²−δ²) when the start was offset laterally by δ.
-            var points = new List<(double X, double Y)> { eN, eS, eE, eW };
+            List<(double X, double Y)> points = [eN, eS, eE, eW];
             double r1 = 0;
             foreach ((double X, double Y) p in points) r1 += Dist(p, c1);
             r1 /= points.Count;
@@ -319,10 +337,10 @@ namespace NanotecController
             // ---- Stage C: four diagonals from C₁, now with the approach jump ----
             double tightLo = 0.7 * r1, tightHi = 1.3 * r1, jump = AUTO_APPROACH_R * r1;
             double k = Math.Sqrt(0.5);
-            var diagonals = new (double X, double Y, string Label)[]
-            {
+            (double X, double Y, string Label)[] diagonals =
+            [
                 (k, k, "NE"), (-k, k, "NW"), (-k, -k, "SW"), (k, -k, "SE"),
-            };
+            ];
             foreach ((double X, double Y, string Label) d in diagonals)
             {
                 (ProbeOutcome o, (double X, double Y) e) =
@@ -396,7 +414,7 @@ namespace NanotecController
         {
             if (!_autoRunning) return;
             _autoCancel = true;
-            _owner?.RequestStop();   // halts an in-flight move; the probe loop sees the flag next hop
+            _owner.RequestStop();   // halts an in-flight move; the probe loop sees the flag next hop
             _status.Text = "Auto centre-find: cancelling...";
         }
 

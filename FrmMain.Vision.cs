@@ -201,7 +201,7 @@ namespace NanotecController
 
         public void VisionJogUser(int vxUser, int vyUser)
         {
-            if (_motion == null || !_drivesEnabled || _busy) return;
+            if (!ManualInputAllowed) return;
             CommandAxisVelocity(AxisId.X, vxUser, honorSoftLimit: true);
             CommandAxisVelocity(AxisId.Y, vyUser, honorSoftLimit: true);
         }

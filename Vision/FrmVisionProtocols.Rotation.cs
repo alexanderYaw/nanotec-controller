@@ -9,7 +9,7 @@ namespace NanotecController
     public sealed partial class FrmVisionProtocols
     {
         private void RefreshSignLabel()
-            => _signLabel.Text = _owner?.RotationSign is int s ? $"Handedness: {s:+0;-0}" : "Handedness: not set";
+            => _signLabel.Text = _owner.RotationSign is int s ? $"Handedness: {s:+0;-0}" : "Handedness: not set";
 
         // Fixes the image handedness empirically: rotate a small angle about the crosshair with
         // the current assumed sign, ask whether the crosshair point stayed pinned, then rotate
@@ -17,7 +17,6 @@ namespace NanotecController
         // swung away instead of staying put, the sign was wrong and gets flipped.
         private async Task SignTestAsync()
         {
-            if (_owner == null) return;
             const double testDeg = 6.0;
             if (MessageBox.Show(this,
                     $"Sign test rotates ~{testDeg}° about the crosshair and back.\r\n" +

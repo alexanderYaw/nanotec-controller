@@ -36,11 +36,11 @@ namespace NanotecController
         // by ~±90 while every other channel stayed at noise), but it drives the Θ axis. The X/Y pots read
         // on their own drives. (The Θ drive's own AI1 is the dead channel that sits at ~6.)
         private static readonly (AxisId cmd, AxisId pot, int sign)[] AnalogAxes =
-        {
+        [
             (AxisId.X,     AxisId.X, +1),   // inverted 2026-07-08 (was −1) — X ran backwards on the bench
             (AxisId.Y,     AxisId.Y, +1),
             (AxisId.Theta, AxisId.Z, +1),   // twist pot lives on the Z drive's AI1; sign flips if Θ turns the wrong way
-        };
+        ];
 
         // VISION-mode stick→screen mapping. In VISION jog mode the stick does NOT drive raw X/Y;
         // its deflection is read as a SCREEN-space direction (right+/up+) and fed through the
@@ -87,9 +87,7 @@ namespace NanotecController
         private void TickAnalogJoystick()
         {
             if (_motion == null) return;
-            bool enabled = _drivesEnabled && !_busy;
-
-            ProbeAnalogInputs();   // TEMP: Θ-wiring verification (remove once the twist pot's drive is confirmed)
+            bool enabled = ManualInputAllowed;   // also false during an external op (auto centre-find)
 
             // Read every pot + keep auto-centring (they all finish on the same tick — they start together
             // at ResetJoy). Bail on a read error; wait until all centres are captured before moving.
@@ -268,47 +266,6 @@ namespace NanotecController
             _lastAnalogVel[id] = vel;
             CommandAxisVelocity(id, vel, honorSoftLimit: false);   // block already applied above
         }
-
-        // --- TEMP Θ-wiring probe ---------------------------------------------------------
-        // Logs BOTH analogue inputs (0x3220:01 and 0x3220:02) of all four drives about once a
-        // second so twisting the joystick knob reveals which channel the twist pot is wired to.
-        // AI1 showed nothing on twist, so the twist pot is likely on AI2 (or a drive without it
-        // reads "—"). X and Y already move on stick push; the twist should move exactly one cell.
-        // Once the Θ pot's channel is confirmed, DELETE this method and its call in TickAnalogJoystick.
-        private int _aiProbeTick;
-        // Running min/max per (drive, analog-input) since the last source-select, so a twist that
-        // moves a channel only a little still shows up as a span. Cleared in ResetJoy (ResetAiSpans).
-        private readonly Dictionary<(AxisId, byte), (int min, int max)> _aiSpan = new();
-        private void ProbeAnalogInputs()
-        {
-            // Sample every tick (50 ms) so brief deflections are caught in the span.
-            foreach (AxisId id in new[] { AxisId.X, AxisId.Y, AxisId.Z, AxisId.Theta })
-                for (byte sub = 0x01; sub <= 0x02; sub++)
-                {
-                    if (!TryReadAi(id, sub, out int v)) continue;
-                    var key = (id, sub);
-                    if (_aiSpan.TryGetValue(key, out var mm)) _aiSpan[key] = (Math.Min(mm.min, v), Math.Max(mm.max, v));
-                    else                                      _aiSpan[key] = (v, v);
-                }
-
-            if (++_aiProbeTick % 20 != 0) return;   // print ~1 Hz
-            for (byte sub = 0x01; sub <= 0x02; sub++)
-                AppendLog($"AI{sub} span — X:{SpanText(AxisId.X, sub)}  Y:{SpanText(AxisId.Y, sub)}  " +
-                          $"Z:{SpanText(AxisId.Z, sub)}  Θ:{SpanText(AxisId.Theta, sub)}");
-        }
-
-        // "min..max(Δspan)" for one channel, or "—" if it hasn't read. A channel wired to whatever
-        // you're moving shows a large Δ; a flat channel shows Δ0.
-        private string SpanText(AxisId id, byte sub)
-            => _aiSpan.TryGetValue((id, sub), out var mm) ? $"{mm.min}..{mm.max}(Δ{mm.max - mm.min})" : "—";
-
-        private bool TryReadAi(AxisId id, byte sub, out int value)
-        {
-            try { value = (short)_motion!.GetObject(id, 0x3220, sub); return true; }
-            catch (DriveException) { value = 0; return false; }
-        }
-
-        private void ResetAiSpans() => _aiSpan.Clear();
 
         // Stops any axis the analog joystick was driving and clears its last-command cache.
         private void StopAnalogAxes()

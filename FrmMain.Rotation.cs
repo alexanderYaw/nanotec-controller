@@ -137,8 +137,15 @@ namespace NanotecController
                 AppendLog("Rotate: needs drives enabled, the camera-scale calibration, and a chuck centre.");
                 return;
             }
+            // CHUCK angle, not motor angle: Θ turns through a ~9:1 reduction, so this must fold
+            // through ChuckTicksPerRev — the same constant DegreesToChuckTicks uses below. (Reading
+            // it in the motor frame made the two ends of this calculation disagree by that factor.)
             double current;
-            try { current = _motion!.GetStatus(AxisId.Theta).AngleDegrees; }
+            try
+            {
+                current = CrosshairRotation.ChuckTicksToDegrees(
+                    _motion!.GetStatus(AxisId.Theta).Position, CrosshairRotation.ChuckTicksPerRev);
+            }
             catch (DriveException ex) { AppendLog($"Rotate: read Θ failed: {ex.Message}"); return; }
 
             // Shortest signed delta into (-180, +180].
@@ -196,23 +203,27 @@ namespace NanotecController
                 _motion.RecoverIfQuickStopped(AxisId.Y);
 
                 thetaStart = _motion.GetStatus(AxisId.Theta).Position;
-                // Rotation-specific drive ramps (saved here, restored in finally) so each velocity
-                // update is reached within a tick instead of chased on the drives' default ramp.
+                // Rotation-specific drive ramps (READ here, applied + restored inside the guard below)
+                // so each velocity update is reached within a tick instead of chased on the drives'
+                // default ramp. Only these reads may sit outside the try: everything that MUTATES drive
+                // state or starts motion goes inside it, so a throw part-way through arming can never
+                // leave an axis turning with no finally to stop it.
                 var savedRampTheta = _motion.GetProfileRamp(AxisId.Theta);
                 var savedRampX = _motion.GetProfileRamp(AxisId.X);
                 var savedRampY = _motion.GetProfileRamp(AxisId.Y);
-                _motion.SetProfileRamp(AxisId.Theta, ROTATE_THETA_ACCEL, ROTATE_THETA_ACCEL);
-                _motion.SetProfileRamp(AxisId.X, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
-                _motion.SetProfileRamp(AxisId.Y, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
-                // Arm all three axes in profile-velocity run state ONCE; inside the loop only the
-                // 0x60FF target is rewritten (UpdateJogVelocity). Re-sending mode + controlword every
-                // tick was ~2/3 of the loop's SDO traffic and a big source of period jitter.
-                _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_MIN_SPEED);   // Θ soft-ramps inside the loop
-                _motion.JogAt(AxisId.X, +1, 0);   // X/Y armed at zero velocity (servo hold, no halt)
-                _motion.JogAt(AxisId.Y, +1, 0);
-                _followVelX = 0; _followVelY = 0;
                 try
                 {
+                    _motion.SetProfileRamp(AxisId.Theta, ROTATE_THETA_ACCEL, ROTATE_THETA_ACCEL);
+                    _motion.SetProfileRamp(AxisId.X, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
+                    _motion.SetProfileRamp(AxisId.Y, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
+                    // Arm all three axes in profile-velocity run state ONCE; inside the loop only the
+                    // 0x60FF target is rewritten (UpdateJogVelocity). Re-sending mode + controlword every
+                    // tick was ~2/3 of the loop's SDO traffic and a big source of period jitter.
+                    _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_MIN_SPEED);   // Θ soft-ramps inside the loop
+                    _motion.JogAt(AxisId.X, +1, 0);   // X/Y armed at zero velocity (servo hold, no halt)
+                    _motion.JogAt(AxisId.Y, +1, 0);
+                    _followVelX = 0; _followVelY = 0;
+
                     bool thetaDone = false;
                     int lastThetaCmd = ROTATE_THETA_MIN_SPEED;
                     int elapsed = 0, settled = 0;
@@ -439,23 +450,25 @@ namespace NanotecController
                 long s0x = ToUser(AxisId.X, _motion.GetPosition(AxisId.X));   // live start pose (USER frame)
                 long s0y = ToUser(AxisId.Y, _motion.GetPosition(AxisId.Y));
                 long thetaStart = _motion.GetStatus(AxisId.Theta).Position;
-                // Rotation-specific drive ramps (saved here, restored in finally) so each velocity
-                // update is reached within a tick instead of chased on the drives' default ramp.
+                // Rotation-specific drive ramps (READ here, applied + restored inside the guard below)
+                // so each velocity update is reached within a tick instead of chased on the drives'
+                // default ramp. Only these reads may sit outside the try — see the fixed-angle rotate.
                 var savedRampTheta = _motion.GetProfileRamp(AxisId.Theta);
                 var savedRampX = _motion.GetProfileRamp(AxisId.X);
                 var savedRampY = _motion.GetProfileRamp(AxisId.Y);
-                _motion.SetProfileRamp(AxisId.Theta, ROTATE_THETA_ACCEL, ROTATE_THETA_ACCEL);
-                _motion.SetProfileRamp(AxisId.X, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
-                _motion.SetProfileRamp(AxisId.Y, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
-                // Arm all three once (see the fixed-angle rotate); the loop then only rewrites
-                // 0x60FF. Θ soft-ramps up over RAMP_MS and — on release — back down over RAMP_MS
-                // before halting, so hold-to-rotate no longer swings out at either end.
-                _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_MIN_SPEED);
-                _motion.JogAt(AxisId.X, +1, 0);   // X/Y armed at zero velocity (servo hold, no halt)
-                _motion.JogAt(AxisId.Y, +1, 0);
-                _followVelX = 0; _followVelY = 0;
                 try
                 {
+                    _motion.SetProfileRamp(AxisId.Theta, ROTATE_THETA_ACCEL, ROTATE_THETA_ACCEL);
+                    _motion.SetProfileRamp(AxisId.X, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
+                    _motion.SetProfileRamp(AxisId.Y, ROTATE_XY_ACCEL, ROTATE_XY_ACCEL);
+                    // Arm all three once (see the fixed-angle rotate); the loop then only rewrites
+                    // 0x60FF. Θ soft-ramps up over RAMP_MS and — on release — back down over RAMP_MS
+                    // before halting, so hold-to-rotate no longer swings out at either end.
+                    _motion.JogAt(AxisId.Theta, thetaDir, ROTATE_THETA_MIN_SPEED);
+                    _motion.JogAt(AxisId.X, +1, 0);   // X/Y armed at zero velocity (servo hold, no halt)
+                    _motion.JogAt(AxisId.Y, +1, 0);
+                    _followVelX = 0; _followVelY = 0;
+
                     // On release, Θ's setpoint ramps down and is then stopped, but we keep following
                     // X/Y to Θ's ACTUAL final angle (including its decel coast) until X/Y catches up —
                     // same settle as the fixed rotate, so the feature ends pinned instead of drifting.

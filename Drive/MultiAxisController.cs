@@ -43,8 +43,18 @@ namespace NanotecController
 
         public bool Has(AxisId id) => _axes.ContainsKey(id);
 
-        /// <summary>Direct access to a single axis (e.g. for homing or status).</summary>
-        public AxisDriver this[AxisId id] => _axes[id];
+        /// <summary>
+        /// Direct access to a single axis (e.g. for homing or status). Throws
+        /// <see cref="DriveException"/> — not KeyNotFoundException — for an axis that isn't in the
+        /// config, so a mapping slip surfaces through the same <c>catch (DriveException)</c> every
+        /// caller already has instead of escaping as an unhandled crash.
+        /// </summary>
+        public AxisDriver this[AxisId id] => Axis(id);
+
+        private AxisDriver Axis(AxisId id)
+            => _axes.TryGetValue(id, out AxisDriver? a)
+                ? a
+                : throw new DriveException($"Axis {id} is not connected (not in the axis map).");
 
         // --- Enable / disable -----------------------------------------------------
 
@@ -74,7 +84,7 @@ namespace NanotecController
         /// </summary>
         public bool RecoverIfQuickStopped(AxisId id)
         {
-            AxisDriver axis = _axes[id];
+            AxisDriver axis = Axis(id);
             if (!axis.IsQuickStopped()) return false;
             axis.EnableDrive(true);
             return true;
@@ -89,7 +99,7 @@ namespace NanotecController
         /// </summary>
         public void JogAt(AxisId id, int direction, int speed)
         {
-            AxisDriver axis = _axes[id];
+            AxisDriver axis = Axis(id);
             if (direction == 0) { axis.StopManualJog(); return; }
             int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
             axis.StartManualJog(speed * sign);
@@ -104,19 +114,19 @@ namespace NanotecController
         /// </summary>
         public void UpdateJogVelocity(AxisId id, int direction, int speed)
         {
-            AxisDriver axis = _axes[id];
+            AxisDriver axis = Axis(id);
             int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
             axis.UpdateJogVelocity(speed * sign);
         }
 
         /// <summary>Current profile accel/decel (0x6083/0x6084) of one axis, for save/restore.</summary>
-        public (long Accel, long Decel) GetProfileRamp(AxisId id) => _axes[id].GetProfileRamp();
+        public (long Accel, long Decel) GetProfileRamp(AxisId id) => Axis(id).GetProfileRamp();
 
         /// <summary>Sets profile accel/decel (0x6083/0x6084) of one axis, in counts/s² (see
         /// <see cref="AxisDriver.SetProfileRamp"/>).</summary>
-        public void SetProfileRamp(AxisId id, long accel, long decel) => _axes[id].SetProfileRamp(accel, decel);
+        public void SetProfileRamp(AxisId id, long accel, long decel) => Axis(id).SetProfileRamp(accel, decel);
 
-        public void Stop(AxisId id) => _axes[id].StopManualJog();
+        public void Stop(AxisId id) => Axis(id).StopManualJog();
 
         /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>
         public void StopAll()
@@ -130,37 +140,37 @@ namespace NanotecController
         // --- Positioning (Profile Position) ---------------------------------------
 
         public void MoveAbsolute(AxisId id, long targetPosition, int profileVelocity)
-            => _axes[id].MoveAbsolute(targetPosition, profileVelocity);
+            => Axis(id).MoveAbsolute(targetPosition, profileVelocity);
 
         public void MoveRelative(AxisId id, long deltaPosition, int profileVelocity)
-            => _axes[id].MoveRelative(deltaPosition, profileVelocity);
+            => Axis(id).MoveRelative(deltaPosition, profileVelocity);
 
         public bool WaitForMotionComplete(AxisId id, int timeoutMs, Func<bool>? cancel = null)
-            => _axes[id].WaitForMotionComplete(timeoutMs, cancel);
+            => Axis(id).WaitForMotionComplete(timeoutMs, cancel);
 
         // --- Status ----------------------------------------------------------------
 
-        public AxisDriver.AxisStatus GetStatus(AxisId id) => _axes[id].GetStatus();
+        public AxisDriver.AxisStatus GetStatus(AxisId id) => Axis(id).GetStatus();
 
         /// <summary>Position-only read (one SDO transaction) for fast follow loops.</summary>
-        public long GetPosition(AxisId id) => _axes[id].GetPosition();
+        public long GetPosition(AxisId id) => Axis(id).GetPosition();
 
         /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
-        public long GetDigitalInputs(AxisId id) => _axes[id].ReadDigitalInputs();
+        public long GetDigitalInputs(AxisId id) => Axis(id).ReadDigitalInputs();
 
         /// <summary>Analogue input 1 (0x3220:01) of one axis's drive — the wired analog joystick pot.</summary>
-        public int GetAnalogInput1(AxisId id) => _axes[id].ReadAnalogInput1();
+        public int GetAnalogInput1(AxisId id) => Axis(id).ReadAnalogInput1();
 
         // --- Expert: arbitrary object write + NV save (the "Write Object" console) -----
 
         /// <summary>Writes an arbitrary OD entry on one axis. Expert/manual use only.</summary>
         public void WriteObject(AxisId id, ushort index, byte subIndex, long value, uint bitLength)
-            => _axes[id].WriteObject(index, subIndex, value, bitLength);
+            => Axis(id).WriteObject(index, subIndex, value, bitLength);
 
         /// <summary>Reads an arbitrary OD entry on one axis (read counterpart to <see cref="WriteObject"/>).</summary>
-        public long GetObject(AxisId id, ushort index, byte subIndex) => _axes[id].ReadObject(index, subIndex);
+        public long GetObject(AxisId id, ushort index, byte subIndex) => Axis(id).ReadObject(index, subIndex);
 
         /// <summary>Persists one axis's current parameters to non-volatile memory (0x1010:01 = "save").</summary>
-        public void SaveParametersToNV(AxisId id) => _axes[id].SaveParametersToNV();
+        public void SaveParametersToNV(AxisId id) => Axis(id).SaveParametersToNV();
     }
 }

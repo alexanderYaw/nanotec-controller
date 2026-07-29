@@ -29,6 +29,11 @@ namespace NanotecController
         /// <summary>Aborts any preplanned move in progress. Cooperative — it only sets a flag; the
         /// running op notices at its next poll and halts the drives on its own thread.</summary>
         void RequestStop();
+        /// <summary>Locks out the host's MANUAL motion controls (jog buttons, joystick poll, puck,
+        /// relative moves) for the lifetime of the returned scope. For a caller running a LONG
+        /// SEQUENCE of moves — the auto centre-find — where the host's own per-op busy flag drops
+        /// between steps and would otherwise re-enable manual input mid-run.</summary>
+        IDisposable BeginExternalOp(string what);
         void SetCalibrationMin(AxisId id);
         void SetCalibrationMax(AxisId id);
         void SetCalibrationHome(AxisId id);

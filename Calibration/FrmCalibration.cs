@@ -15,7 +15,7 @@ namespace NanotecController
     /// </summary>
     public sealed class FrmCalibration : Form
     {
-        private static readonly AxisId[] CalibAxes = { AxisId.X, AxisId.Y, AxisId.Z };
+        private static readonly AxisId[] CalibAxes = [AxisId.X, AxisId.Y, AxisId.Z];
 
         private readonly IMotionHost _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };

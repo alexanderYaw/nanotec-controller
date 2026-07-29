@@ -42,14 +42,14 @@ namespace NanotecController
                 _status.Text = "Edge: chuck edge NOT found — reframe so the edge crosses the view (tune in HDevelop).";
                 return;
             }
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            PixelStepAffine? a = _owner.Calibration.PixelStep;
             if (a == null)
             {
                 ShowCaptured(raw);
                 _status.Text = "Edge: needs the camera-scale calibration first.";
                 return;
             }
-            if (!_owner!.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
+            if (!_owner.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
             {
                 ShowCaptured(raw);
                 _status.Text = "Edge: motor position unavailable — connect & enable.";
@@ -87,14 +87,14 @@ namespace NanotecController
                 _status.Text = "Wafer edge NOT found — adjust lighting or tune WaferEdgeDetector (WaferIsBrighter / radii).";
                 return;
             }
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            PixelStepAffine? a = _owner.Calibration.PixelStep;
             if (a == null)
             {
                 ShowCaptured(raw);
                 _status.Text = "Wafer edge: needs the camera-scale calibration first.";
                 return;
             }
-            if (!_owner!.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
+            if (!_owner.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
             {
                 ShowCaptured(raw);
                 _status.Text = "Wafer edge: motor position unavailable — connect & enable.";
@@ -143,12 +143,9 @@ namespace NanotecController
                 text = "Fit failed:\r\n" + err;
                 return false;
             }
-            if (_owner != null)
-            {
-                store(cx, cy, fit);
-                try { _owner.Calibration.Save(); }
-                catch (Exception ex) { text = $"Computed but SAVE failed:\r\n{ex.Message}"; return false; }
-            }
+            store(cx, cy, fit);
+            try { _owner.Calibration.Save(); }
+            catch (Exception ex) { text = $"Computed but SAVE failed:\r\n{ex.Message}"; return false; }
             centre = (cx, cy);
             text = $"{label} (N={finder.Count}): X={cx} Y={cy}\r\nR={fit.Radius:F0}  RMS={fit.RmsError:F0} steps";
             return true;
@@ -157,7 +154,7 @@ namespace NanotecController
         // Shared "Go to centre": confirm, then issue the absolute X/Y move (Z unchanged) via FrmMain.
         private async Task GoToCentreAsync(string label, (long X, long Y)? centre)
         {
-            if (_owner == null || centre == null) return;
+            if (centre == null) return;
             long cx = centre.Value.X, cy = centre.Value.Y;
             if (MessageBox.Show(this,
                     $"Move the {label} centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
@@ -172,7 +169,7 @@ namespace NanotecController
         private void ComputeWaferCentre()
         {
             bool ok = TryComputeAndSaveCentre(_waferFinder, "Wafer",
-                (x, y, fit) => { _owner!.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
+                (x, y, fit) => { _owner.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
                 out (long X, long Y)? centre, out string text);
             if (ok)
             {
@@ -191,7 +188,6 @@ namespace NanotecController
         // frame purely to show the crosshair on the captured pane as a record.
         private void AddEdgeAtCrosshair()
         {
-            if (_owner == null) return;
             if (!_owner.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
             {
                 _status.Text = "Edge: motor position unavailable — connect & enable.";
@@ -260,7 +256,7 @@ namespace NanotecController
             bool ok = TryComputeAndSaveCentre(_chuckFinder, "Chuck",
                 (x, y, fit) =>
                 {
-                    _owner!.Calibration.ChuckCenterX = x;
+                    _owner.Calibration.ChuckCenterX = x;
                     _owner.Calibration.ChuckCenterY = y;
                     // Persisted so the auto centre-find's nominal radius — which arms its travel guard
                     // — defaults from a measurement instead of being re-typed each session.

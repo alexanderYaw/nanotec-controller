@@ -1,7 +1,6 @@
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
 using HalconDotNet;
 
 namespace NanotecController
@@ -74,7 +73,7 @@ namespace NanotecController
             }
         }
 
-        private static Bitmap FromGray(HObject image)
+        private static unsafe Bitmap FromGray(HObject image)
         {
             HOperatorSet.GetImagePointer1(image, out HTuple ptr, out _, out HTuple w, out HTuple h);
             int width = w.I, height = h.I;
@@ -88,46 +87,44 @@ namespace NanotecController
                 ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
             try
             {
-                // HALCON rows are contiguous (width bytes); the Bitmap stride is padded.
-                var row = new byte[width];
+                // HALCON rows are contiguous (width bytes); the Bitmap stride is padded. Copy each
+                // row straight across rather than bouncing through a managed staging buffer.
+                byte* src = (byte*)ptr.IP;
                 for (int y = 0; y < height; y++)
-                {
-                    Marshal.Copy(IntPtr.Add(ptr.IP, y * width), row, 0, width);
-                    Marshal.Copy(row, 0, IntPtr.Add(bd.Scan0, y * bd.Stride), width);
-                }
+                    Buffer.MemoryCopy(src + (long)y * width, (byte*)bd.Scan0 + (long)y * bd.Stride,
+                                      bd.Stride, width);
             }
             finally { bmp.UnlockBits(bd); }
             return bmp;
         }
 
-        private static Bitmap FromRgb(HObject image)
+        // HALCON stores the three channels as separate planes; interleave them to BGR directly into
+        // the locked Bitmap bits. Staging through three managed byte[width*height] planes plus a row
+        // buffer put three sensor-sized arrays on the LOH per call — and the full-res path
+        // (PostFrameBitmap / CaptureFullRes) runs twice per hop of the auto centre-find.
+        private static unsafe Bitmap FromRgb(HObject image)
         {
             HOperatorSet.GetImagePointer3(image, out HTuple r, out HTuple g, out HTuple b,
                 out _, out HTuple w, out HTuple h);
-            int width = w.I, height = h.I, n = width * height;
-
-            // HALCON stores the three channels as separate planes; interleave to BGR.
-            var rr = new byte[n]; Marshal.Copy(r.IP, rr, 0, n);
-            var gg = new byte[n]; Marshal.Copy(g.IP, gg, 0, n);
-            var bb = new byte[n]; Marshal.Copy(b.IP, bb, 0, n);
+            int width = w.I, height = h.I;
 
             var bmp = new Bitmap(width, height, PixelFormat.Format24bppRgb);
             BitmapData bd = bmp.LockBits(new Rectangle(0, 0, width, height),
                 ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
             try
             {
-                var line = new byte[bd.Stride];
+                byte* pr = (byte*)r.IP, pg = (byte*)g.IP, pb = (byte*)b.IP;
                 for (int y = 0; y < height; y++)
                 {
+                    byte* dst = (byte*)bd.Scan0 + (long)y * bd.Stride;
                     int o = y * width;
                     for (int x = 0; x < width; x++)
                     {
                         int p = o + x, q = x * 3;
-                        line[q] = bb[p];      // B
-                        line[q + 1] = gg[p];  // G
-                        line[q + 2] = rr[p];  // R
+                        dst[q] = pb[p];      // B
+                        dst[q + 1] = pg[p];  // G
+                        dst[q + 2] = pr[p];  // R
                     }
-                    Marshal.Copy(line, 0, IntPtr.Add(bd.Scan0, y * bd.Stride), bd.Stride);
                 }
             }
             finally { bmp.UnlockBits(bd); }

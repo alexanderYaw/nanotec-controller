@@ -27,7 +27,7 @@ namespace NanotecController
     /// unit conversion (counts↔mm, counts↔deg) belongs with MoveAbsolute and will
     /// read the factor-group objects (0x6091/0x6092) live from the drive.</para>
     /// </summary>
-    public sealed class AxisConfig
+    public sealed record AxisConfig
     {
         public AxisId Id { get; init; }
 
@@ -43,13 +43,10 @@ namespace NanotecController
         /// <summary>Upper limit of the per-axis jog-speed slider (drive velocity units).</summary>
         public int JogVelocityMax { get; init; } = 2000;
 
-        /// <summary>
-        /// Optional host-side soft travel limits in the drive's position units
-        /// (object 0x6064). Null disables the check. These are a convenience guard
-        /// for jogging; the drive's own limit objects (0x607D) remain authoritative.
-        /// </summary>
-        public long? MinPosition { get; init; }
-        public long? MaxPosition { get; init; }
+        // NOTE: soft travel limits are NOT here. They are captured per machine and persisted in
+        // CalibrationStore, and enforced by SoftLimitTracker. The drive's own 0x607D reads a fake
+        // ±9999999 on these units, so the stored limits are the only travel protection on the axes
+        // without a working switch — do not reintroduce a second, unenforced copy in this config.
 
         public bool InvertDirection { get; init; }
     }
@@ -63,13 +60,13 @@ namespace NanotecController
     /// </summary>
     public static class TableAxes
     {
-        public static IReadOnlyList<AxisConfig> Default { get; } = new[]
-        {
+        public static IReadOnlyList<AxisConfig> Default { get; } =
+        [
             new AxisConfig { Id = AxisId.X,     Name = "X",     BusPosition = 0, JogVelocityDefault = 4000, JogVelocityMax = 6000 },
             new AxisConfig { Id = AxisId.Y,     Name = "Y",     BusPosition = 1, JogVelocityDefault = 4000, JogVelocityMax = 12000 },
             new AxisConfig { Id = AxisId.Z,     Name = "Z",     BusPosition = 2, JogVelocityDefault = 300,  JogVelocityMax = 800, InvertDirection = true },   // Z is mounted "upside down" relative to the others, so invert its jog direction to match intuition
             new AxisConfig { Id = AxisId.Theta, Name = "Theta", BusPosition = 3, JogVelocityDefault = 400,  JogVelocityMax = 3200},
-        };
+        ];
 
         /// <summary>Axis label for a bus position (for logs / readouts). "?" if out of range.</summary>
         public static string NameForBusPosition(int busPosition)
