@@ -24,9 +24,10 @@ namespace NanotecController
         /// Converts to an 8-bit Bitmap, first shrinking (in HALCON) to fit within
         /// <paramref name="maxWidth"/>×<paramref name="maxHeight"/> if larger. Downscaling
         /// natively before the managed pixel copy is the cheapest big win for live view on a
-        /// large sensor. Pass 0,0 to keep full resolution.
+        /// large sensor. Pass 0,0 to keep full resolution. With <paramref name="enhanceMono"/>
+        /// the (downscaled) frame is collapsed to grey and contrast-stretched to full range.
         /// </summary>
-        public static Bitmap ToBitmap(HObject image, int maxWidth, int maxHeight)
+        public static Bitmap ToBitmap(HObject image, int maxWidth, int maxHeight, bool enhanceMono = false)
         {
             // Downscale the NATIVE frame FIRST, then convert to 8-bit — so the type conversion and
             // the managed pixel copy run on the small image, not the full sensor frame. Only the
@@ -34,6 +35,8 @@ namespace NanotecController
             // the downscale was about to throw away — the live view's main per-frame cost.)
             HObject? scaled = null;
             HObject? img8 = null;
+            HObject? grey = null;
+            HObject? stretched = null;
             try
             {
                 HObject work = image;
@@ -49,6 +52,14 @@ namespace NanotecController
                     }
                 }
 
+                if (enhanceMono)
+                {
+                    HOperatorSet.CountChannels(work, out HTuple ch);
+                    if (ch.I >= 3) { HOperatorSet.Rgb1ToGray(work, out grey); work = grey; }
+                    HOperatorSet.ScaleImageMax(work, out stretched);   // stretch min..max -> 0..255
+                    work = stretched;
+                }
+
                 // Normalise to 8-bit so cameras delivering e.g. uint16 still display sensibly.
                 HOperatorSet.ConvertImageType(work, out img8, "byte");
                 HOperatorSet.CountChannels(img8, out HTuple channels);
@@ -56,6 +67,8 @@ namespace NanotecController
             }
             finally
             {
+                stretched?.Dispose();
+                grey?.Dispose();
                 img8?.Dispose();
                 scaled?.Dispose();
             }

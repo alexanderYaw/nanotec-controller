@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Circle Fit Visualiser</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 5px;
+        }
+        p.subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .canvas-wrapper {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 500px;
+        }
+        h3 {
+            margin: 0 0 10px 0;
+            text-align: center;
+            font-size: 1.1em;
+        }
+        .description {
+            font-size: 0.9em;
+            text-align: center;
+            min-height: 40px;
+            margin-bottom: 15px;
+        }
+        canvas {
+            border: 1px solid #ddd;
+            background-color: #fafafa;
+        }
+        .controls {
+            margin-top: 30px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 1em;
+            background-color: #0366d6;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Error Balancing vs. Least Squares</h1>
+    <p class="subtitle">Visualizing the silent precision loss on short-arc data.</p>
+
+    <div class="container">
+        <!-- Flawed Approach Canvas -->
+        <div class="canvas-wrapper">
+            <h3 style="color: #d73a49;">Flawed: Balancing Errors (Σfᵢ = 0)</h3>
+            <div class="description">
+                Net signed error is zero, but the centre is completely unbounded. <br>
+                <b>Result: A terrible fit (nearly straight line).</b>
+            </div>
+            <canvas id="canvasBad" width="500" height="500"></canvas>
+        </div>
+
+        <!-- Robust Approach Canvas -->
+        <div class="canvas-wrapper">
+            <h3 style="color: #28a745;">Correct: Least Squares (Σfᵢ² → min)</h3>
+            <div class="description">
+                Uses the Kåsa method with centroid decoupling. <br>
+                <b>Result: A unique, stable, and accurate fit.</b>
+            </div>
+            <canvas id="canvasGood" width="500" height="500"></canvas>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button onclick="runVisualiser()">Regenerate Point Cloud</button>
+    </div>
+
+    <script>
+        // Standard Normal variate using Box-Muller transform for adding noise
+        function randomNormal(mean = 0, stdev = 1) {
+            let u = 1 - Math.random(); 
+            let v = Math.random();
+            let z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+            return z * stdev + mean;
+        }
+
+        // Generate the noisy short arc data
+        function generateData(radius, numPoints, arcAngle, noiseLevel) {
+            let points = [];
+            for (let i = 0; i < numPoints; i++) {
+                let theta = (i / (numPoints - 1)) * arcAngle;
+                let x = radius * Math.cos(theta) + randomNormal(0, noiseLevel);
+                let y = radius * Math.sin(theta) + randomNormal(0, noiseLevel);
+                points.push({x, y});
+            }
+            return points;
+        }
+
+        // Coordinate mapping to draw data within the 500x500 canvas
+        const VIEW_MIN = -5;
+        const VIEW_MAX = 15;
+        
+        function mapCoord(val, size, isY = false) {
+            let mapped = ((val - VIEW_MIN) / (VIEW_MAX - VIEW_MIN)) * size;
+            return isY ? size - mapped : mapped; // Invert Y for canvas drawing
+        }
+
+        // Drawing utility
+        function drawScene(canvasId, points, center, radius, color, drawCenterMarker = true) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+            
+            // Draw Grid
+            ctx.strokeStyle = '#eee';
+            ctx.lineWidth = 1;
+            for(let i = VIEW_MIN; i <= VIEW_MAX; i+=2) {
+                let p = mapCoord(i, width);
+                ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, height); ctx.stroke();
+                let py = mapCoord(i, height, true);
+                ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(width, py); ctx.stroke();
+            }
+
+            // Draw the Circle/Arc
+            ctx.beginPath();
+            let cx = mapCoord(center.x, width);
+            let cy = mapCoord(center.y, height, true);
+            let rCanvas = (radius / (VIEW_MAX - VIEW_MIN)) * width;
+            
+            ctx.arc(cx, cy, rCanvas, 0, 2 * Math.PI);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset line dash
+
+            // Draw Data Points
+            ctx.fillStyle = '#000';
+            for (let p of points) {
+                ctx.beginPath();
+                ctx.arc(mapCoord(p.x, width), mapCoord(p.y, height, true), 3, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+
+            // Draw Center Marker (if it's within a reasonable bounds to be seen)
+            if (drawCenterMarker && center.x > -50 && center.x < 50 && center.y > -50 && center.y < 50) {
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(cx, cy, 6, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+        }
+
+        // Main logic to execute on load and on button click
+        function runVisualiser() {
+            // Configuration
+            const trueRadius = 10;
+            const numPoints = 50;
+            const arcAngle = Math.PI / 2; // 90 degrees
+            const noiseLevel = 0.5;
+
+            // 1. Generate Data
+            const points = generateData(trueRadius, numPoints, arcAngle, noiseLevel);
+
+            // 2. BAD FIT LOGIC (Σfᵢ = 0)
+            const badCenter = {x: 100, y: 100}; // Arbitrary far-off center
+            let sumSqDist = 0;
+            for(let p of points) {
+                sumSqDist += Math.pow(p.x - badCenter.x, 2) + Math.pow(p.y - badCenter.y, 2);
+            }
+            const badRadius = Math.sqrt(sumSqDist / points.length);
+
+            // 3. GOOD FIT LOGIC (Least Squares / Kåsa with Centering)
+            // 3a. Calculate centroid
+            let sumX = 0, sumY = 0;
+            for(let p of points) { sumX += p.x; sumY += p.y; }
+            const centroid = {x: sumX / points.length, y: sumY / points.length};
+
+            // 3b. Center the data and set up Normal Equations matrices
+            let Sxx = 0, Sxy = 0, Syy = 0;
+            let Sxz = 0, Syz = 0;
+            let sumZ = 0;
+
+            for(let p of points) {
+                let cx = p.x - centroid.x;
+                let cy = p.y - centroid.y;
+                let z = -(cx*cx + cy*cy); // Target vector variable
+
+                Sxx += cx * cx;
+                Sxy += cx * cy;
+                Syy += cy * cy;
+                Sxz += cx * z;
+                Syz += cy * z;
+                sumZ += z;
+            }
+
+            // 3c. Solve 2x2 system using Cramer's Rule! 
+            // [Sxx  Sxy] [D] = [Sxz]
+            // [Sxy  Syy] [E]   [Syz]
+            const detA = (Sxx * Syy) - (Sxy * Sxy);
+            const D = ((Sxz * Syy) - (Syz * Sxy)) / detA;
+            const E = ((Sxx * Syz) - (Sxy * Sxz)) / detA;
+
+            // 3d. Recover circle parameters (decoupled F)
+            const F = sumZ / points.length; 
+            
+            const a_centered = -D / 2;
+            const b_centered = -E / 2;
+            const goodRadius = Math.sqrt(Math.pow(a_centered, 2) + Math.pow(b_centered, 2) - F);
+
+            // 3e. Translate center back
+            const goodCenter = {
+                x: a_centered + centroid.x,
+                y: b_centered + centroid.y
+            };
+
+            // 4. Render
+            drawScene('canvasBad', points, badCenter, badRadius, '#d73a49', false);
+            drawScene('canvasGood', points, goodCenter, goodRadius, '#28a745', true);
+        }
+
+        // Initialize on first load
+        window.onload = runVisualiser;
+    </script>
+</body>
+</html>

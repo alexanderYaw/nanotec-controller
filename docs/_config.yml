@@ -1,0 +1,30 @@
+title: Nanotec Inspection-Table Controller
+description: >-
+  Documentation for the four-axis (X / Y / Z / Θ) EtherCAT inspection-table
+  controller — operator guide, developer guide, and EtherCAT setup.
+
+# Clean URLs: /developer-guide/ instead of /developer-guide/index.html
+permalink: pretty
+
+# No gem theme — layouts live in docs/_layouts so nothing depends on an
+# upstream theme version. Mermaid rendering is wired into the default layout.
+plugins:
+  - jekyll-relative-links
+
+# Pass $...$ / $$...$$ through untouched so MathJax 3 (loaded in the default
+# layout) handles them. Kramdown's built-in mathjax engine emits MathJax-2-only
+# <script type="math/tex"> tags, which MathJax 3 ignores.
+kramdown:
+  math_engine: null
+
+# Every page gets the default layout, so source files only need empty (or
+# title-only) front matter.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - Gemfile
+  - Gemfile.lock

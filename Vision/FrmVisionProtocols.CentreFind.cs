@@ -1,23 +1,22 @@
 using System;
 using System.Drawing;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVision — chuck + wafer centre-find: capture ≥3 rim points (step space), circle-fit them to
+    // FrmVisionProtocols — chuck + wafer centre-find: capture ≥3 rim points (step space), circle-fit them to
     // a centre, and drive there. The two features share CentreFinder plus the compute/go-to halves
     // (TryComputeAndSaveCentre / GoToCentreAsync); only the grab callbacks differ, because the chuck
     // edge (focus) and wafer edge (brightness) use different detectors and overlays.
-    // (Partial of FrmVision; layout + grab loop live in FrmVision.cs.)
-    public sealed partial class FrmVision
+    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    public sealed partial class FrmVisionProtocols
     {
         private void RequestEdge()
         {
-            if (!_camera.IsOpen) return;
-            RequestFrame(frame =>
+            if (!_view.IsCameraOpen) return;
+            _view.RequestFrame(frame =>
             {
                 HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
                 double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
@@ -25,12 +24,12 @@ namespace NanotecController
                 ChuckEdgeDetector.EdgePoint edge;
                 try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
                 catch (HOperatorException) { found = false; edge = default; }
-                PostFrameBitmap(frame, flip: false, raw => OnEdgeGrabbed(found, edge, crossRow, crossCol, raw));
+                _view.PostFrameBitmap(frame, flip: false, raw => OnEdgeGrabbed(found, edge, crossRow, crossCol, raw));
             });
             _status.Text = "Detecting chuck edge...";
         }
 
-        // UI thread: GrabLoop found (or not) the chuck-edge point nearest the crosshair. Convert
+        // UI thread: the grab thread found (or not) the chuck-edge point nearest the crosshair. Convert
         // it to step space via the calibration and store it: E = M + A·(p_crosshair − p_edge),
         // the motor position that would bring this edge point onto the crosshair (user frame).
         private void OnEdgeGrabbed(bool found, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol, Bitmap raw)
@@ -134,7 +133,8 @@ namespace NanotecController
         // the per-feature setter, and persists. Returns false (with display text) on a fit/save failure;
         // on success, text is the result readout and centre is set. The grab callbacks differ per
         // detector (overlay + type), but the compute and go-to halves are identical modulo label/field.
-        private bool TryComputeAndSaveCentre(CentreFinder finder, string label, Action<long, long> store,
+        private bool TryComputeAndSaveCentre(CentreFinder finder, string label,
+                                             Action<long, long, CircleFit.Result> store,
                                              out (long X, long Y)? centre, out string text)
         {
             centre = null;
@@ -145,7 +145,7 @@ namespace NanotecController
             }
             if (_owner != null)
             {
-                store(cx, cy);
+                store(cx, cy, fit);
                 try { _owner.Calibration.Save(); }
                 catch (Exception ex) { text = $"Computed but SAVE failed:\r\n{ex.Message}"; return false; }
             }
@@ -172,7 +172,7 @@ namespace NanotecController
         private void ComputeWaferCentre()
         {
             bool ok = TryComputeAndSaveCentre(_waferFinder, "Wafer",
-                (x, y) => { _owner!.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
+                (x, y, fit) => { _owner!.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
                 out (long X, long Y)? centre, out string text);
             if (ok)
             {
@@ -185,6 +185,48 @@ namespace NanotecController
 
         private Task GoToWaferCentreAsync() => GoToCentreAsync("wafer", _waferCentre);
 
+        // Adds a rim point WITHOUT running the detector: the operator has jogged the chuck edge onto
+        // the crosshair by eye, so the current motor position IS the point (p_edge = p_cross ⇒ E = M).
+        // Reads the motor position on the UI thread (stage is stationary while aligning), then grabs a
+        // frame purely to show the crosshair on the captured pane as a record.
+        private void AddEdgeAtCrosshair()
+        {
+            if (_owner == null) return;
+            if (!_owner.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
+            {
+                _status.Text = "Edge: motor position unavailable — connect & enable.";
+                return;
+            }
+
+            var (ex, ey) = _chuckFinder.AddPoint(mx, my);
+            RefreshEdgeUi();
+            _status.Text = $"Edge {_chuckFinder.Count} (crosshair): step=({ex:F0}, {ey:F0})";
+
+            if (!_view.IsCameraOpen) return;
+            _view.RequestFrame(frame =>
+            {
+                HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
+                double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
+                _view.PostFrameBitmap(frame, flip: false, raw =>
+                {
+                    if (IsDisposed) { raw.Dispose(); return; }
+                    using (var g = Graphics.FromImage(raw))
+                        VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
+                    ShowCaptured(raw);
+                });
+            });
+        }
+
+        // Removes the point currently selected in the edge list (before computing the centre).
+        private void DeleteSelectedEdge()
+        {
+            int idx = _edgeList.SelectedIndex;
+            if (idx < 0) return;
+            _chuckFinder.RemoveAt(idx);
+            RefreshEdgeUi();
+            _status.Text = $"Deleted edge point {idx + 1}.";
+        }
+
         private void ClearEdges()
         {
             _chuckFinder.Clear();
@@ -194,20 +236,36 @@ namespace NanotecController
 
         private void RefreshEdgeUi()
         {
-            var sb = new StringBuilder();
+            int sel = _edgeList.SelectedIndex;
+            _edgeList.BeginUpdate();
+            _edgeList.Items.Clear();
             int i = 1;
             foreach ((double X, double Y) p in _chuckFinder.Points)
-                sb.AppendLine($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
-            _edgeList.Text = sb.ToString();
-            _centreBtn.Enabled = _chuckFinder.Count >= 3;
-            _edgeClearBtn.Enabled = _chuckFinder.Count > 0;
+                _edgeList.Items.Add($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
+            _edgeList.EndUpdate();
+            if (sel >= 0 && sel < _edgeList.Items.Count) _edgeList.SelectedIndex = sel;
+            // Everything that edits the point set is locked out while the auto centre-find is
+            // collecting into it (RefreshAutoUi routes through here, so this is the single gate).
+            bool manual = !_autoRunning;
+            _edgeBtn.Enabled = manual && _view.IsCameraOpen;
+            _edgeAtCrossBtn.Enabled = manual && _view.IsCameraOpen;
+            _centreBtn.Enabled = manual && _chuckFinder.Count >= 3;
+            _edgeClearBtn.Enabled = manual && _chuckFinder.Count > 0;
+            _edgeDeleteBtn.Enabled = manual && _edgeList.SelectedIndex >= 0;
         }
 
         // Circle-fits the chuck edge points (step space) and persists the centre.
         private void ComputeCentre()
         {
             bool ok = TryComputeAndSaveCentre(_chuckFinder, "Chuck",
-                (x, y) => { _owner!.Calibration.ChuckCenterX = x; _owner.Calibration.ChuckCenterY = y; },
+                (x, y, fit) =>
+                {
+                    _owner!.Calibration.ChuckCenterX = x;
+                    _owner.Calibration.ChuckCenterY = y;
+                    // Persisted so the auto centre-find's nominal radius — which arms its travel guard
+                    // — defaults from a measurement instead of being re-typed each session.
+                    _owner.Calibration.ChuckRadius = (long)Math.Round(fit.Radius);
+                },
                 out (long X, long Y)? centre, out string text);
             if (ok)
             {

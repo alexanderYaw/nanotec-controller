@@ -20,11 +20,15 @@ namespace NanotecController
         bool CanCaptureCalibration { get; }
         bool CanMoveCalibration { get; }
         bool TryCurrentUser(AxisId id, out long user);
+        bool TryReadUserXyNow(out long x, out long y);
         (long min, long max)? UserLimits(AxisId id);
         long? HomeTargetFor(AxisId id);
         Task MoveToAsync(string xText, string yText, string zText);
         Task GoHomeAsync(AxisId id);
         Task FindLimitsAsync(AxisId id);
+        /// <summary>Aborts any preplanned move in progress. Cooperative — it only sets a flag; the
+        /// running op notices at its next poll and halts the drives on its own thread.</summary>
+        void RequestStop();
         void SetCalibrationMin(AxisId id);
         void SetCalibrationMax(AxisId id);
         void SetCalibrationHome(AxisId id);
@@ -40,10 +44,11 @@ namespace NanotecController
 
         // --- Rotate about crosshair (FrmMain.Rotation.cs) ---
         int? RotationSign { get; }
+        int RotateThetaSpeed { get; set; }
         void SetRotationSign(int sign);
         Task RotateToAngleAsync(double targetDegrees);
         Task RotateAboutCrosshairAsync(double deltaDegrees);
-        Task HoldRotateAsync(int direction);
+        Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null);
         void StopHoldRotate();
 
         // --- Drift-corrected vision jog (FrmMain.Vision.cs) ---

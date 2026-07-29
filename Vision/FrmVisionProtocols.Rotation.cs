@@ -3,10 +3,10 @@ using System.Windows.Forms;
 
 namespace NanotecController
 {
-    // FrmVision — rotate-about-crosshair UI: the handedness label and the one-time "Sign test" that
+    // FrmVisionProtocols — rotate-about-crosshair UI: the handedness label and the one-time "Sign test" that
     // fixes the image handedness empirically. The actual compensated rotation runs in FrmMain
-    // (serialized motion); this is just the operator surface. (Partial of FrmVision.)
-    public sealed partial class FrmVision
+    // (serialized motion); this is just the operator surface. (Partial of FrmVisionProtocols.)
+    public sealed partial class FrmVisionProtocols
     {
         private void RefreshSignLabel()
             => _signLabel.Text = _owner?.RotationSign is int s ? $"Handedness: {s:+0;-0}" : "Handedness: not set";

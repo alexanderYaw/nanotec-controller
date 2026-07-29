@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Circle Fit Cost Function Visualiser (D,E Bowl)</title>
+    <!-- Use Plotly.js CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.26.0.min.js" charset="utf-8"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #f0f0f5; color: #333; }
+        h2 { text-align: center; }
+        .container { display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        #plotly-div { width: 80vw; height: 70vh; background-color: white; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .controls { display: flex; gap: 20px; margin-bottom: 20px; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .control-group { display: flex; flex-direction: column; align-items: center; }
+        label { font-weight: bold; margin-bottom: 5px; }
+        p.subtitle { text-align: center; color: #666; max-width: 700px; margin: 0 auto 20px auto; }
+        span.optimal-info { font-weight: bold; color: green; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Visualizing the "DEF Bowl" (Φ vs. D, E)</h2>
+        <p class="subtitle">This visualiser plots the cost function (sum of squared errors) for a circle fit as an upward paraboloid. Change the data and noise below to see how the bottom of the 'bowl' (the global minimum) shifts.</p>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="noiseSlider">Data Noise Level:</label>
+                <input type="range" id="noiseSlider" min="0.0" max="1.5" step="0.1" value="0.5">
+                <span id="noiseVal">0.5</span>
+            </div>
+            <div class="control-group">
+                <label for="pointsSlider">Number of Points:</label>
+                <input type="range" id="pointsSlider" min="5" max="100" step="5" value="50">
+                <span id="pointsVal">50</span>
+            </div>
+            <div class="control-group">
+                <label>Optimal Parameters (the bottom):</label>
+                <div>D: <span id="optimalDVal" class="optimal-info">N/A</span></div>
+                <div>E: <span id="optimalEVal" class="optimal-info">N/A</span></div>
+            </div>
+            <div class="control-group">
+                <button id="regenDataBtn">Regenerate Point Cloud</button>
+            </div>
+        </div>
+
+        <div id="plotly-div"><!-- Plotly chart renders here --></div>
+    </div>
+
+    <script>
+        // --- 1. Global state and configuration ---
+        const trueRadius = 10;
+        let numPoints = 50;
+        let noiseLevel = 0.5;
+        let currentPoints = [];
+        let optimalD = 0, optimalE = 0, optimalF = 0;
+
+        // --- 2. Data generation: A noisy arc/circle ---
+        function generateNoisyCircleData(radius, n, noise) {
+            let points = [];
+            // Generating data for just a short arc is more numerically unstable and realistic
+            const arcAngle = Math.PI / 2; // 90 degree arc
+            for (let i = 0; i < n; i++) {
+                // theta evenly spaced
+                let theta = (i / (n - 1)) * arcAngle;
+                // Perfect point
+                let px = radius * Math.cos(theta);
+                let py = radius * Math.sin(theta);
+                // Add noise
+                let x = px + (Math.random() - 0.5) * 2 * noise;
+                let y = py + (Math.random() - 0.5) * 2 * noise;
+                points.push({x: x, y: y});
+            }
+            return points;
+        }
+
+        // --- 3. Normal Equation Calculation (Kåsa method, simplified 2x2 with centring stability) ---
+        function calculateOptimalDEF(points) {
+            // Step 1: Centring (crucial for stability on noisy data)
+            let sumX = 0, sumY = 0;
+            for (let p of points) { sumX += p.x; sumY += p.y; }
+            let centroid = {x: sumX / points.length, y: sumY / points.length};
+
+            // Step 2: Form system AᵀA * c = Aᵀz using centred coordinates (x̃, ỹ)
+            // design matrix A = [x̃ ỹ] and z = -(x̃² + ỹ²)
+            let Sxx = 0, Sxy = 0, Syy = 0;
+            let Sxz = 0, Syz = 0;
+            let sumZ = 0;
+
+            for (let p of points) {
+                let cx = p.x - centroid.x;
+                let cy = p.y - centroid.y;
+                let z = -(cx * cx + cy * cy); // z is target variable
+
+                Sxx += cx * cx;
+                Sxy += cx * cy;
+                Syy += cy * cy;
+                Sxz += cx * z;
+                Syz += cy * z;
+                sumZ += z;
+            }
+
+            // Step 3: Solve the well-conditioned 2x2 system directly for parameters corresponding to centred variables
+            // Cramer's rule is perfect for this.
+            let detA = (Sxx * Syy) - (Sxy * Sxy);
+            let D_centred = ((Sxz * Syy) - (Syz * Sxy)) / detA;
+            let E_centred = ((Sxx * Syz) - (Sxy * Sxz)) / detA;
+
+            // Step 4: Step 4: Recover true full-scale parameters.
+            // (Centred data decoupling from §2: F = -1/n * Σ(x̃²+ỹ²) )
+            let F_centred = sumZ / points.length;
+
+            // Invert definitions:
+            // Center (a, b) = -D/2, -E/2.
+            // Invert centered results and translate back.
+            let optimalCenterAbs = {
+                x: (-D_centred / 2) + centroid.x,
+                y: (-E_centred / 2) + centroid.y
+            };
+
+            // Full, non-centred D and E:
+            let d_abs = -2 * optimalCenterAbs.x;
+            let e_abs = -2 * optimalCenterAbs.y;
+
+            // F is translation-invariant and decoupling trick with centering is exact.
+            // Recalculating F for absolute coordinates to be pedantic.
+            // F = a² + b² - R².
+            // Simplified algebra works perfectly, giving decoupled F.
+            // Full F is needed when plugging into original formula A(x²+y²) + Dx + Ey + F = 0.
+            // When A is 1, and we centred around the true solution center, original F = - R^2.
+            // Decoupling with mean subtraction gives F = - (1/n * Σ d_i²).
+            // Let's use the full derived F, as a 3D surface is easier to visualize when absolute coordinates are locked.
+            // When we centred around the *centroid*, decoupled F was given above.
+            // Full absolute-coordinate F: F = a² + b² - R².
+            // Where R = √(ã² + b̃² - F_centred).
+            // Simplified absolute formula check: R² = ã² + b̃² - F_centred.
+            // And Full R is translation invariant: R = sqrt(a² + b² - F_full).
+            // Full F is not invariant.
+            let ã_c = -D_centred / 2;
+            let b̃_c = -E_centred / 2;
+            let goodR_sq = Math.pow(ã_c, 2) + Math.pow(b̃_c, 2) - F_centred;
+            let a_abs = optimalCenterAbs.x;
+            let b_abs = optimalCenterAbs.y;
+            // Full F from standard geometric inversion definition:
+            let f_abs = Math.pow(a_abs, 2) + Math.pow(b_abs, 2) - goodR_sq;
+
+            return { d: d_abs, e: e_abs, f: f_abs };
+        }
+
+        // --- 4. Cost calculation: sum of squared residuals Φ = Σ fᵢ² ---
+        // Plugging absolute values back into the *general* non-centred formula.
+        function calculateTotalCost(points, D, E, F) {
+            let totalPhi = 0;
+            for (let p of points) {
+                // Algebraic residual is defined linear in D, E, F:
+                let algebraic_error_f = (Math.pow(p.x, 2) + Math.pow(p.y, 2)) + (D * p.x) + (E * p.y) + F;
+                totalPhi += Math.pow(algebraic_error_f, 2);
+            }
+            return totalPhi;
+        }
+
+        // --- 5. Main routine to prepare and update the Plotly chart ---
+        function updatePlot() {
+            if (currentPoints.length === 0) return;
+
+            // Recalculate optimal center with current data
+            const optDEF = calculateOptimalDEF(currentPoints);
+            optimalD = optDEF.d;
+            optimalE = optDEF.e;
+            optimalF = optDEF.f;
+
+            // Update UI elements
+            document.getElementById('optimalDVal').innerText = optimalD.toFixed(3);
+            document.getElementById('optimalEVal').innerText = optimalE.toFixed(3);
+
+            // --- Define the 3D surface grid ---
+            // Range must center around the optimal values (the bottom of the bowl)
+            // and have enough steps for a smooth surface.
+            const gridRange = 3; // + and - 3 from the optimum
+            const gridSteps = 30; // 30x30 steps
+
+            let D_vals = [];
+            let E_vals = [];
+            let Z_phi_surf = []; // A 2D array of cost Φ
+
+            // Create 1D axes
+            for (let i = 0; i < gridSteps; i++) {
+                D_vals.push(optimalD - gridRange + (i * (2 * gridRange) / (gridSteps - 1)));
+                E_vals.push(optimalE - gridRange + (i * (2 * gridRange) / (gridSteps - 1)));
+            }
+
+            // Create 2D Z-grid
+            for (let i = 0; i < gridSteps; i++) {
+                let current_E = E_vals[i];
+                let z_row = [];
+                for (let j = 0; j < gridSteps; j++) {
+                    let current_D = D_vals[j];
+                    // Cost function calculate, with F fixed at optimal
+                    let phi = calculateTotalCost(currentPoints, current_D, current_E, optimalF);
+                    z_row.push(phi);
+                }
+                Z_phi_surf.push(z_row);
+            }
+
+            // --- Define the data point trace (the data cluster at the bottom) ---
+            // Instead of plotting all 50 points (which clutter the graph), we plot
+            // a single high-visibility dot at the optimal (D,E) center.
+            // Its height is the exact minimum cost calculated earlier.
+            let optimalPointCost = calculateTotalCost(currentPoints, optimalD, optimalE, optimalF);
+
+            let minimumMarkerTrace = {
+                x: [optimalD],
+                y: [optimalE],
+                z: [optimalPointCost],
+                mode: 'markers',
+                marker: { size: 10, color: 'green', symbol: 'diamond', line: { color: 'white', width: 1.5 } },
+                type: 'scatter3d',
+                name: 'Optimal Centre (Minimum Mismatch)',
+                hoverinfo: 'x+y+z+name'
+            };
+
+            // --- Define the surface trace ---
+            let surfaceTrace = {
+                z: Z_phi_surf,
+                x: D_vals,
+                y: E_vals,
+                type: 'surface',
+                contours: {
+                    z: { show: true, usecolormap: true, highlightcolor: "#444", project: { z: true } }
+                },
+                colorbar: { title: 'Cost (Σfᵢ²)', titleside: 'right' },
+                colorscale: 'Viridis',
+                reversescale: true,
+                opacity: 0.9,
+                hoverinfo: 'none' // Don't hover on surface, only on points.
+            };
+
+            // --- Layout and chart rendering ---
+            let data = [surfaceTrace, minimumMarkerTrace];
+            let layout = {
+                title: 'Convex Cost Function "Bowl" in D,E Space (with F Optimal)',
+                scene: {
+                    xaxis: { title: 'Parameter D' },
+                    yaxis: { title: 'Parameter E' },
+                    zaxis: { title: 'Cost Φ = Σfᵢ²' },
+                    aspectmode: 'manual', aspectratio: { x: 1, y: 1, z: 0.7 } // Make it bowl-like
+                },
+                margin: { l: 0, r: 0, b: 0, t: 50 },
+                legend: { x: 0.8, y: 0.95 }
+            };
+
+            // The 'updatePlot' function runs on interactions, so we only need to render once.
+            // On first call, initialize Plotly; subsequent calls update the data.
+            if (document.getElementById('plotly-div').children.length === 0) {
+                Plotly.newPlot('plotly-div', data, layout);
+            } else {
+                // Update specific traces to preserve user interaction (rotation)
+                Plotly.react('plotly-div', data, layout);
+            }
+        }
+
+        // --- 6. Event listeners to make it interactive ---
+        function attachListeners() {
+            document.getElementById('noiseSlider').addEventListener('input', (e) => {
+                noiseLevel = parseFloat(e.target.value);
+                document.getElementById('noiseVal').innerText = noiseLevel.toFixed(1);
+                // Regenerate data when noise changes to show immediate shift
+                regenerateDataAndPlot();
+            });
+
+            document.getElementById('pointsSlider').addEventListener('input', (e) => {
+                numPoints = parseInt(e.target.value);
+                document.getElementById('pointsVal').innerText = numPoints;
+                regenerateDataAndPlot();
+            });
+
+            document.getElementById('regenDataBtn').addEventListener('click', regenerateDataAndPlot);
+        }
+
+        function regenerateDataAndPlot() {
+            // Generate NEW data with current noise and points
+            currentPoints = generateNoisyCircleData(trueRadius, numPoints, noiseLevel);
+            // Run matrix solve and update surface
+            updatePlot();
+        }
+
+        // --- Initialization on load ---
+        window.onload = function() {
+            attachListeners();
+            regenerateDataAndPlot(); // Trigger initial plot
+        };
+
+    </script>
+</body>
+</html>

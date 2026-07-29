@@ -1,3 +1,7 @@
+---
+title: User Guide
+---
+
 # User Guide — Nanotec Inspection-Table Controller
 
 This is the operator guide for the multi-axis motion application that drives the
@@ -10,7 +14,7 @@ master**.
 > start at low jog speeds, and confirm each axis moves the way you expect before trusting
 > automated moves (Home All, Go Home, Find Limits).
 
-For how the software works internally, see the **Developer Guide** (`Developer Guide/README.md`).
+For how the software works internally, see the **[Developer Guide](../developer-guide/)**.
 
 ---
 

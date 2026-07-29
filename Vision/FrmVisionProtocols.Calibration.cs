@@ -5,30 +5,30 @@ using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVision — camera-scale calibration: manually capture (motor X,Y ↔ detected fiducial pixel)
+    // FrmVisionProtocols — camera-scale calibration: manually capture (motor X,Y ↔ detected fiducial pixel)
     // samples and solve the pixel→step affine, writing it to the shared CalibrationStore.
-    // (Partial of FrmVision; layout + grab loop live in FrmVision.cs.)
-    public sealed partial class FrmVision
+    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    public sealed partial class FrmVisionProtocols
     {
-        // Asks GrabLoop to detect the fiducial in the next frame (the table is held still by
-        // the user during a manual sample).
+        // Asks the grab thread to detect the fiducial in the next frame (the table is held
+        // still by the user during a manual sample).
         private void RequestSample()
         {
-            if (!_camera.IsOpen) return;
-            RequestFrame(frame =>
+            if (!_view.IsCameraOpen) return;
+            _view.RequestFrame(frame =>
             {
                 bool found;
-                ReflectiveMarkDetector.Mark mark;
+                SolidCircleDetector.Mark mark;
                 try { found = _markDetector.TryDetect(frame, out mark); }
                 catch (HOperatorException) { found = false; mark = default; }
-                PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
+                _view.PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
             });
             _status.Text = "Sampling: detecting fiducial...";
         }
 
-        // UI thread: GrabLoop found (or didn't) the fiducial and handed us a raw full-res
+        // UI thread: the grab thread found (or didn't) the fiducial and handed us a raw full-res
         // frame. Pair the detected pixel with the current motor position and store a sample.
-        private void OnSampleGrabbed(bool found, ReflectiveMarkDetector.Mark mark, Bitmap raw)
+        private void OnSampleGrabbed(bool found, SolidCircleDetector.Mark mark, Bitmap raw)
         {
             if (IsDisposed) { raw.Dispose(); return; }
 
@@ -56,7 +56,7 @@ namespace NanotecController
 
         // Draws the detected circle + centre cross onto the (raw) sample bitmap. GDI x = column,
         // y = row. Drawn at full-res coordinates; the Zoom pane scales it to fit.
-        private static void DrawMarkOverlay(Bitmap bmp, ReflectiveMarkDetector.Mark mark)
+        private static void DrawMarkOverlay(Bitmap bmp, SolidCircleDetector.Mark mark)
         {
             using var g = Graphics.FromImage(bmp);
             float cx = (float)mark.Column, cy = (float)mark.Row, r = (float)mark.Radius;

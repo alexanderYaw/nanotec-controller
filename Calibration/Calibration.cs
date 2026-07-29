@@ -18,6 +18,11 @@ namespace NanotecController
         /// <summary>Explicit home, used where Center doesn't apply (Z has no two references).</summary>
         public long? Home { get; set; }
 
+        /// <summary>Motor steps per millimetre of stage travel (user-entered, from the stage's
+        /// mechanical spec). Converts mm-relative moves and scales the crosshair mm ticks;
+        /// null until entered. Θ never uses this (degrees go via ChuckTicksPerRev).</summary>
+        public double? StepsPerMm { get; set; }
+
         /// <summary>Midpoint of the two limits, or null until both are set.</summary>
         [JsonIgnore]
         public long? Center => Min.HasValue && Max.HasValue ? (Min.Value + Max.Value) / 2 : null;
@@ -57,6 +62,11 @@ namespace NanotecController
         /// position that puts the chuck centre under the crosshair / view centre.</summary>
         public long? ChuckCenterX { get; set; }
         public long? ChuckCenterY { get; set; }
+
+        /// <summary>Chuck radius in motor steps, or null until a centre-find has measured one. Written
+        /// from the circle fit's radius; read back as the auto centre-find's nominal radius, which arms
+        /// its travel guard and its approach jump. Persisted so the guard survives a restart.</summary>
+        public long? ChuckRadius { get; set; }
 
         /// <summary>Wafer centre in motor steps (USER frame), or null until found — same meaning as
         /// the chuck centre but circle-fit from WAFER rim points. Kept separate from the chuck centre.</summary>

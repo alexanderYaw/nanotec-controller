@@ -36,6 +36,8 @@ namespace NanotecController
         private readonly OdIndex OD_HomingMethod = new OdIndex(0x6098, 0x00);
         // Digital Inputs status object (limit-switch bits used by the calibration find).
         private readonly OdIndex OD_DigitalInputs = new OdIndex(0x60FD, 0x00);
+        // Analogue input 1 (0x3220:01) — the analog joystick pot wired into this axis's drive.
+        private readonly OdIndex OD_AnalogInput1 = new OdIndex(0x3220, 0x01);
         // Store-parameters object: writing the "save" signature persists RAM values → NV.
         private readonly OdIndex OD_StoreParameters = new OdIndex(0x1010, 0x01);
 
@@ -164,8 +166,10 @@ namespace NanotecController
             }
         }
 
-        /// <summary>Polls the statusword until <paramref name="predicate"/> holds or it times out.</summary>
-        private long WaitForStatus(Func<long, bool> predicate, int timeoutMs, string what)
+        /// <summary>Polls the statusword until <paramref name="predicate"/> holds or it times out.
+        /// If <paramref name="cancel"/> is supplied and returns true, throws
+        /// <see cref="OperationCanceledException"/> so the caller can abort (e.g. an operator Stop).</summary>
+        private long WaitForStatus(Func<long, bool> predicate, int timeoutMs, string what, Func<bool>? cancel = null)
         {
             int waited = 0;
             long sw = 0;
@@ -173,6 +177,7 @@ namespace NanotecController
             {
                 sw = Read(OD_Statusword, "statusword");
                 if (predicate(sw)) return sw;
+                if (cancel != null && cancel()) throw new OperationCanceledException($"cancelled waiting for {what}.");
                 Thread.Sleep(POLL_STEP_MS);
                 waited += POLL_STEP_MS;
             }
@@ -238,6 +243,36 @@ namespace NanotecController
             Write(CW_HALT, OD_Controlword, BITS_16, "controlword: halt");
         }
 
+        /// <summary>
+        /// Velocity-only update to an ALREADY-RUNNING profile-velocity jog: rewrites just the
+        /// 0x60FF target (one SDO transaction) instead of re-sending mode + controlword like
+        /// <see cref="StartManualJog"/>. Zero decelerates to a servo hold WITHOUT the halt bit,
+        /// so there is no halt/run controlword flipping around zero. Arm the axis with
+        /// <see cref="StartManualJog"/> first; used by the crosshair-rotation follow loop, where
+        /// three axes are re-commanded every tick and SDO traffic sets the loop period.
+        /// </summary>
+        public void UpdateJogVelocity(int velocity)
+            => Write(velocity, OD_TargetVel, BITS_32, "target velocity (update)");
+
+        /// <summary>Current profile accel/decel (0x6083/0x6084) — read so callers that need their
+        /// own ramps (the crosshair-rotation follow loop) can save and later restore them.</summary>
+        public (long Accel, long Decel) GetProfileRamp()
+            => (Read(OD_ProfileAccel, "profile acceleration"),
+                Read(OD_ProfileDecel, "profile deceleration"));
+
+        /// <summary>
+        /// Sets profile accel/decel (0x6083/0x6084), in counts/s². These bound how fast the drive
+        /// chases a new 0x60FF target in profile-velocity mode too (not just profile-position), so
+        /// a follow loop that rewrites the target every tick needs them high enough that each step
+        /// is reached well within one tick — the drive's stored default is otherwise an unmodeled
+        /// lag on every update.
+        /// </summary>
+        public void SetProfileRamp(long accel, long decel)
+        {
+            Write(accel, OD_ProfileAccel, BITS_32, "profile acceleration");
+            Write(decel, OD_ProfileDecel, BITS_32, "profile deceleration");
+        }
+
         // --- Profile Position (point-to-point) ---------------------------------------
         // Used by the step-and-settle scan. Positions/velocities are in the drive's
         // own units (counts / 0x60FF units) until factor-group conversion is wired in.
@@ -300,17 +335,19 @@ namespace NanotecController
         /// Target-Reached) before this is called. For step-and-settle scanning: issue a
         /// Move, then wait on this before grabbing a frame.
         /// </summary>
-        public bool WaitForMotionComplete(int timeoutMs)
+        public bool WaitForMotionComplete(int timeoutMs, Func<bool>? cancel = null)
         {
             try
             {
-                WaitForStatus(s => (s & SW_TARGET_REACHED) != 0, timeoutMs, "target reached");
+                WaitForStatus(s => (s & SW_TARGET_REACHED) != 0, timeoutMs, "target reached", cancel);
                 return true;
             }
             catch (DriveException)
             {
                 return false;
             }
+            // OperationCanceledException (operator Stop) is intentionally NOT caught — it propagates
+            // so the caller abandons the move (and its follow-on steps) instead of proceeding.
         }
 
         /// <summary>
@@ -352,6 +389,10 @@ namespace NanotecController
         /// </summary>
         public long ReadDigitalInputs() => Read(OD_DigitalInputs, "digital inputs 0x60FD");
 
+        /// <summary>Analogue input 1 (0x3220:01) — the drive-wired analog joystick pot, 16-bit
+        /// signed. Reads centre ≈ mid-scale; deflection swings it either side.</summary>
+        public int ReadAnalogInput1() => (short)Read(OD_AnalogInput1, "analog input 0x3220:01");
+
         /// <summary>
         /// True if the drive is held in Quick-Stop-Active (state 0x07) — what a limit hit
         /// leaves it in on this machine. While in this state the drive ignores motion
@@ -370,6 +411,14 @@ namespace NanotecController
         public void WriteObject(ushort index, byte subIndex, long value, uint bitLength)
             => Write(value, new OdIndex(index, subIndex), bitLength,
                      $"manual write 0x{index:X4}:{subIndex:X2}");
+
+        /// <summary>
+        /// Reads an arbitrary object-dictionary entry (the read counterpart to
+        /// <see cref="WriteObject"/>). Returns the raw value NanoLib zero-extends into a long;
+        /// the caller casts to the object's signed type (e.g. (short) for a 16-bit analog input).
+        /// </summary>
+        public long ReadObject(ushort index, byte subIndex)
+            => Read(new OdIndex(index, subIndex), $"read 0x{index:X4}:{subIndex:X2}");
 
         /// <summary>
         /// Persists the drive's CURRENT parameter values to non-volatile memory by writing the
@@ -392,6 +441,10 @@ namespace NanotecController
             long rawTicks = ReadPosition();
             return TicksToAngle(rawTicks);
         }
+
+        /// <summary>Position-only read (one SDO transaction, half of <see cref="GetStatus"/>)
+        /// for fast follow loops that don't need the CiA 402 state each tick.</summary>
+        public long GetPosition() => ReadPosition();
 
         /// <summary>Reads angle + decoded CiA 402 state in one go, for live display.</summary>
         public AxisStatus GetStatus()

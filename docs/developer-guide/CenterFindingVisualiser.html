@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Circle Center Finder</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h2 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            max-width: 1000px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        canvas {
+            background-color: #ffffff;
+            border: 2px solid #bdc3c7;
+            border-radius: 4px;
+            cursor: grab;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        .panel {
+            flex: 1;
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .panel-box {
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+        }
+        .panel-box h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            color: #2980b9;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .data-row {
+            font-family: monospace;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        .legend {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            font-size: 14px;
+        }
+        .legend span {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        .controls {
+            background: #e8f8f5;
+            border-left-color: #1abc9c;
+        }
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Drag the Points to Find the Center</h2>
+    
+    <div class="container">
+        <canvas id="geometryCanvas" width="600" height="500"></canvas>
+        
+        <div class="panel">
+            <div class="panel-box controls">
+                <h3>Controls</h3>
+                <div class="toggle-container">
+                    <input type="checkbox" id="rigidToggle">
+                    <label for="rigidToggle"><strong>Rigid Circle Mode</strong><br><small>Constrain dragged points to current circumference</small></label>
+                </div>
+            </div>
+
+            <div class="panel-box">
+                <h3>Live Calculations</h3>
+                <div id="coords" class="data-row"></div>
+                <div id="slopes" class="data-row"></div>
+                <div id="center-data" class="data-row"></div>
+            </div>
+
+            <div class="panel-box">
+                <h3>Legend</h3>
+                <div class="legend">
+                    <div><span style="background: #3498db;"></span> Drag Points (P1, P2, P3)</div>
+                    <div><span style="background: #2ecc71; border-radius: 0; width: 12px; height: 3px;"></span> Chords</div>
+                    <div><span style="background: #f1c40f;"></span> Midpoints</div>
+                    <div><span style="background: #e74c3c; border-radius: 0; width: 12px; height: 3px; border-style: dashed;"></span> Perpendicular Bisectors</div>
+                    <div><span style="background: #9b59b6;"></span> Circle Center</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('geometryCanvas');
+        const ctx = canvas.getContext('2d');
+        const rigidToggle = document.getElementById('rigidToggle');
+
+        // Initial points P1, P2, P3
+        let points = [
+            { x: 150, y: 350, label: 'P1' },
+            { x: 300, y: 100, label: 'P2' },
+            { x: 450, y: 300, label: 'P3' }
+        ];
+
+        const POINT_RADIUS = 8;
+        let draggingPoint = null;
+
+        // Rigid Mode State
+        let isRigid = false;
+        let fixedCx = 0, fixedCy = 0, fixedRadius = 0;
+
+        // Utility: Calculate circle center from 3 points
+        function calculateCenter(pts) {
+            const [p1, p2, p3] = pts;
+            const D = 2 * (p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
+            
+            if (Math.abs(D) < 0.1) return { valid: false }; // Collinear
+
+            const cx = ((p1.x * p1.x + p1.y * p1.y) * (p2.y - p3.y) + 
+                  (p2.x * p2.x + p2.y * p2.y) * (p3.y - p1.y) + 
+                  (p3.x * p3.x + p3.y * p3.y) * (p1.y - p2.y)) / D;
+            const cy = ((p1.x * p1.x + p1.y * p1.y) * (p3.x - p2.x) + 
+                  (p2.x * p2.x + p2.y * p2.y) * (p1.x - p3.x) + 
+                  (p3.x * p3.x + p3.y * p3.y) * (p2.x - p1.x)) / D;
+            const radius = Math.sqrt((p1.x - cx) ** 2 + (p1.y - cy) ** 2);
+            
+            return { valid: true, cx, cy, radius };
+        }
+
+        // Handle Rigid Toggle
+        rigidToggle.addEventListener('change', (e) => {
+            isRigid = e.target.checked;
+            if (isRigid) {
+                const geom = calculateCenter(points);
+                if (geom.valid) {
+                    fixedCx = geom.cx;
+                    fixedCy = geom.cy;
+                    fixedRadius = geom.radius;
+                } else {
+                    alert("Cannot make circle rigid: Points are currently in a straight line.");
+                    e.target.checked = false;
+                    isRigid = false;
+                }
+            }
+        });
+
+        // Utility: Draw a point
+        function drawPoint(x, y, color, label) {
+            ctx.beginPath();
+            ctx.arc(x, y, POINT_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = '#2c3e50';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            if (label) {
+                ctx.fillStyle = '#2c3e50';
+                ctx.font = 'bold 14px Arial';
+                ctx.fillText(label, x + 12, y - 12);
+            }
+        }
+
+        // Utility: Draw a line
+        function drawLine(p1, p2, color, isDashed = false) {
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            if (isDashed) ctx.setLineDash([5, 5]);
+            else ctx.setLineDash([]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const [p1, p2, p3] = points;
+            const m1 = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+            const m2 = { x: (p2.x + p3.x) / 2, y: (p2.y + p3.y) / 2 };
+
+            const geom = calculateCenter(points);
+
+            if (geom.valid) {
+                // 1. Draw The Resulting Circle
+                ctx.beginPath();
+                ctx.arc(geom.cx, geom.cy, geom.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(52, 152, 219, 0.3)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // 2. Draw Perpendicular Bisectors extending from midpoints
+                const dx1 = geom.cx - m1.x;
+                const dy1 = geom.cy - m1.y;
+                drawLine(
+                    {x: m1.x - dx1, y: m1.y - dy1}, 
+                    {x: geom.cx + dx1*2, y: geom.cy + dy1*2}, 
+                    '#e74c3c', true
+                );
+
+                const dx2 = geom.cx - m2.x;
+                const dy2 = geom.cy - m2.y;
+                drawLine(
+                    {x: m2.x - dx2, y: m2.y - dy2}, 
+                    {x: geom.cx + dx2*2, y: geom.cy + dy2*2}, 
+                    '#e74c3c', true
+                );
+            }
+
+            // 3. Draw Chords
+            drawLine(p1, p2, '#2ecc71');
+            drawLine(p2, p3, '#2ecc71');
+
+            // 4. Draw Midpoints
+            drawPoint(m1.x, m1.y, '#f1c40f');
+            drawPoint(m2.x, m2.y, '#f1c40f');
+
+            // 5. Draw Center Point
+            if (geom.valid) {
+                drawPoint(geom.cx, geom.cy, '#9b59b6', 'C');
+            }
+
+            // 6. Draw Draggable Points (on top)
+            points.forEach(p => drawPoint(p.x, p.y, '#3498db', p.label));
+
+            // 7. Update Live Text Panel
+            updatePanel(m1, m2, geom.cx, geom.cy, geom.valid);
+        }
+
+        function updatePanel(m1, m2, cx, cy, validCenter) {
+            document.getElementById('coords').innerHTML = `
+                P1: (${points[0].x.toFixed(0)}, ${points[0].y.toFixed(0)})<br>
+                P2: (${points[1].x.toFixed(0)}, ${points[1].y.toFixed(0)})<br>
+                P3: (${points[2].x.toFixed(0)}, ${points[2].y.toFixed(0)})
+            `;
+
+            let slope1 = (points[1].x - points[0].x) !== 0 ? ((points[1].y - points[0].y) / (points[1].x - points[0].x)).toFixed(2) : 'Infinity';
+            let slope2 = (points[2].x - points[1].x) !== 0 ? ((points[2].y - points[1].y) / (points[2].x - points[1].x)).toFixed(2) : 'Infinity';
+
+            document.getElementById('slopes').innerHTML = `
+                Chord P1-P2 Slope: ${slope1} (Midpoint: ${m1.x.toFixed(0)}, ${m1.y.toFixed(0)})<br>
+                Chord P2-P3 Slope: ${slope2} (Midpoint: ${m2.x.toFixed(0)}, ${m2.y.toFixed(0)})
+            `;
+
+            if (validCenter) {
+                document.getElementById('center-data').innerHTML = `
+                    <strong style="color:#9b59b6;">Center Intersect (C): (${cx.toFixed(1)}, ${cy.toFixed(1)})</strong>
+                `;
+            } else {
+                document.getElementById('center-data').innerHTML = `
+                    <strong style="color:#e74c3c;">Points are collinear. No center exists.</strong>
+                `;
+            }
+        }
+
+        // Mouse Events for Dragging
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            draggingPoint = points.find(p => 
+                Math.hypot(p.x - mouseX, p.y - mouseY) < POINT_RADIUS + 5
+            );
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (draggingPoint) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                if (isRigid && fixedRadius > 0) {
+                    // CONSTRAIN LOGIC: Snap the point to the fixed circumference
+                    const angle = Math.atan2(mouseY - fixedCy, mouseX - fixedCx);
+                    draggingPoint.x = fixedCx + fixedRadius * Math.cos(angle);
+                    draggingPoint.y = fixedCy + fixedRadius * Math.sin(angle);
+                } else {
+                    // FREE LOGIC: Move point anywhere
+                    draggingPoint.x = mouseX;
+                    draggingPoint.y = mouseY;
+                }
+                render();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            draggingPoint = null;
+        });
+
+        // Initial render
+        render();
+    </script>
+</body>
+</html>

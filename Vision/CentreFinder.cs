@@ -22,16 +22,44 @@ namespace NanotecController
         public int Count => _points.Count;
         public void Clear() => _points.Clear();
 
+        /// <summary>
+        /// Converts a detected edge pixel to the user-frame step point E = M + A·(p_cross − p_edge)
+        /// WITHOUT storing it. Separate from <see cref="Add"/> because the auto centre-find has to
+        /// sanity-check a candidate (side of the probe heading, distance band) before deciding whether
+        /// it belongs in the set — and that gate must not re-derive the conversion.
+        /// </summary>
+        public static (double X, double Y) ToStepPoint(
+            double edgeRow, double edgeCol, double crossRow, double crossCol,
+            PixelStepAffine a, long motorX, long motorY)
+        {
+            double dRow = crossRow - edgeRow, dCol = crossCol - edgeCol;
+            return (motorX + a.Xr * dRow + a.Xc * dCol,
+                    motorY + a.Yr * dRow + a.Yc * dCol);
+        }
+
         /// <summary>Converts a detected edge pixel to a user-frame step point and stores it; returns it.</summary>
         public (double X, double Y) Add(
             double edgeRow, double edgeCol, double crossRow, double crossCol,
             PixelStepAffine a, long motorX, long motorY)
         {
-            double dRow = crossRow - edgeRow, dCol = crossCol - edgeCol;
-            double ex = motorX + a.Xr * dRow + a.Xc * dCol;
-            double ey = motorY + a.Yr * dRow + a.Yc * dCol;
-            _points.Add((ex, ey));
-            return (ex, ey);
+            (double X, double Y) e = ToStepPoint(edgeRow, edgeCol, crossRow, crossCol, a, motorX, motorY);
+            _points.Add(e);
+            return e;
+        }
+
+        /// <summary>Stores a rim point directly in user-frame steps. Used when the edge was jogged
+        /// onto the crosshair by eye, so the point IS the current motor position (p_edge = p_cross ⇒
+        /// E = M) and no pixel→step conversion is needed. Returns the stored point.</summary>
+        public (double X, double Y) AddPoint(double x, double y)
+        {
+            _points.Add((x, y));
+            return (x, y);
+        }
+
+        /// <summary>Removes the stored point at <paramref name="index"/>; out-of-range is ignored.</summary>
+        public void RemoveAt(int index)
+        {
+            if (index >= 0 && index < _points.Count) _points.RemoveAt(index);
         }
 
         /// <summary>Circle-fits the stored points (centre rounded to whole steps). False (+error) for

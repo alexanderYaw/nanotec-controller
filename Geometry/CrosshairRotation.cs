@@ -64,6 +64,42 @@ namespace NanotecController
         }
 
         /// <summary>
+        /// Derivative of the pin target w.r.t. the (unsigned) rotation angle: d(target)/d(angleRad),
+        /// in STEPS PER RADIAN, for the same geometry as <see cref="TryXyTarget"/>. Because row/col
+        /// (the chuck-centre offset from the crosshair, in pixels) are constant over a rotation, the
+        /// target velocity is exactly A·R'(φ)·[row,col]·sign — no numeric differencing of quantized
+        /// targets. Multiply by d(angleRad)/dt (= 2π/ChuckTicksPerRev · Θ-rate) to get step-velocity.
+        /// This is the correct, noise-free velocity feedforward. Returns false if the affine is degenerate.
+        /// </summary>
+        public static bool TryXyTargetVelocity(
+            PixelStepAffine a,
+            long centerX, long centerY,
+            long startX, long startY,
+            double angleRad, int sign,
+            out double dTargetXdAngle, out double dTargetYdAngle)
+        {
+            dTargetXdAngle = 0.0; dTargetYdAngle = 0.0;
+
+            double det = a.Xr * a.Yc - a.Xc * a.Yr;
+            if (Math.Abs(det) < 1e-9) return false;   // degenerate calibration
+
+            double dX = startX - centerX, dY = startY - centerY;
+            double row = ( a.Yc * dX - a.Xc * dY) / det;
+            double col = (-a.Yr * dX + a.Xr * dY) / det;
+
+            // d/dφ of R(φ)·r, with R'(φ) = [[−sinφ, −cosφ],[cosφ, −sinφ]].
+            double phi = sign * angleRad;
+            double c = Math.Cos(phi), s = Math.Sin(phi);
+            double dRow = -s * row - c * col;
+            double dCol =  c * row - s * col;
+
+            // Chain rule: φ = sign·angleRad ⇒ d/d(angleRad) = sign·d/dφ. A maps pixels→steps.
+            dTargetXdAngle = sign * (a.Xr * dRow + a.Xc * dCol);
+            dTargetYdAngle = sign * (a.Yr * dRow + a.Yc * dCol);
+            return true;
+        }
+
+        /// <summary>
         /// Motor encoder ticks per ONE full CHUCK revolution. The chuck turns through a gear
         /// reduction, so this is NOT the motor's 40000/rev. Measured over multiple full
         /// revolutions: 359859 ticks/rev (≈9:1 reduction).

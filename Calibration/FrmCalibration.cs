@@ -20,7 +20,7 @@ namespace NanotecController
         private readonly IMotionHost _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
-        private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button? Find, Button GoHome);
+        private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button? Find, Button GoHome, TextBox StepsPerMm);
         private readonly Dictionary<AxisId, Row> _rows = new();
 
         public FrmCalibration(IMotionHost owner)
@@ -38,7 +38,8 @@ namespace NanotecController
                 MaximumSize = new Size(700, 0),
                 Text = "Jog an axis to a position in the main window, then Set Min / Set Max here "
                      + "(Clear Min / Clear Max removes a stored limit). Home = centre of the two limits "
-                     + "for X/Y; Z's Home is set explicitly. Find Limits drives Y into its switches automatically.",
+                     + "for X/Y; Z's Home is set explicitly. Find Limits drives Y into its switches automatically. "
+                     + "Steps/mm (from the stage spec) converts mm moves and scales the crosshair mm ticks.",
             };
             Controls.Add(hint);
 
@@ -46,6 +47,19 @@ namespace NanotecController
             int y = 70;
             int maxRight = 480;
             foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 84; }
+
+            var saveMm = new Button
+            {
+                Text = "Save steps/mm",
+                Location = new Point(12, y + 2),
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(8, 3, 8, 3),
+            };
+            saveMm.Click += (s, e) => SaveStepsPerMm();
+            Controls.Add(saveMm);
+            y += 42;
+
             ClientSize = new Size(maxRight + 12, y + 8);
 
             _refresh.Tick += (s, e) => UpdateUi();
@@ -116,6 +130,15 @@ namespace NanotecController
             Button? find = id == AxisId.Y ? AddTop("Find Limits") : null;
             Button goHome = AddTop("Go Home");
 
+            // Steps/mm entry (second row, after the Clear buttons). Filled once from the store;
+            // the refresh timer must NOT touch it, or it would overwrite the user mid-typing.
+            var mmLabel = new Label { Text = "steps/mm:", Location = new Point(x, row2 + 6), AutoSize = true };
+            Controls.Add(mmLabel);
+            var mmBox = new TextBox { Location = new Point(x + 68, row2 + 2), Size = new Size(90, 24) };
+            mmBox.Text = _owner.Calibration.For(id).StepsPerMm?.ToString("0.####") ?? "";
+            Controls.Add(mmBox);
+            x = Math.Max(x, mmBox.Right + gap);
+
             setMin.Click += (s, e) => { _owner.SetCalibrationMin(id); UpdateUi(); };
             clearMin.Click += (s, e) => { _owner.ClearCalibrationMin(id); UpdateUi(); };
             setMax.Click += (s, e) => { _owner.SetCalibrationMax(id); UpdateUi(); };
@@ -124,7 +147,7 @@ namespace NanotecController
             if (find != null) find.Click += async (s, e) => { await _owner.FindLimitsAsync(id); UpdateUi(); };
             goHome.Click += async (s, e) => { await _owner.GoHomeAsync(id); UpdateUi(); };
 
-            _rows[id] = new Row(readout, setMin, clearMin, setMax, clearMax, setHome, find, goHome);
+            _rows[id] = new Row(readout, setMin, clearMin, setMax, clearMax, setHome, find, goHome, mmBox);
             return x;
         }
 
@@ -147,6 +170,32 @@ namespace NanotecController
                 if (r.SetHome != null) r.SetHome.Enabled = canCapture;
                 if (r.Find != null) r.Find.Enabled = canMove;
                 r.GoHome.Enabled = canMove && _owner.HomeTargetFor(id).HasValue;
+            }
+        }
+
+        // Parses and persists all three steps/mm entries (empty clears one). All-or-nothing:
+        // a bad entry aborts before anything is stored, so the file never holds a half-edit.
+        private void SaveStepsPerMm()
+        {
+            var parsed = new Dictionary<AxisId, double?>();
+            foreach (AxisId id in CalibAxes)
+            {
+                string t = _rows[id].StepsPerMm.Text.Trim();
+                if (t.Length == 0) { parsed[id] = null; continue; }
+                if (!double.TryParse(t, out double v) || v <= 0)
+                {
+                    MessageBox.Show(this, $"{id} steps/mm must be a positive number (or empty to clear it).",
+                        "Steps per mm", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                parsed[id] = v;
+            }
+            foreach (AxisId id in CalibAxes) _owner.Calibration.For(id).StepsPerMm = parsed[id];
+            try { _owner.Calibration.Save(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Save failed: " + ex.Message,
+                    "Steps per mm", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

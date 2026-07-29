@@ -12,14 +12,37 @@ namespace NanotecController
     // NanoLib is single-channel and access must be serialized. (Partial of FrmMain.)
     public partial class FrmMain
     {
-        // --- Calibration (separate window) ----------------------------------------
+        // --- Calibration (chooser → two separate windows) -------------------------
+        // The button now offers a choice: the axis travel-limits/home window, or the vision
+        // camera-scale + centre-find window (which is fed the main-screen camera).
+
+        private ContextMenuStrip? _calibMenu;
+        private FrmVisionProtocols? _visionProtocolsFromCalib;
 
         private void calibButton_Click(object? sender, EventArgs e)
         {
-            if (_calibWindow == null || _calibWindow.IsDisposed)
-                _calibWindow = new FrmCalibration(this);
-            _calibWindow.Show();
-            _calibWindow.BringToFront();
+            _calibMenu ??= BuildCalibMenu();
+            _calibMenu.Show(calibButton, new Point(0, calibButton.Height));
+        }
+
+        private ContextMenuStrip BuildCalibMenu()
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Axes — travel limits && home…", null, (s, e) =>
+            {
+                if (_calibWindow == null || _calibWindow.IsDisposed)
+                    _calibWindow = new FrmCalibration(this);
+                _calibWindow.Show();
+                _calibWindow.BringToFront();
+            });
+            menu.Items.Add("Vision — camera scale && centres…", null, (s, e) =>
+            {
+                if (_visionProtocolsFromCalib == null || _visionProtocolsFromCalib.IsDisposed)
+                    _visionProtocolsFromCalib = new FrmVisionProtocols(this, _visionView) { Owner = this };
+                _visionProtocolsFromCalib.Show();
+                _visionProtocolsFromCalib.BringToFront();
+            });
+            return menu;
         }
 
         private async void homeAllButton_Click(object? sender, EventArgs e) => await HomeAllAsync();
@@ -44,11 +67,10 @@ namespace NanotecController
                 Text = "Position Map...",
                 Location = new Point(694, 452),
                 Size = new Size(168, 40),
-                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Enabled = false,
             };
             positionButton.Click += positionButton_Click;
-            Controls.Add(positionButton);
+            leftPanel.Controls.Add(positionButton);
         }
 
         private void positionButton_Click(object? sender, EventArgs e)
@@ -73,6 +95,37 @@ namespace NanotecController
             if (_lastPos.TryGetValue(id, out long raw)) { user = ToUser(id, raw); return true; }
             user = 0;
             return false;
+        }
+
+        /// <summary>
+        /// Reads X and Y from the drives RIGHT NOW (USER frame), bypassing the <see cref="_lastPos"/>
+        /// cache, and refreshes that cache. The cache is fed by statusTimer, which RunDriveOp stops for
+        /// the duration of every drive op and only restarts on BusyScope.Dispose — so for at least one
+        /// timer period after an awaited move it still holds the PRE-MOVE position. The manual
+        /// centre-find never noticed (the operator clicks with the stage long parked), but the auto
+        /// centre-find pairs a position with a freshly-grabbed frame: a stale M would build every rim
+        /// point E = M + A·(p_cross − p_edge) against the wrong place. False if the link is down, an
+        /// op is in progress, or the read fails.
+        /// </summary>
+        public bool TryReadUserXyNow(out long x, out long y)
+        {
+            x = y = 0;
+            if (!CanCaptureCalibration) return false;
+            try
+            {
+                long rawX = _motion!.GetStatus(AxisId.X).Position;
+                long rawY = _motion.GetStatus(AxisId.Y).Position;
+                _lastPos[AxisId.X] = rawX;
+                _lastPos[AxisId.Y] = rawY;
+                x = ToUser(AxisId.X, rawX);
+                y = ToUser(AxisId.Y, rawY);
+                return true;
+            }
+            catch (DriveException ex)
+            {
+                AppendLog($"ERROR: read X/Y position: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>
@@ -118,15 +171,15 @@ namespace NanotecController
                 //    arrive, so X/Y never traverse while Z is still down (collision).
                 _motion!.RecoverIfQuickStopped(AxisId.Z);   // clear a quick stop so the move runs
                 _motion.MoveAbsolute(AxisId.Z, zT.Value, zSpd);
-                if (!_motion.WaitForMotionComplete(AxisId.Z, FIND_TIMEOUT_MS))
+                if (!WaitOrStop(AxisId.Z, FIND_TIMEOUT_MS))
                     throw new DriveException("Z did not reach Home in time - aborting before X/Y move.");
                 // 2) X and Y together: issue both moves, then wait for both to finish.
                 _motion.RecoverIfQuickStopped(AxisId.X);
                 _motion.RecoverIfQuickStopped(AxisId.Y);
                 _motion.MoveAbsolute(AxisId.X, xT.Value, xSpd);
                 _motion.MoveAbsolute(AxisId.Y, yT.Value, ySpd);
-                _motion.WaitForMotionComplete(AxisId.X, FIND_TIMEOUT_MS);
-                _motion.WaitForMotionComplete(AxisId.Y, FIND_TIMEOUT_MS);
+                WaitOrStop(AxisId.X, FIND_TIMEOUT_MS);
+                WaitOrStop(AxisId.Y, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Home All complete." : "Home All FAILED - see error above.");
         }
@@ -181,7 +234,7 @@ namespace NanotecController
             bool ok = await RunDriveOp(() =>
             {
                 foreach ((AxisId id, long pos) t in targets) { _motion!.RecoverIfQuickStopped(t.id); _motion.MoveAbsolute(t.id, t.pos, HomeSpeedFor(t.id)); }
-                foreach ((AxisId id, long pos) t in targets) _motion!.WaitForMotionComplete(t.id, FIND_TIMEOUT_MS);
+                foreach ((AxisId id, long pos) t in targets) WaitOrStop(t.id, FIND_TIMEOUT_MS);
             });
             AppendLog(ok ? "Move complete." : "Move FAILED - see error above.");
         }
@@ -265,7 +318,7 @@ namespace NanotecController
                 before = _motion!.GetStatus(id).Position;
                 _motion.RecoverIfQuickStopped(id);   // clear a limit-induced quick stop so the move runs
                 _motion.MoveAbsolute(id, target.Value, speed);
-                reached = _motion.WaitForMotionComplete(id, FIND_TIMEOUT_MS);
+                reached = WaitOrStop(id, FIND_TIMEOUT_MS);
                 after = _motion.GetStatus(id).Position;
             });
             if (!ok)
@@ -296,10 +349,20 @@ namespace NanotecController
                 TrySaveCalibration();
                 AppendLog($"{id} limits: Min={c.Min:N0}, Max={c.Max:N0}, Home(centre)={c.Center:N0}.");
             }
+            catch (OperationCanceledException)
+            {
+                AppendLog($"Find {id} limits STOPPED by operator.");
+            }
             catch (Exception ex)
             {
                 AppendLog($"Find {id} limits FAILED: {ex.Message}");
             }
+        }
+
+        // Operator STOP inside a limit-find poll loop: halt the axis and abandon the find.
+        private void ThrowIfStopped(AxisId id)
+        {
+            if (_stopRequested) { _motion!.Stop(id); throw new OperationCanceledException("Limit-find stopped by operator."); }
         }
 
         // Background worker: jog to one end, recover + back off, jog to the other end.
@@ -330,6 +393,7 @@ namespace NanotecController
                 int waited = 0;
                 while ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) != 0 && waited < BACKOFF_TIMEOUT_MS)
                 {
+                    ThrowIfStopped(id);
                     System.Threading.Thread.Sleep(FIND_POLL_MS);
                     waited += FIND_POLL_MS;
                 }
@@ -349,6 +413,7 @@ namespace NanotecController
             int waited = 0;
             while (waited < FIND_TIMEOUT_MS)
             {
+                ThrowIfStopped(id);
                 long now = _motion.GetDigitalInputs(id) & SW_LIMIT_BITS;
                 if ((now & ~baseline) != 0)
                 {
@@ -374,6 +439,7 @@ namespace NanotecController
             int waited = 0;
             while ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) != 0 && waited < FIND_TIMEOUT_MS)
             {
+                ThrowIfStopped(id);
                 System.Threading.Thread.Sleep(FIND_POLL_MS);
                 waited += FIND_POLL_MS;
             }
