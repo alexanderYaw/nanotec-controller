@@ -9,10 +9,10 @@ inspection table's four EtherCAT axes — **X, Y, Z, and Θ (the rotary chuck)**
 Nanotec drives using **NanoLib** over **EtherCAT (CoE / CiA 402)** with an **Npcap soft
 master**.
 
-> **Status:** This application is still being brought up on real hardware. Treat every
-> first motion on a new machine as a commissioning step: keep the E-stop within reach,
-> start at low jog speeds, and confirm each axis moves the way you expect before trusting
-> automated moves (Home All, Go Home, Find Limits).
+> **Commissioning note.** Treat every first motion on a new machine as a commissioning step:
+> keep the E-stop within reach, start at low jog speeds, and confirm each axis moves the way
+> you expect before trusting automated moves (Home All, Go Home, Find Limits, Auto
+> Centre-Find). Position and velocity values are the **drive's own units**, not mm/deg.
 
 For how the software works internally, see the **[Developer Guide](../developer-guide/)**.
 
@@ -26,6 +26,9 @@ For how the software works internally, see the **[Developer Guide](../developer-
 * **.NET 10 (Windows) runtime / SDK** — to build and run.
 * The **NanoLib** package (`nanotec.services.nanolib` 1.4.0) is restored automatically as
   a project dependency.
+* **HALCON** (26.05 Progress) — for the camera and the vision protocols. It is referenced by
+  an absolute path in the project file, so it must be installed at that location to build.
+  Motion works even if the camera fails to open; only the vision features go dark.
 
 ### The application must run **as Administrator**
 Raw packet access through Npcap requires elevation. If you launch without admin rights,
@@ -42,21 +45,34 @@ the bus scan will either find no adapters or fail to open the EtherCAT NIC.
 
 ## 2. The main window at a glance
 
+The window has a **left column** (all motion controls) and a **right column** (the live camera).
+
+> ⚠️ **The screenshot below is out of date.** It predates the camera column, the STOP button,
+> the RAW/VISION mode switch, the relative-move panel, the direction d-pad, and the move of the
+> log into a pop-out window. Use the table, not the picture, until it is re-captured.
+
 ![Main window annotated](images/main-window-annotated.png)
 
-| Ref. no | Area | What it does |
-|---|---|---|
-| 1.|**Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
-| 2.|**Connect / Disconnect** | Open or close the link to all drives. |
-| 3.|**Parameters…** | Opens the parameters window: a read-only dump of each drive's limits & unit/scaling settings, plus an **expert** option to write objects (RAM) or save to NV (see §10). |
-| 4.|**Calibration…** | Opens the travel-limits & Home window (see §8). |
-| 5.|**Enable All / Disable All** | Energise / de-energise all drives. |
-| 6.|**Home All** | Retract Z, then send X & Y to their home positions (see §7). |
-| 7.|**Per-axis rows (X / Y / Z / Θ)** | Speed slider, **−/+ hold-to-jog** buttons, and a live position + state readout per axis. |
-| 8.|**Input source (Off / USB / On-screen)** | Selects the joystick input (see §6). |
-| 9.|**On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
-| 10.|**Position Map…** | Opens the absolute-positioning window: click an XY grid (or type X/Y/Z) to set a target, then Go (see §9). |
-| 11.|**Log** | Timestamped record of everything the app did. Read it — it reports every stop, limit, and error. |
+| Area | What it does |
+|---|---|
+| **Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
+| **Connect / Disconnect** | Open or close the link to all drives. |
+| **Parameters…** | Opens the parameters window: a read-only dump of each drive's limits, unit/scaling and motion-state objects, plus an **expert** option to write objects (RAM) or save to NV (see §12). |
+| **Calibration…** | Opens a small menu with two entries: **Axes — travel limits & home** (see §8) and **Vision — camera scale & centres** (see §10). |
+| **Enable All / Disable All** | Energise / de-energise all drives. |
+| **Home All** | Retract Z, then send X & Y to their home positions (see §8). |
+| **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
+| **RAW / VISION mode switch** | Changes what the whole motion cluster means (see §5). |
+| **Per-axis rows (X / Y / Z / Θ)** | Speed slider + live position and state readout per axis. |
+| **Direction d-pad** | ◀ ▶ for X, ▲ ▼ for Y, ▲ ▼ for Z, ↺ ↻ for Θ — **hold to move, release to stop**. |
+| **Invert X/Y/Θ** | Flips the commanded direction of the in-plane and rotary axes so the controls match an inverted camera view. RAW mode only. |
+| **Vision jog speed** | A separate speed slider used by VISION-mode X/Y motion. |
+| **Input source (Off / Joystick / On-screen)** | Selects the manual input (see §6). |
+| **On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
+| **Relative move (mm / °)** | Type a distance and press Go; also **Move to chuck centre** / **Move to wafer centre** (see §11). |
+| **Position Map…** | Opens the absolute-positioning window: click an XY grid (or type X/Y/Z) to set a target, then Go (see §9). |
+| **Camera column** (right) | The live view plus its toolbar — zoom, crosshair, invert, mono, measure, capture, save — and a last-capture thumbnail with **Retry camera** (see §10). |
+| **Log…** (status strip) | The strip shows the latest line; the button opens the full timestamped log in its own window. Read it — it reports every stop, limit, and error. |
 
 ---
 
@@ -93,42 +109,64 @@ or disabling always halts motion first.
 
 ---
 
-## 5. Jogging with the on-screen buttons
+## 5. Jogging — and the RAW / VISION mode switch
 
-Each axis row has:
-* A **speed slider** — that axis's jog speed (in the drive's own velocity units). The
-  live value is shown beside it. Each axis has its own sensible default and maximum.
-* **− and +** buttons — **hold to move, release to stop.** Motion only lasts as long as
-  you hold the button. There is no "latched" jog.
+Each axis row has a **speed slider** — that axis's jog speed, in the drive's own velocity
+units, with the live value shown beside it. The **d-pad arrows** are **hold to move, release to
+stop**; there is no "latched" jog. The speed is taken at the moment you press, so set the
+slider first, then press and hold.
 
-The speed is taken at the moment you press, so set the slider first, then press and hold.
+The same controls mean two different things depending on the mode:
+
+| | **⚙ RAW** | **🎥 VISION** |
+|---|---|---|
+| X / Y | jog the drive axis directly | move along the **screen** axes — the image slides purely left/right or up/down even though the camera is mounted at an angle |
+| Z | jog the drive axis | *(unchanged — Z is always raw)* |
+| Θ | spin the chuck | **rotate about the crosshair**: the chuck turns while X/Y follow, so whatever is under the crosshair stays put |
+
+Notes:
+* **Switching mode stops everything first**, so nothing carries over with a changed meaning.
+* VISION mode needs the **camera-scale calibration** (§10); rotating about the crosshair also
+  needs a **chuck centre** and the rotation sign. If they're missing, the log says so and
+  nothing moves.
+* In VISION mode the X/Y speed comes from the separate **Vision jog speed** slider, and the Θ
+  row slider becomes the **rotation** speed. The **Invert X/Y/Θ** toggle is disabled — the
+  drift-corrected jog deliberately ignores it.
 
 ---
 
 ## 6. Joystick control
 
-Pick the input with the **Off / USB / On-screen** radio buttons (only available once
-drives are enabled). The two joysticks are mutually exclusive.
+Pick the input with the **Off / Joystick / On-screen** radio buttons (only available once
+drives are enabled). The two are mutually exclusive.
 
-### USB joystick
-Any controller Windows lists in **`joy.cpl`** works. The default button map:
+### The physical joystick
+The joystick is **analog and wired directly into the drives** — it is *not* a USB game
+controller, so nothing appears in `joy.cpl` and nothing needs installing. The app reads the
+pots through the drives themselves.
 
-| Button | Function |
-|---|---|
-| **1** | **Deadman** — *must be held* for any motion. Release = immediate stop. |
-| **2** | **Fast** — multiplies the jog speed (capped at each axis's slider maximum). |
-| 3 / 4 | Z − / Z + |
-| 5 / 6 | Θ − / Θ + |
+* **Deflect to move, centre to stop.** Speed is proportional to how far you push; full
+  deflection = that axis's slider speed.
+* **Twisting the knob** drives Θ — a plain chuck spin in RAW mode, or a rotation about the
+  crosshair in VISION mode (release the twist to stop).
+* **There is no deadman button.** The machine's candidate deadman input is wired as the
+  drives' interlock — pressing it *faults* X and Z rather than enabling motion — so it is not
+  used. Moving requires only that the drives are enabled and the stick is deflected.
 
-The main stick drives **X/Y**; the D-pad/hat also works. Stick directions are digital
-(full speed when deflected). **If the joystick is unplugged or vanishes mid-use, all
-axes stop.**
+**Centring:** when you select the Joystick source, the app averages the first few readings to
+learn where "centre" is. **Leave the stick alone for that moment** — the status label and the
+live view both say `centring` while it happens. If you move it during the window the app
+discards the samples and starts over, because a biased centre would make the stick appear
+permanently deflected.
+
+If a joystick read fails, the app stops the axes it was driving and shows `Joystick: read
+FAILED`.
 
 ### On-screen joystick (mouse)
-Drag the **puck** inside the circle. Unlike the USB stick this is **analog**: the puck's
-angle sets the X/Y direction and how far you push sets the speed (rim = that axis's slider
-speed). **Release the mouse and the puck springs back to centre → motion stops.** There is
-no deadman — holding the mouse *is* the intent.
+Drag the **puck** inside the circle. The puck's angle sets the X/Y direction and how far you
+push sets the speed (rim = the relevant slider speed). **Release the mouse and the puck springs
+back to centre → motion stops.** Holding the mouse *is* the intent. In VISION mode the puck
+drives the drift-corrected screen jog instead of the raw axes.
 
 ---
 
@@ -154,8 +192,9 @@ Important caveats:
 
 ![calibration-window](images/calibration-window.jpg)
 
-Open it with **Calibration…**. It shows X, Y, Z (Θ has no home and is excluded). All
-calibration values are saved to `calibration.json` next to the app and survive restarts.
+Open it with **Calibration… → Axes — travel limits & home**. It shows X, Y, Z (Θ has no home
+and is excluded). All calibration values are saved to `calibration.json` next to the app and
+survive restarts — that one file also holds the vision calibration from §10.
 
 For each axis:
 * **Set Min / Set Max** — jog the axis to a position in the main window, then click to
@@ -168,6 +207,9 @@ For each axis:
   when done.
 * **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
   explicit Home for Z) and reports how close it landed.
+* **Steps/mm** — type the axis's motor steps per millimetre (from the stage's mechanical spec)
+  and press **Save**. Nothing moves. This is what makes the **relative moves in mm** (§11) and
+  the camera's **1 mm crosshair ticks** correct — enter it once per machine.
 
 Home model summary:
 * **X / Y:** Home = midpoint of the two limits (needs both Min and Max set).
