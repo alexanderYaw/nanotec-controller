@@ -165,7 +165,7 @@ namespace NanotecController
             _saveBtn.Enabled = true;
         }
 
-        // Saves the last capture as a PNG under Desktop\images (created if missing).
+        // Saves the last capture as a BMP under Desktop\images (created if missing).
         private void SaveCapture()
         {
             if (_lastCapture == null) { AppendLog("Capture an image first."); return; }
@@ -175,8 +175,8 @@ namespace NanotecController
                     Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "images");
                 Directory.CreateDirectory(dir);
                 string path = Path.Combine(dir,
-                    "capture_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".png");
-                _lastCapture.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    "capture_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".bmp");
+                _lastCapture.Save(path, System.Drawing.Imaging.ImageFormat.Bmp);
                 AppendLog("Saved " + path);
             }
             catch (Exception ex)
