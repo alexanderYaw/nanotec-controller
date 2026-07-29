@@ -258,16 +258,103 @@ Notes:
 
 ---
 
-## 10. Parameters (read & write drive settings)
+## 10. The camera and the vision protocols
+
+### The live view (main window, right column)
+The camera streams as soon as the app starts — it is independent of the drives, so a camera
+problem never blocks motion (and vice versa). If it fails to open, a **Retry camera** button
+appears; everything drive-side keeps working.
+
+Toolbar:
+
+| Control | What it does |
+|---|---|
+| **Zoom** (1×…10×) | A centred crop on the sensor — a *real* narrowing of the field of view, not a display scale. |
+| **Crosshair** | Shows the centre crosshair with **1 mm tick marks**. The ticks only appear once both the camera scale (below) and the axis **steps/mm** (§8) are set. |
+| **Invert** | 180° flip for display — on by default, because the camera is mounted inverted. |
+| **Mono** | Grey + contrast stretch, display only. |
+| **Measure** | A draggable ruler on the view; its length is reported in mm and follows the zoom automatically. |
+| **Capture / Save** | Grab a full-resolution still into the thumbnail, then save it as a `.bmp` under `Desktop\images`. |
+
+**Invert, Mono and Zoom are display settings — the detectors always run on the raw
+full-resolution frame.**
+
+### The protocols window
+Open it with **Calibration… → Vision — camera scale & centres**. It owns no camera of its own:
+it mirrors the main view on the left, shows each detection's overlay on the right, and drives
+the stage through the main window. It also carries a convenience copy of the vision jog and
+hold-to-rotate so you can nudge the stage while watching this window.
+
+Do these in order — each one depends on the ones before it:
+
+**1. Camera scale calibration.** Put the circular calibration fiducial in view, then repeatedly:
+jog the table a little, press **Add Sample**. You need **≥3 samples that move in *both* X and
+Y** — samples along a single line cannot define the mapping and will be rejected. Press
+**Compute & Save A**. The result reports an RMS residual; a small one means the relationship
+really is linear. Everything else on this page — the VISION jog, both centre-finds, the
+rotation — depends on this.
+
+**2. Chuck centre-find.** With the chuck edge in view, press **Add Edge** at several spots
+**spread around the rim** (≥3, more is better). Each press detects the rim point and records
+where the table would have to be to put it on the crosshair. **Add at Crosshair** is the manual
+alternative: jog the edge onto the crosshair by eye and record the position directly. You can
+**Delete Selected** a bad point or **Clear Edges** and start over. Then **Compute Centre**, and
+**Go to Centre** to drive there. The result is saved and reloaded on the next run.
+
+**3. Auto chuck centre-find** (does step 2 for you). Rough-centre the chuck by hand, set focus,
+type the **nominal chuck radius in steps**, and press **Auto Centre-Find**. The stage probes
+outward in eight directions, returning to the centre between each, and fits the result. Before
+starting, confirm the three things it asks: the chuck is roughly centred, Z/focus is set so the
+edge is sharp, and **the rim is not already in view**. The log pane is the transcript of the
+run — which directions found an edge and where. **Cancel** stops it; a cancelled or aborted run
+**discards its points** rather than leaving a half-collected set.
+
+> **Safety:** this is the one automatic feature that drives the table on its own. It aborts any
+> direction that travels past **1.8 × the radius you typed**, and never commands a target
+> outside the stored X/Y travel limits. If X/Y have no limits set, that radius guard is the
+> *only* backstop — it warns you before running. **Z is never moved.** Type the radius
+> carefully; too large a value means a longer runaway before the guard fires.
+
+**4. Wafer centre-find.** The same flow as the chuck (**Add Wafer Edge** → **Compute Centre** →
+**Go to Centre**) but detecting the wafer rim, kept as a separate stored centre.
+
+**5. Rotate about the crosshair.** Needs the camera scale **and** a chuck centre. Run the
+one-time **Sign test** first — it establishes which way a positive Θ move appears on screen and
+is saved permanently. Then **Rotate by°** / **Rotate to°** turn the chuck while X/Y keep the
+point under the crosshair pinned. The rotation *speed* is the Θ slider on the main window in
+VISION mode.
+
+---
+
+## 11. Relative moves in mm and degrees
+
+The **Relative move** panel takes a distance per axis — **mm** for X/Y/Z, **degrees** for Θ —
+and a **Go**. It is mode-aware, exactly like the jog cluster:
+
+* **RAW** — X/Y/Z move that many mm along the drive axis; Θ turns that many degrees.
+* **VISION** — the mm is measured along the **screen** axis (so it tracks what you see
+  regardless of camera rotation); Θ rotates about the crosshair.
+
+Each **Go** stays greyed until the calibration its move needs exists: **steps/mm** for that
+axis (§8), plus the camera scale for VISION X/Y, plus a chuck centre for VISION Θ. Targets go
+through the same range check as everything else.
+
+**Move to chuck centre** / **Move to wafer centre** drive X/Y straight to the stored centre from
+§10. Both ask for confirmation first — they are unbounded table traverses.
+
+---
+
+## 12. Parameters (read & write drive settings)
 
 Open it with **Parameters…**. It's a separate window with its own output log, and it does two
 very different jobs.
 
 ### Read Params — safe, read-only
 **Read Params (all axes)** dumps each connected drive's key configuration to the window's log
-**without writing anything** — current/torque limits, max speed, the unit/scaling objects that
-define what "position" and "velocity" units actually mean, and a motion-state snapshot (mode,
-target, profile accel/decel).
+**without writing anything** — current/torque limits, max speed, the profile accel/decel ramps,
+the unit/scaling objects that define what "position" and "velocity" units actually mean, and a
+motion-state snapshot (commanded vs displayed mode, statusword, target vs actual position).
+That last group is the one to read **right after** a move that didn't behave.
 
 Typical use: read once, **power-cycle the drives**, read again, and compare to confirm the
 drives kept their settings in non-volatile memory.
@@ -292,22 +379,30 @@ writes.
 
 ---
 
-## 11. Safety behaviours you can rely on
+## 13. Safety behaviours you can rely on
 
 * **Connecting performs no motion.** Drives come up disabled.
 * **Enabling holds position** with zero speed — no lurch (provided no on-drive program is
   running).
-* **All jogging is momentary** — release the button, release the deadman, or re-centre the
-  puck and motion stops.
-* **Losing window focus stops everything** and pauses the joystick. (A running operation —
-  Home, Find Limits, Move, or Go Home — is left alone, since it owns the drives.)
-* **Losing the USB joystick stops all axes.**
+* **All jogging is momentary** — release the arrow, centre the stick, or release the puck and
+  motion stops.
+* **STOP aborts any preplanned move** — Home All, Go Home, Move To, a relative move, a
+  rotation, Find Limits.
+* **Losing window focus stops everything** and pauses the joystick — including a hold-to-rotate
+  that would otherwise keep turning because its mouse-release never arrives. (A running
+  operation — Home, Find Limits, Move, Go Home — is left alone, since it owns the drives.)
+* **A failed joystick read stops the axes it was driving.**
+* **Switching RAW ⇄ VISION stops everything first**, so nothing carries over with a changed
+  meaning.
+* **While the auto centre-find runs, the manual controls are locked out** — the jog buttons,
+  the puck and the joystick all stand down, so a stray nudge cannot corrupt the measurement.
 * **Soft limits stop outward jogs** on calibrated axes.
+* **A camera failure never stops the drives**, and a drive fault never stops the camera.
 * **Closing the window** disables the drives and disconnects cleanly.
 
 ---
 
-## 12. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
@@ -315,9 +410,15 @@ writes.
 | Connect finds **no drives** | Cabling (IN vs OUT port), drive power, wrong adapter chosen in the bus picker. |
 | **Wrong number of drives** found | An unpowered drive or a bad daisy-chain link — check the log for the count. |
 | An axis **moves on Enable** | Disable immediately. Suspect a leftover target or an on-drive (NanoJ) program still running. |
-| Jog buttons are **greyed out** | Drives aren't enabled, or an operation is busy (amber LED), or the axis is parked against a soft limit in that direction. |
+| Jog buttons are **greyed out** | Drives aren't enabled, or an operation is busy (amber LED), or an auto centre-find is running, or the axis is parked against a soft limit in that direction. |
 | **"starting with NO soft limits"** at launch | `calibration.json` was missing/corrupt (a `calibration.corrupt.json` backup is kept). Re-calibrate. |
 | **Lost contact with a drive** in the log | The link dropped after several failed reads; reconnect. The soft master is not real-time, so the occasional miss is tolerated before it gives up. |
+| Joystick shows **"centring — leave the stick alone"** and won't move | It is still learning the stick's centre, and restarts the window whenever the stick moves. Let go of it for a second. |
+| The chuck **keeps rotating** after you let go of the twist | The twist centre was captured while the knob was held. Switch the input source Off and back to Joystick — without touching the knob — to re-capture it. |
+| VISION mode does nothing / logs "needs the camera-scale calibration" | Run the camera scale calibration (§10) first; rotating also needs a chuck centre and the sign test. |
+| **No camera / black view** | Press **Retry camera**. Motion is unaffected — a camera failure never blocks the drives. |
+| Auto centre-find says **"the rim is already in view"** | Jog nearer the centre so the rim is out of frame before starting; it can't tell its own starting edge from the one it's hunting. |
+| Auto centre-find skips directions or reports **no edge within the guard** | Check Z/focus (the chuck detector needs a sharp edge) and the nominal radius you typed. |
 
 ---
 

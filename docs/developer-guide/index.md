@@ -378,6 +378,12 @@ Halt (`0x010F`).
 `InvertDirection` and converts `direction ∈ {-1,0,+1}` + speed into a signed velocity, with
 `0` mapping to a stop.
 
+`UpdateJogVelocity(velocity)` is the hot-loop variant: a **velocity-only** rewrite of 0x60FF on
+an already-running jog (one SDO transaction instead of mode + target + controlword), where zero
+decelerates to a servo hold *without* the halt bit — so there is no halt/run controlword
+flipping around zero. Arm with `StartManualJog` first. The rotation follow loop (§15 B) uses
+it because it re-commands three axes every 25 ms and SDO traffic sets the loop period.
+
 ---
 
 ## 8. Point-to-point — Profile Position + the set-point handshake
@@ -872,8 +878,8 @@ extracts that ridge directly as a sub-pixel line. The HDevelop tuning script
 2. **Fine sharpness map.** `sobel_amp('sum_abs', SobelWidth)` → gradient magnitude (high where
    sharp), then `mean_image(FineWindow, FineWindow)` with a **small** window so in-focus detail
    stays crisp and the in-focus/out-of-focus boundary reads as a thin bright ridge. A coarse
-   window (the old `EnergyWindow`) would blur that ridge into the halo — `FineWindow` is the key
-   knob.
+   window would blur that ridge into the halo — `FineWindow` is the key knob, and the reason a
+   coarse focus-energy map does not work here.
 3. **Extract ridges.** `lines_gauss(LineSigma, LineLow, LineHigh, 'light', …)` traces bright
    curvilinear ridges at **sub-pixel** accuracy. `LineSigma` ≈ the ridge half-width;
    `LineLow`/`LineHigh` are the hysteresis thresholds on line response (low, because the pooled

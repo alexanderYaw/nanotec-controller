@@ -21,7 +21,7 @@ This guide is cross-checked against the official Nanotec example
 
 | Requirement | Why | How to confirm |
 |---|---|---|
-| **x64 process** | `nanolibm_ethercat.dll` is x64-only | `Program.cs` already aborts if `!Environment.Is64BitProcess` |
+| **x64 process** | `nanolibm_ethercat.dll` is x64-only | `Program.cs` aborts with a dialog if `!Environment.Is64BitProcess` |
 | **Npcap (WinPcap-compatible mode)** | EtherCAT master sends raw Ethernet frames via the packet-capture driver | Without it, no EtherCAT NIC appears in the scan |
 | **Run as Administrator** | Raw frame capture/injection needs elevation | — |
 | **Native NanoLib DLLs deployed** | `nanolibm_ethercat.dll` + friends must sit next to the exe | Check `bin\Debug\net10.0\` after build; they ship in the package's `runtimes/win-x64/native/` |
@@ -65,13 +65,20 @@ is the standard way a soft EtherCAT master runs on Windows.
 
 ### Timing expectations & robustness
 - **For this app (acyclic SDO only):** soft Npcap timing is fully adequate.
-  SDO is request/response with no deadline; the 50 ms status poll is fine.
+  SDO is request/response with no deadline; the 200 ms status poll and the 50 ms
+  joystick poll are both fine.
 - **A software master is NOT real-time.** A frame can occasionally be lost or
   arrive late under Windows scheduling. NanoLib retries internally per its
-  EtherCAT bus options (see below). The app's live-readout loop also tolerates a
-  few consecutive failed reads before escalating to safe shutdown
-  (`MAX_CONSECUTIVE_READ_FAILURES` in `Program.cs`) — a single hiccup shows a
-  transient "link hiccup" indicator instead of aborting.
+  EtherCAT bus options (see below). The app's status poll also tolerates a few
+  consecutive failed reads before declaring the link lost
+  (`MAX_CONSECUTIVE_READ_FAILURES = 5`, in `FrmMain.cs`; enforced in
+  `FrmMain.Jog.cs`'s `statusTimer_Tick`) — a single hiccup is ignored rather
+  than aborting.
+- **The one timing-sensitive path** is the rotate-about-crosshair follow loop
+  (~25 ms, three axes under velocity command). It is tuned to tolerate soft-master
+  jitter — feedforward carries the baseline velocity so the proportional trim can
+  stay low — but it is the first thing to suffer if the NIC is shared or power
+  management is left on.
 - **If you later add cyclic PDO / the Sampler:** revisit this seriously. Missed
   cycles drop slaves from OPERATIONAL back to SAFE-OP (watchdog ▸ drive stops),
   and **Distributed Clocks (DC) sync is effectively unavailable** with a pure soft
@@ -112,9 +119,10 @@ you see spurious comm errors under load, add options via `busHwOptions.addOption
 
 ## 3. Software connection sequence
 
-This is the ladder the app climbs. **Each rung is a gate** — if it fails, the
-ones above are meaningless. (Method names are the actual NanoLib API; see the
-`Program.cs` flow and `BusFunctionsExample.cs` / `DeviceFunctionsExample.cs`.)
+This is the ladder the app climbs, in `Drive/MultiAxisConnection.cs`
+(`ListBuses` → `Connect`). **Each rung is a gate** — if it fails, the ones above
+are meaningless. (Method names are the actual NanoLib API; see also
+`BusFunctionsExample.cs` / `DeviceFunctionsExample.cs`.)
 
 | # | Step | API call | Confirms |
 |---|------|----------|----------|
@@ -215,31 +223,41 @@ Discovered from `MotorFunctionsExample.cs` — do these or motion may misbehave:
 
 3. **Verify velocity scaling — this matters for safety.** The example's Profile
    Velocity demo writes `0x3C` (= **60**) with the comment *"desired speed in
-   rpm (60)"*. So the default Target Velocity (`0x60FF`) unit is **rpm**.
-   This app's `JOG_VELOCITY = 1500` therefore likely means **~1500 rpm**, which is
-   *very* fast for a wafer chuck. Before first motion:
-   - Confirm the scaling/factor-group objects (`0x6091`–`0x6096`) on your drive.
-   - Set `JOG_VELOCITY` to a deliberately low, validated value (start small).
+   rpm (60)"*, so the stock Target Velocity (`0x60FF`) unit is **rpm** — but the
+   unit is configurable per axis via the factor group, and these drives are not on
+   the stock scaling (empirically **1 velocity unit ≈ 1 step/s** on X/Y, which is
+   the basis of the rotation feedforward constants). Before first motion:
+   - Confirm the scaling/factor-group objects (`0x6091`–`0x6096`) on your drive —
+     **Read Params** dumps exactly these.
+   - Check the per-axis jog speeds in `TableAxes.Default` (`Drive/MotionTypes.cs`):
+     each axis has its own `JogVelocityDefault` (the slider's starting value) and
+     `JogVelocityMax` (its ceiling). Lower them if the scaling turns out different
+     from what the current values assume.
 
 ---
 
-## 6. Connection self-test (recommended addition to `Program.cs`)
+## 6. What the app actually checks on connect
 
-Drop this in right after `connectDevice` succeeds, **before** `EnableDrive`, and
-route a failure through the existing safe-teardown:
-```csharp
-var conn = accessor.getConnectionState(handle).getResult();
-Console.WriteLine($"Connection state : {conn}");
-Console.WriteLine($"Device           : {accessor.getDeviceName(handle).getResult()}");
-Console.WriteLine($"Firmware build   : {accessor.getDeviceFirmwareBuildId(handle).getResult()}");
-Console.WriteLine($"EtherCAT state   : {accessor.getDeviceState(handle).getResult()}");
-if (conn != DeviceConnectionStateInfo.Connected)
-{
-    Console.WriteLine("Not fully connected — aborting before enabling drive.");
-    return; // finally block runs safe shutdown
-}
-// (optional) read 0x1003:00 error count and abort if > 0
-```
+`MultiAxisConnection.Connect` (`Drive/MultiAxisConnection.cs`) implements **Layer 2** of the
+ladder above and logs the result per drive:
+
+* Opens the adapter, scans the line, and reports the drive **count** — a mismatch against the
+  expected 4 is a **warning**, not a hard failure.
+* `addDevice` + `connectDevice` for every drive **in scan order**; a failure at any position
+  tears down everything connected so far (`TeardownPartial`) rather than running half-open.
+* Reads each drive's **name / serial / firmware build** and logs it against its bus position.
+  That log line is the cross-check that bus position maps to the axis you think it does —
+  read it every time.
+
+Two rungs are **not** automated, so do them by hand when something looks wrong:
+
+* **Layer 1 — connection state.** `getConnectionState` / `checkConnectionState`, in particular
+  to catch `ConnectedBootloader`.
+* **Layer 3 — error stack.** Object `0x1003` (count at sub-index 0, entries above). The
+  **Parameters** window's expert read row can fetch these without adding code.
+
+**Connecting never enables a drive or commands motion** — that is always a separate, explicit
+step (`AxisDriver.EnableDrive`).
 
 ---
 
@@ -253,8 +271,9 @@ if (conn != DeviceConnectionStateInfo.Connected)
 | Connected but reads error out | Slave stuck in INIT, or link dropped |
 | `ConnectedBootloader` | Drive in firmware-update mode — power-cycle |
 | Connected, PRE-OP, but motor won't move | CiA 402 not at Operation Enabled, or drive in Fault (check `0x1003`) |
-| Motor moves unexpectedly fast | Velocity unit is rpm — `JOG_VELOCITY` too high |
+| Motor moves unexpectedly fast | Velocity scaling isn't what the jog speeds assume — check `0x6091`–`0x6096` and lower `TableAxes.Default` |
 | Commands ignored / fought | A NanoJ program is running — write `0` to `0x2300` |
+| An absolute move "completes" but the stage didn't move | Read the **motion-state** group right after (mode display 0x6061 vs commanded 0x6060, 0x607A vs 0x6064) — a mode that hadn't switched yet used to swallow the set-point |
 
 ---
 
