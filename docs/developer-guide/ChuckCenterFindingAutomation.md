@@ -12,8 +12,10 @@ directions, detecting a rim point in each, and fits the centre — with no per-p
 
 **This is implemented.** It ships as the *Auto Centre-Find* controls in the vision protocols
 window; the code is `Vision/FrmVisionProtocols.AutoCentre.cs`. This page explains *why* it is
-shaped the way it is; the developer guide's **§17** documents the as-built behaviour, and the
-user guide's **§10** the operator procedure. Where they disagree with this page, they win.
+shaped the way it is — starting with the **edge detector**, which both the manual and the
+automatic flow share and whose behaviour dictates the shape of the scan. The developer guide's
+**§17** documents the as-built automation, and the user guide's **§10** the operator procedure.
+Where they disagree with this page, they win.
 
 > **Frame.** As in the analysis page, every detected edge pixel becomes the stage position
 > that would bring it onto the fixed crosshair,
@@ -21,6 +23,60 @@ user guide's **§10** the operator procedure. Where they disagree with this page
 > with $\mathbf{M}$ the stage position at capture and $A$ the calibrated pixel$\rightarrow$step
 > affine. The collected $\mathbf{E}$ all lie on the chuck's rim circle; fitting it (Pratt)
 > gives the centre.
+
+## The edge detector — a focus RIDGE, not brightness (`Vision/ChuckEdgeDetector.cs`)
+
+Everything below follows from what the detector can and cannot see, so it is documented here.
+The same `ChuckEdgeDetector` serves the manual flow (developer guide **§16 B**) and this
+automatic one; neither changes it.
+
+Across the rim there are **three** zones: the in-focus, sharply-textured chuck face; a thin
+in-focus **dark band**; and beyond it the **out-of-focus** (blurry) background. The true edge is
+the boundary between the in-focus and out-of-focus sides. The two sides are nearly the same
+colour, so brightness can't separate them — and a *coarse* focus-energy map smears the thin dark
+band into the blur, landing the edge on the wrong side of the band. But in a **fine-scale
+sharpness map** (gradient magnitude pooled over a *small* window) that boundary shows up as a
+thin, continuous **bright ridge**: sharp on the chuck side, dark on the blurry side. The detector
+extracts that ridge directly as a sub-pixel line. The HDevelop tuning script
+`Halcon/chuck edge detector.hdev` mirrors this pipeline stage for stage (with
+`dev_display`/`stop` after each), so it can be tuned against representative captures.
+
+`TryDetect(image, crossRow, crossCol, …)` runs on the **full-resolution** frame:
+
+1. **Red channel → byte.** The scene is red-lit, so channel 1 carries the contrast; mono frames
+   pass through (`Preprocess`).
+2. **Fine sharpness map.** `sobel_amp('sum_abs', SobelWidth)` → gradient magnitude (high where
+   sharp), then `mean_image(FineWindow, FineWindow)` with a **small** window so in-focus detail
+   stays crisp and the in-focus/out-of-focus boundary reads as a thin bright ridge. A coarse
+   window would blur that ridge into the halo — `FineWindow` is the key knob, and the reason a
+   coarse focus-energy map does not work here.
+3. **Extract ridges.** `lines_gauss(LineSigma, LineLow, LineHigh, 'light', …)` traces bright
+   curvilinear ridges at **sub-pixel** accuracy. `LineSigma` ≈ the ridge half-width;
+   `LineLow`/`LineHigh` are the hysteresis thresholds on line response (low, because the pooled
+   map has a modest response scale).
+4. **Keep the edge, drop the texture.** `select_contours_xld('contour_length', MinLineLength, …)`
+   keeps only long contours: the chuck edge is one long continuous ridge, while the sharp texture
+   below it produces many short responses that fall away.
+5. **Nearest point wins.** Of every point on the surviving ridge contour(s), return the one
+   **nearest the crosshair** as the `EdgePoint(Row, Column)`. That single point is a true
+   (sub-pixel) point on the rim — which is all the centre-find needs, and it sidesteps the
+   aperture problem (a smooth arc only reveals motion along its normal, so you can't localise
+   *along* it — but you can localise the one point under the crosshair). The ridge contour is
+   optionally returned for overlay; **the caller owns and disposes it**. The input frame is never
+   modified, and every HALCON temp is disposed in a `finally`.
+
+```
+red channel → sobel_amp (sharp=high) → mean_image (FINE window → ridge=bright)
+  → lines_gauss (extract bright ridge, sub-pixel) → select by length (drop texture)
+  → point nearest crosshair
+```
+
+> **Tunables** (`SobelWidth=3`, `FineWindow=9`, `LineSigma=1.5`, `LineLow=0.5`, `LineHigh=1.5`,
+> `MinLineLength=500`) are properties that mirror the `.hdev` script's variables; tune them there
+> first, then copy across.
+
+Two of those stages set the terms for everything below: step 5 is why a rim point is available
+the moment the rim enters the frame, and step 4's `MinLineLength` is what bounds the hop size.
 
 ## The core idea
 
@@ -34,12 +90,11 @@ That is the right shape, with the adjustments below.
 
 ### Detect *in frame*, not *on the crosshair*
 
-`ChuckEdgeDetector.TryDetect(frame, crossRow, crossCol)` returns the rim point **nearest the
-crosshair as soon as the rim is anywhere in the field of view** — it does not require the edge
-to sit *on* the crosshair. The affine then converts that pixel to a step-space rim point. So
-"jog until an edge is detected" means **until the rim enters the frame**, and the moment
-`TryDetect` succeeds you already have a valid rim point. No null-ing servo loop is needed —
-each direction is a plain *coarse-step-until-detected* scan.
+Because `TryDetect` returns the rim point nearest the crosshair **as soon as the rim is anywhere
+in the field of view** (above), the affine can convert that pixel to a step-space rim point
+straight away. So "jog until an edge is detected" means **until the rim enters the frame**, and
+the moment `TryDetect` succeeds you already have a valid rim point. No null-ing servo loop is
+needed — each direction is a plain *coarse-step-until-detected* scan.
 
 ### Command absolute targets, not a continuous jog
 
