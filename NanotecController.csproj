@@ -9,6 +9,10 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- HalconBitmap interleaves HALCON's channel planes straight into the locked Bitmap bits.
+         Full-res captures (the auto centre-find grabs two per hop) otherwise allocated three
+         sensor-sized byte[] on the LOH per frame. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

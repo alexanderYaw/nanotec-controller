@@ -281,7 +281,12 @@ namespace NanotecController
             joystickTimer.Stop();
             try
             {
-                await Task.Run(op);
+                // LongRunning, not Task.Run: these ops Thread.Sleep for their whole duration (up to
+                // ROTATE_MAX_MS / FIND_TIMEOUT_MS — minutes), so parking a pooled worker on one
+                // misleads the pool's thread-injection heuristic.
+                await Task.Factory.StartNew(op, System.Threading.CancellationToken.None,
+                    TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+                    TaskScheduler.Default);
                 return true;
             }
             catch (OperationCanceledException)
@@ -293,6 +298,11 @@ namespace NanotecController
             }
             catch (Exception ex)
             {
+                // Last line of defence: an op that threw OUTSIDE its own try/finally (or has none)
+                // may have left an axis under a velocity command with nothing to halt it — and by the
+                // time this returns, BusyScope has cleared _busy, which greys the STOP button out.
+                // Best-effort, and never masks the original error.
+                try { _motion?.StopAll(); } catch (DriveException) { }
                 AppendLog($"ERROR: {ex.Message}");
                 return false;
             }
@@ -324,6 +334,46 @@ namespace NanotecController
             // only cancels THIS op. RefreshButtons then enables the Stop button and greys the rest.
             public BusyScope(FrmMain f) { _f = f; f._stopRequested = false; f._busy = true; f.RefreshButtons(); }
             public void Dispose() { _f._busy = false; _f.RestartTimers(); _f.RefreshButtons(); }
+        }
+
+        /// <summary>
+        /// Scopes a LONG multi-step op driven from another window (the auto chuck centre-find),
+        /// which is a SEQUENCE of awaited drive ops rather than one. Between those ops <c>_busy</c>
+        /// is false, so without this latch the whole manual motion cluster — and, worse, the polled
+        /// analog joystick — comes back to life mid-run, and an operator nudge silently invalidates
+        /// every rim point collected afterwards (the arrival check only catches a move that FAILED,
+        /// not one that succeeded and was then jogged away from).
+        ///
+        /// Deliberately gates only the MANUAL paths: the running op reaches the drives through
+        /// MoveToAsync/CanMoveCalibration, which must stay open to it.
+        /// </summary>
+        public IDisposable BeginExternalOp(string what) => new ExternalOpScope(this, what);
+
+        private bool _externalBusy;
+
+        /// <summary>True when a manual input source may command motion (see <see cref="BeginExternalOp"/>).
+        /// Carries the <c>_motion != null</c> guarantee to callers so they don't re-check it.</summary>
+        [System.Diagnostics.CodeAnalysis.MemberNotNullWhen(true, nameof(_motion))]
+        private bool ManualInputAllowed => _drivesEnabled && !_busy && !_externalBusy && _motion != null;
+
+        private sealed class ExternalOpScope : IDisposable
+        {
+            private readonly FrmMain _f;
+            private readonly string _what;
+            public ExternalOpScope(FrmMain f, string what)
+            {
+                _f = f; _what = what;
+                f._externalBusy = true;
+                f.StopJoyAxes();   // whatever an input source was driving stops before the run takes over
+                f.AppendLog($"{what}: manual motion controls locked out for the duration.");
+                f.RefreshButtons();
+            }
+            public void Dispose()
+            {
+                _f._externalBusy = false;
+                _f.AppendLog($"{_what}: manual motion controls released.");
+                _f.RefreshButtons();
+            }
         }
 
         // Set by RequestStop (Stop button) to abort a preplanned move in progress. The background
@@ -409,7 +459,7 @@ namespace NanotecController
             if (_busy) return;
             joystickTimer.Stop();
             if (_motion == null) return;
-            try { _motion.StopAll(); } catch { /* best effort */ }
+            try { _motion.StopAll(); } catch (DriveException) { /* best effort */ }
             ResetJoy();
         }
 
@@ -457,16 +507,20 @@ namespace NanotecController
         private void RefreshButtons()
         {
             bool conn = _connection.IsConnected;
-            connectButton.Enabled = !_busy && !conn;
-            disconnectButton.Enabled = !_busy && conn;
-            readParamsButton.Enabled = !_busy && conn;
-            calibButton.Enabled = !_busy && conn;
+            // An external multi-step op (auto centre-find) greys the same controls a running drive op
+            // does, even in the gaps between its individual moves — see BeginExternalOp. The STOP
+            // button below deliberately stays on plain _busy: it cancels the in-flight move.
+            bool uiBusy = _busy || _externalBusy;
+            connectButton.Enabled = !uiBusy && !conn;
+            disconnectButton.Enabled = !uiBusy && conn;
+            readParamsButton.Enabled = !uiBusy && conn;
+            calibButton.Enabled = !uiBusy && conn;
 
-            enableButton.Enabled = !_busy && conn && !_drivesEnabled;
-            disableButton.Enabled = !_busy && conn && _drivesEnabled;
-            homeAllButton.Enabled = !_busy && conn && _drivesEnabled;
-            positionButton.Enabled = !_busy && conn;   // open whenever connected; Go is gated inside the window
-            bool inputOk = !_busy && conn && _drivesEnabled;
+            enableButton.Enabled = !uiBusy && conn && !_drivesEnabled;
+            disableButton.Enabled = !_busy && conn && _drivesEnabled;   // always reachable: it is the manual abort
+            homeAllButton.Enabled = !uiBusy && conn && _drivesEnabled;
+            positionButton.Enabled = !uiBusy && conn;   // open whenever connected; Go is gated inside the window
+            bool inputOk = !uiBusy && conn && _drivesEnabled;
             rbOff.Enabled = inputOk;
             rbUsb.Enabled = inputOk;
             rbScreen.Enabled = inputOk;
@@ -474,15 +528,15 @@ namespace NanotecController
             joystickPad.Enabled = inputOk && rbScreen.Checked && (_jogMode == JogMode.Raw || _calib.PixelStep != null);
 
             // Mode switch only when idle — ApplyJogMode stops motion and swaps the slider ranges.
-            _rawModeBtn.Enabled = !_busy;
-            _visionModeBtn.Enabled = !_busy;
+            _rawModeBtn.Enabled = !uiBusy;
+            _visionModeBtn.Enabled = !uiBusy;
             // Vision jog speed is live only in VISION mode (adjustable whenever connected, like the
             // row sliders — it sets a speed, it doesn't command motion).
             _visionSpeed.Enabled = conn && _jogMode == JogMode.Vision;
             // STOP: live only while a preplanned op is running, and greyed once pressed (until it ends).
             if (_stopButton != null) _stopButton.Enabled = _busy && !_stopRequested;
 
-            bool canJog = !_busy && conn && _drivesEnabled;
+            bool canJog = !uiBusy && conn && _drivesEnabled;
             bool visionXYok = canJog && _calib.PixelStep != null;      // vision X/Y needs the affine
             bool visionThetaOk = canJog && CanRotate;                  // rotate needs affine + chuck centre
             foreach ((AxisId id, AxisRow row) in _axisRows)

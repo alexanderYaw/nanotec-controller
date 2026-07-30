@@ -9,13 +9,12 @@ namespace NanotecController
         int BusPosition, string Name, string Serial, string Firmware);
 
     /// <summary>
-    /// Multi-drive version of the EtherCAT bring-up: scans the line and connects to
-    /// EVERY drive found, preserving bus (scan) order. The four inspection-table
-    /// axes are then addressed by <see cref="AxisConfig.BusPosition"/>.
+    /// EtherCAT bring-up: scans the line and connects to EVERY drive found, preserving
+    /// bus (scan) order. The four inspection-table axes are then addressed by
+    /// <see cref="AxisConfig.BusPosition"/>.
     ///
-    /// Like <see cref="NanotecConnection"/> this only connects + verifies — it never
-    /// enables a drive or commands motion. Motion is the job of the per-axis
-    /// controllers built on top of <see cref="Handles"/>.
+    /// This only connects + verifies — it never enables a drive or commands motion.
+    /// Motion is the job of the per-axis controllers built on top of <see cref="Handles"/>.
     /// </summary>
     public sealed class MultiAxisConnection
     {
@@ -57,7 +56,7 @@ namespace NanotecController
             if (_busScan.hasError())
             {
                 log.Report($"ERROR: Failed to list bus hardware: {_busScan.getError()}");
-                return Array.Empty<string>();
+                return [];
             }
 
             BusHWIdVector busIds = _busScan.getResult();
@@ -204,7 +203,14 @@ namespace NanotecController
             _busScan = null;
         }
 
-        /// <summary>Disconnects every drive and closes the bus. Safe when not connected.</summary>
+        /// <summary>
+        /// Disconnects every drive and closes the bus. Safe when not connected.
+        ///
+        /// Each drive's release is isolated, and the bus close runs regardless: a single
+        /// disconnectDevice failure must not abandon the remaining handles OR skip
+        /// closeBusHardware, because the caller is told (IsConnected = false) that the adapter is
+        /// free and the next Connect would then re-open an adapter that was never closed.
+        /// </summary>
         public void Disconnect(IProgress<string> log)
         {
             if (_accessor == null)
@@ -213,31 +219,31 @@ namespace NanotecController
                 return;
             }
 
+            foreach (DeviceHandle h in _handles)
+            {
+                try { _accessor.disconnectDevice(h); _accessor.removeDevice(h); }
+                catch (Exception ex) { log.Report($"Disconnect error on a drive: {ex.Message}"); }
+            }
+            _handles.Clear();
+            _devices.Clear();
+
             try
             {
-                foreach (DeviceHandle h in _handles)
-                {
-                    _accessor.disconnectDevice(h);
-                    _accessor.removeDevice(h);
-                }
-                _handles.Clear();
-                _devices.Clear();
-
                 if (_adapter != null)
                 {
                     log.Report("Closing bus hardware...");
                     _accessor.closeBusHardware(_adapter);
-                    _adapter = null;
                 }
-                ReleaseBusScan();
                 log.Report("Disconnected.");
             }
             catch (Exception ex)
             {
-                log.Report($"Disconnect error: {ex.Message}");
+                log.Report($"Bus close error: {ex.Message}");
             }
             finally
             {
+                _adapter = null;
+                ReleaseBusScan();
                 IsConnected = false;
                 AdapterName = "";
             }

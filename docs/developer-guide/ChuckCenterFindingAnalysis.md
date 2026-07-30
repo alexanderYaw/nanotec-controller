@@ -144,6 +144,19 @@ The error of each sample point $i$ to the best fit circle can be modelled by $f_
 
 </div>
 
+<iframe src="../RawSummationVisualiser.html" width="100%" height="620px" style="border:none;">
+    Your browser does not support iframes.
+</iframe>
+
+*Why the squared sum, and not the raw one — error balancing vs. least squares.*
+
+<iframe src="../DEFBowl.html" width="100%" height="620px" style="border:none;">
+    Your browser does not support iframes.
+</iframe>
+
+*$\Phi$ as a bowl over the coefficients: the minimum is the fit, and the bowl's shape is why
+the normal equations solve it in one step.*
+
 To minimise $\Phi ,$ we find $E,\, F,\, G$ such that $\frac {d\Phi}{dE} = \frac {d\Phi}{dF} = \frac {d\Phi}{dG} = 0$
 
 $$
@@ -269,15 +282,40 @@ $$2Mu = 2\lambda Nu$$
 
 $$Mu = \lambda Nu$$
 
+<iframe src="../LagrangeVisualiser.html" width="100%" height="620px" style="border:none;">
+    Your browser does not support iframes.
+</iframe>
+
+*The constrained minimum in 3D: where the cost surface's gradient is parallel to the
+constraint's.*
+
+### How it is actually solved (`Geometry/CircleFit.cs`)
+
+The generalised eigenproblem $Mu = \lambda Nu$ has a $4\times4$ closed form, so no eigen-solver
+is needed. `CircleFit.TryFit` uses **Chernov's *PrattNewton***: it accumulates the moments of
+the centred data, forms Pratt's characteristic polynomial
+$P(x) = A_0 + A_1 x + A_2 x^2 + 4x^4$, and finds its smallest non-negative root by **Newton
+iteration from $x = 0$** — then reads the centre and radius off that root in closed form.
+
+Practical consequences:
+
+- Cost is one $O(n)$ moment pass plus a fixed-size iteration, so it is constant in $n$ beyond
+  the accumulation — cheaper than Kåsa's normal equations, not more expensive.
+- No SVD, no eigen-decomposition, no matrix library.
+- The guards are explicit: fewer than 3 points, a centred covariance that doesn't span 2D
+  (collinear captures), a singular determinant, or a non-positive $R^2$ each return a specific
+  error rather than a silently wrong circle.
+
 ## 4. Comparison and recommendation
 
 | Method | Scale fix / constraint | Solve | $n>3$? | Arc / near-line | Accuracy |
 |---|---|---|---|---|---|
 | Exact Interpolation | Interpolate 3 pts, $A = 1$ | $2\times2$ linear | ✗ | Fails collinear; No averaging | Exact at $n{=}3$; Accurate for 3 **perfect** sample points |
 | Kåsa | $A = 1$ | Linear normal eqns | ✓ | Small-radius bias; Poor near-collinear performance | Good on full rim; Inaccurate for partial arcs and highly noisy data |
-| Pratt | $B^2{+}C^2{-}4AD = 1$ | Generalised eigenvalue problem | ✓ | Near-unbiased; Stable near line | Provides highly stable, nearly unbiased fit regardless if the data forms a full circle or small arc |
+| Pratt | $B^2{+}C^2{-}4AD = 1$ | Generalised eigenvalue problem (solved here by Newton on its characteristic polynomial) | ✓ | Near-unbiased; Stable near line | Provides highly stable, nearly unbiased fit regardless if the data forms a full circle or small arc |
 
-**Recommendation: Pratt**
+**Recommendation: Pratt** — and this is what ships: `Geometry/CircleFit.cs` implements it, and
+both the chuck and wafer centre-finds (manual and automatic) go through it.
 <br>
 
 - **No essential bias.** Kåsa under-estimates the radius under noise even on uniform
@@ -288,7 +326,7 @@ $$Mu = \lambda Nu$$
   error where Kåsa's normal equations degrade.
 - **Computationally cheap.** The eigenproblem is a fixed $4\times4$, so its cost is constant in $n$ — only the moment accumulation is $O(n)$, the same pass Kåsa already needs.
 
-## 6. Reliability — concentric rings and averaging
+## 5. Reliability — concentric rings and averaging
 
 One fit inherits the noise of a few detections and the calibration residual in $A$.
 For repeatability, derive the centre three times from three concentric rings and
@@ -304,7 +342,13 @@ backlash, and local calibration error are largely independent — averaging cuts
 centre's standard error by $\approx 1/\sqrt{3}$. All three are concentric about the
 same physical centre.
 
-## 7. Validation — rotational-invariance test
+> **Not implemented.** Neither the concentric-ring averaging here nor the validation test in
+> §6 is in the application today — the shipped centre-find (manual and
+> [automatic](ChuckCenterFindingAutomation/)) is a **single-pass** fit. What the automatic
+> run does report, in the same spirit, is the **per-point radial residual**, because the fit's
+> own RMS can hide one bad point among eight.
+
+## 6. Validation — rotational-invariance test
 
 A circle is rotationally symmetric about its own centre, so if $\bar{\mathbf{C}}$ is
 correct, a rim feature rotated by $\theta$ and then rotated back by $-\theta$ about
@@ -333,4 +377,4 @@ larger test angle amplifies the error and sharpens the check. Crucially, this te
 the centre against the **physical rotation axis** — not the same points used to fit it
 — so it catches biases the fit's RMS cannot, such as a skewed calibration $A$. Sweep a
 few angles (e.g. $30°, 90°, 180°$) and require $\varepsilon$ within tolerance for all;
-if it fails, the residual points toward the correction and Section 6 is repeated.
+if it fails, the residual points toward the correction and Section 5 is repeated.

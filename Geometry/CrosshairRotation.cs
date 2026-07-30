@@ -110,5 +110,18 @@ namespace NanotecController
         /// given the measured/assumed <paramref name="ticksPerRev"/>.</summary>
         public static long DegreesToChuckTicks(double degrees, long ticksPerRev)
             => (long)Math.Round(degrees / 360.0 * ticksPerRev);
+
+        /// <summary>
+        /// Absolute CHUCK angle in [0, 360) for a raw Θ motor position, folded through the gear
+        /// reduction. The inverse of <see cref="DegreesToChuckTicks"/>, and the ONLY correct way to
+        /// read a chuck angle: dividing by the motor's 40000 ticks/rev instead (as
+        /// <c>AxisDriver</c> once did) wraps nine times per chuck revolution, so an absolute
+        /// "rotate to" computed from it targets the wrong angle.
+        /// </summary>
+        public static double ChuckTicksToDegrees(long ticks, long ticksPerRev)
+        {
+            double angle = (double)(ticks % ticksPerRev) / ticksPerRev * 360.0;
+            return angle < 0 ? angle + 360.0 : angle;
+        }
     }
 }

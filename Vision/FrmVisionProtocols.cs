@@ -34,8 +34,11 @@ namespace NanotecController
         private readonly Button _crosshairBtn = new() { Text = "Crosshair" };
         private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList };
 
-        // Camera-scale calibration (manual jog + capture; owner supplies motor position)
-        private readonly IMotionHost? _owner;
+        // Camera-scale calibration (manual jog + capture; owner supplies motor position).
+        // Non-nullable: the ctor requires it. It was declared nullable while every use site said
+        // `_owner!`, which meant the compiler checked nothing and a reader could not tell the
+        // genuinely-optional accesses from the noise.
+        private readonly IMotionHost _owner;
         private readonly SolidCircleDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
         private readonly Button _sampleBtn = new() { Text = "Add Sample", Enabled = false };
@@ -142,7 +145,7 @@ namespace NanotecController
             _live.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             _live.ShowCrosshair = true;   // on by default here — the point of this view is alignment
             SetToggle(_crosshairBtn, _live.ShowCrosshair);
-            _live.TickScaleProvider = () => VisionViewControl.MmPerPixel(_owner!.Calibration);   // 1 mm marks here too
+            _live.TickScaleProvider = () => VisionViewControl.MmPerPixel(_owner.Calibration);   // 1 mm marks here too
 
             var capLabel = new Label { Text = "Captured (detection overlay)", Location = new Point(500, 8), AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold) };
             _capturedBox.Location = new Point(500, 32);
@@ -170,7 +173,7 @@ namespace NanotecController
                     double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
                     bool found;
                     WaferEdgeDetector.EdgePoint edge;
-                    double[] cRows = Array.Empty<double>(), cCols = Array.Empty<double>();
+                    double[] cRows = [], cCols = [];
                     try
                     {
                         found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
@@ -321,7 +324,7 @@ namespace NanotecController
             _rotByBtn.Location = new Point(1352, 514);
             _rotByBtn.Size = new Size(124, 28);
             _rotByBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotByBtn.Click += async (s, e) => await _owner!.RotateAboutCrosshairAsync((double)_rotBy.Value);
+            _rotByBtn.Click += async (s, e) => await _owner.RotateAboutCrosshairAsync((double)_rotBy.Value);
 
             _rotTo.Location = new Point(1248, 546);
             _rotTo.Size = new Size(100, 24);
@@ -329,7 +332,7 @@ namespace NanotecController
             _rotToBtn.Location = new Point(1352, 544);
             _rotToBtn.Size = new Size(124, 28);
             _rotToBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotToBtn.Click += async (s, e) => await _owner!.RotateToAngleAsync((double)_rotTo.Value);
+            _rotToBtn.Click += async (s, e) => await _owner.RotateToAngleAsync((double)_rotTo.Value);
 
             _signLabel.Location = new Point(1248, 580);
             _signLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -360,7 +363,7 @@ namespace NanotecController
                 b.Size = new Size(36, 32);
                 b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
                 b.MouseDown += (s, e) => VisionJog(sx, sy);
-                b.MouseUp += (s, e) => _owner?.VisionStop();
+                b.MouseUp += (s, e) => _owner.VisionStop();
             }
 
             static void SetToggle(Button b, bool active)
@@ -379,13 +382,13 @@ namespace NanotecController
             _rotHoldCcwBtn.Location = new Point(1248, 612);
             _rotHoldCcwBtn.Size = new Size(112, 30);
             _rotHoldCcwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotHoldCcwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(-1); };
-            _rotHoldCcwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
+            _rotHoldCcwBtn.MouseDown += (s, e) => { _ = _owner.HoldRotateAsync(-1); };
+            _rotHoldCcwBtn.MouseUp += (s, e) => _owner.StopHoldRotate();
             _rotHoldCwBtn.Location = new Point(1364, 612);
             _rotHoldCwBtn.Size = new Size(112, 30);
             _rotHoldCwBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            _rotHoldCwBtn.MouseDown += (s, e) => { _ = _owner!.HoldRotateAsync(+1); };
-            _rotHoldCwBtn.MouseUp += (s, e) => _owner!.StopHoldRotate();
+            _rotHoldCwBtn.MouseDown += (s, e) => { _ = _owner.HoldRotateAsync(+1); };
+            _rotHoldCwBtn.MouseUp += (s, e) => _owner.StopHoldRotate();
 
             Controls.Add(liveLabel);
             Controls.Add(_crosshairBtn);
@@ -442,14 +445,14 @@ namespace NanotecController
             RefreshSignLabel();
 
             // Pick up a previously-saved chuck centre so Go to Centre works across restarts.
-            if (_owner?.Calibration.ChuckCenterX is long cxLoaded && _owner.Calibration.ChuckCenterY is long cyLoaded)
+            if (_owner.Calibration.ChuckCenterX is long cxLoaded && _owner.Calibration.ChuckCenterY is long cyLoaded)
             {
                 _chuckCentre = (cxLoaded, cyLoaded);
                 _goCentreBtn.Enabled = true;
                 _centreResult.Text = $"Saved centre:\r\nX={cxLoaded}  Y={cyLoaded}";
             }
             // Likewise the saved wafer centre.
-            if (_owner?.Calibration.WaferCenterX is long wxLoaded && _owner.Calibration.WaferCenterY is long wyLoaded)
+            if (_owner.Calibration.WaferCenterX is long wxLoaded && _owner.Calibration.WaferCenterY is long wyLoaded)
             {
                 _waferCentre = (wxLoaded, wyLoaded);
                 _waferGoBtn.Enabled = true;
@@ -457,7 +460,7 @@ namespace NanotecController
             }
             // Seed the auto centre-find's nominal radius from the last fit, so the guard is armed from
             // a measurement rather than re-typed each session.
-            if (_owner?.Calibration.ChuckRadius is long rLoaded && rLoaded > 0 && rLoaded <= _autoRadius.Maximum)
+            if (_owner.Calibration.ChuckRadius is long rLoaded && rLoaded > 0 && rLoaded <= _autoRadius.Maximum)
                 _autoRadius.Value = rLoaded;
 
             // The camera is already streaming on the main screen; gate on its live state and
@@ -468,7 +471,7 @@ namespace NanotecController
 
             // Safety: the vision jog / hold-rotate are hold-to-move. If this window loses focus mid-hold
             // (alt-tab, a dialog) the MouseUp may never arrive, so stop all continuous motion on deactivate.
-            Deactivate += (s, e) => { _owner?.VisionStop(); _owner?.StopHoldRotate(); };
+            Deactivate += (s, e) => { _owner.VisionStop(); _owner.StopHoldRotate(); };
 
             FormClosing += (s, e) => Teardown();
         }
@@ -491,7 +494,7 @@ namespace NanotecController
             _vSpeed.Enabled = _vPad.Enabled = open;
             _vUp.Enabled = _vDown.Enabled = _vLeft.Enabled = _vRight.Enabled = open;
             _rotHoldCcwBtn.Enabled = _rotHoldCwBtn.Enabled = open;
-            if (open) _vPadTimer.Start(); else { _vPadTimer.Stop(); _owner?.VisionStop(); }
+            if (open) _vPadTimer.Start(); else { _vPadTimer.Stop(); _owner.VisionStop(); }
         }
 
         // Puts a bitmap in the captured pane, taking ownership (disposes the previous one).
@@ -510,8 +513,8 @@ namespace NanotecController
         private void Teardown()
         {
             _vPadTimer.Stop();
-            _owner?.VisionStop();
-            _owner?.StopHoldRotate();
+            _owner.VisionStop();
+            _owner.StopHoldRotate();
             _view.CameraStateChanged -= OnCameraStateChanged;
             _view.FrameDisplayed -= _live.PushFrame;
             _capturedBox.Image?.Dispose();

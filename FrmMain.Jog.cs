@@ -23,7 +23,7 @@ namespace NanotecController
 
         private void StartJog(AxisId id, int direction)
         {
-            if (_motion == null || !_drivesEnabled || _busy) return;
+            if (!ManualInputAllowed) return;
             direction = InvertDir(id, direction);
             if (_softLimits.IsBlocked(id, direction))
             {
