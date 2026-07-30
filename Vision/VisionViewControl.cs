@@ -24,7 +24,7 @@ namespace NanotecController
     public sealed class VisionViewControl : UserControl, IVisionFrameSource
     {
         /// <summary>Available centred-ROI digital zoom factors (see <see cref="VisionCamera.Zoom"/>).</summary>
-        public static readonly int[] ZoomFactors = { 1, 2, 3, 5, 7, 10 };
+        public static readonly int[] ZoomFactors = [1, 2, 3, 5, 7, 10];
 
         private readonly VisionCamera _camera = new();
         private readonly PictureBox _liveBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
@@ -34,6 +34,10 @@ namespace NanotecController
         // while the frame is alive. Each job runs its own detection + bitmap conversion and
         // marshals to the UI thread itself (PostFrameBitmap).
         private readonly ConcurrentQueue<Action<HObject>> _frameJobs = new();
+
+        // How long teardown waits for the grab thread to release the camera handle. Sized for the
+        // worst case (a SetZoom reopen in flight), not the common one (a 100 ms grab timeout).
+        private const int GRAB_STOP_TIMEOUT_MS = 3000;
 
         private Task? _grabTask;
         private CancellationTokenSource? _cts;
@@ -190,11 +194,18 @@ namespace NanotecController
         {
             bool wasOpen = _camera.IsOpen;
             _cts?.Cancel();
-            try { _grabTask?.Wait(500); } catch { /* best effort; camera streams so grab returns fast */ }
+            // Only close the framegrabber once the grab thread has actually let go of it. A grab
+            // returns within its 100 ms timeout, but a pending SetZoom does a full
+            // CloseFramegrabber + Open (ROI writes, throughput limit, GrabImageStart) and can run
+            // longer — closing the handle underneath that from the UI thread is a native race.
+            bool stopped = true;
+            try { stopped = _grabTask?.Wait(GRAB_STOP_TIMEOUT_MS) ?? true; }
+            catch (AggregateException) { /* loop faulted; it no longer owns the handle */ }
             _cts?.Dispose();
             _cts = null;
             _grabTask = null;
-            _camera.Dispose();
+            if (stopped) _camera.Dispose();
+            else StatusChanged?.Invoke("Camera did not stop cleanly; leaving the grabber open.");
             lock (_frameLock) { _pending?.Dispose(); _pending = null; }
             if (!IsDisposed)
             {
@@ -280,9 +291,11 @@ namespace NanotecController
                     catch (HOperatorException) { /* detection failed on this frame; user can retry */ }
                 }
 
+                // finally is the SINGLE owner of the frame: disposing it in the catch as well ran
+                // Dispose twice on the native object every time a conversion failed.
                 Bitmap bmp;
                 try { bmp = HalconBitmap.ToBitmap(frame, _viewW, _viewH, _monoView); }
-                catch (HOperatorException) { frame.Dispose(); continue; }   // skip a bad frame
+                catch (HOperatorException) { continue; }   // skip a bad frame
                 finally { frame.Dispose(); }
 
                 // Camera is mounted inverted: flip on both axes (180°) so the view is upright.
@@ -353,7 +366,10 @@ namespace NanotecController
             if (OwnsCamera || IsDisposed) return;
             Bitmap clone;
             try { clone = (Bitmap)src.Clone(); }
-            catch { return; }   // source being torn down; skip this frame
+            catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or OutOfMemoryException)
+            {
+                return;   // source being torn down / GDI+ refused it; skip this frame
+            }
 
             if (clone.Width != _frameW || clone.Height != _frameH)
             {
@@ -735,8 +751,10 @@ namespace NanotecController
             if (disposing)
             {
                 _cts?.Cancel();
-                try { _grabTask?.Wait(500); } catch { /* best effort */ }
-                _camera.Dispose();
+                bool stopped = true;
+                try { stopped = _grabTask?.Wait(GRAB_STOP_TIMEOUT_MS) ?? true; }
+                catch (AggregateException) { /* loop faulted; it no longer owns the handle */ }
+                if (stopped) _camera.Dispose();   // see StopCamera: never close it under the grab thread
                 lock (_frameLock) { _pending?.Dispose(); _pending = null; }
                 _liveBox.Image?.Dispose();
             }

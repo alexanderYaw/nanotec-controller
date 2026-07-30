@@ -385,7 +385,7 @@ namespace NanotecController
         {
             if ((_motion!.GetDigitalInputs(id) & SW_LIMIT_BITS) == 0) return;
             AppendLog($"{id} starts on a limit switch - backing off before find...");
-            foreach (int away in new[] { -1, +1 })
+            foreach (int away in (int[])[-1, +1])
             {
                 _motion[id].EnableDrive(true);   // exit Quick Stop if a switch parked it there
                 if ((_motion.GetDigitalInputs(id) & SW_LIMIT_BITS) == 0) return;

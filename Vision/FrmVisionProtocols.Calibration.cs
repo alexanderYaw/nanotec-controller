@@ -38,8 +38,7 @@ namespace NanotecController
                 _status.Text = "Sample: fiducial NOT found - adjust framing/lighting (test thresholds in HDevelop).";
                 return;
             }
-            if (_owner == null
-                || !_owner.TryCurrentUser(AxisId.X, out long x)
+            if (!_owner.TryCurrentUser(AxisId.X, out long x)
                 || !_owner.TryCurrentUser(AxisId.Y, out long y))
             {
                 ShowCaptured(raw);
@@ -93,12 +92,9 @@ namespace NanotecController
                 _calibResult.Text = "Solve failed:\r\n" + err;
                 return;
             }
-            if (_owner != null)
-            {
-                _owner.Calibration.PixelStep = a;
-                try { _owner.Calibration.Save(); }
-                catch (Exception ex) { _calibResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
-            }
+            _owner.Calibration.PixelStep = a;
+            try { _owner.Calibration.Save(); }
+            catch (Exception ex) { _calibResult.Text = $"Computed but SAVE failed:\r\n{ex.Message}"; return; }
             _calibResult.Text =
                 $"Saved.  N={a.SampleCount}  RMS resid={resid:F1} steps\r\n" +
                 $"dX/drow={a.Xr:F3}  dX/dcol={a.Xc:F3}\r\n" +

@@ -54,7 +54,7 @@ namespace NanotecController
         {
             // VISION mode: the same puck drives the drift-corrected screen jog instead.
             if (_jogMode == JogMode.Vision) { VisionPadTick(); return; }
-            bool allow = _drivesEnabled && !_busy && _motion != null;
+            bool allow = ManualInputAllowed;
             PointF v = allow ? joystickPad.Vector : PointF.Empty;
             int vx = (int)Math.Round(v.X * _axisRows[AxisId.X].Speed.Value);
             int vy = (int)Math.Round(v.Y * _axisRows[AxisId.Y].Speed.Value);
@@ -112,7 +112,6 @@ namespace NanotecController
             _lastVx = _lastVy = 0;
             _visionLastVx = _visionLastVy = 0;   // vision-puck send-on-change (VisionPadTick)
             foreach ((AxisId cmd, AxisId _, int _) in AnalogAxes) _lastAnalogVel[cmd] = 0;   // analog joystick send-on-change
-            ResetAiSpans();          // TEMP Θ-wiring probe: start each min/max test fresh
             _visionView.CenteringOverlay = false;   // clear the live-view warning on any stop/source switch
         }
 

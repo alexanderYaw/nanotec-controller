@@ -47,6 +47,10 @@ namespace NanotecController
         private readonly OdIndex OD_ProfileAccel    = new OdIndex(0x6083, 0x00);
         private readonly OdIndex OD_ProfileDecel    = new OdIndex(0x6084, 0x00);
 
+        /// <summary>Encoder ticks per one MOTOR revolution. NOT the chuck's ticks-per-revolution:
+        /// Θ turns through a ~9:1 reduction, so chuck angles must be derived from
+        /// <see cref="CrosshairRotation.ChuckTicksPerRev"/> instead — see
+        /// <see cref="CrosshairRotation.ChuckTicksToDegrees"/>.</summary>
         public const long ENCODER_TICKS_PER_REV = 40000;
 
         // --- Object sizes, in bits (writeNumber's last argument is a BIT length) ---
@@ -123,7 +127,6 @@ namespace NanotecController
             /// <summary>Actual position from object 0x6064, in the drive's configured
             /// position units (raw counts / user units until factor-group scaling is decoded).</summary>
             public long Position { get; init; }
-            public double AngleDegrees { get; init; }
             public string State { get; init; }
             public bool HasFault { get; init; }
         }
@@ -436,12 +439,6 @@ namespace NanotecController
         /// </summary>
         private long ReadPosition() => (int)Read(OD_PosActual, "actual position");
 
-        public double GetActualChuckAngle()
-        {
-            long rawTicks = ReadPosition();
-            return TicksToAngle(rawTicks);
-        }
-
         /// <summary>Position-only read (one SDO transaction, half of <see cref="GetStatus"/>)
         /// for fast follow loops that don't need the CiA 402 state each tick.</summary>
         public long GetPosition() => ReadPosition();
@@ -450,21 +447,12 @@ namespace NanotecController
         public AxisStatus GetStatus()
         {
             long sw = Read(OD_Statusword, "statusword");
-            long rawTicks = ReadPosition();
             return new AxisStatus
             {
-                Position = rawTicks,
-                AngleDegrees = TicksToAngle(rawTicks),
+                Position = ReadPosition(),
                 State = DecodeState(sw),
                 HasFault = (sw & SW_FAULT) != 0,
             };
-        }
-
-        private static double TicksToAngle(long rawTicks)
-        {
-            double angle = (double)(rawTicks % ENCODER_TICKS_PER_REV) / ENCODER_TICKS_PER_REV * 360.0;
-            if (angle < 0) angle += 360.0;
-            return angle;
         }
 
         private static string DecodeState(long sw)

@@ -9,10 +9,10 @@ inspection table's four EtherCAT axes — **X, Y, Z, and Θ (the rotary chuck)**
 Nanotec drives using **NanoLib** over **EtherCAT (CoE / CiA 402)** with an **Npcap soft
 master**.
 
-> **Status:** This application is still being brought up on real hardware. Treat every
-> first motion on a new machine as a commissioning step: keep the E-stop within reach,
-> start at low jog speeds, and confirm each axis moves the way you expect before trusting
-> automated moves (Home All, Go Home, Find Limits).
+> **Commissioning note.** Treat every first motion on a new machine as a commissioning step:
+> keep the E-stop within reach, start at low jog speeds, and confirm each axis moves the way
+> you expect before trusting automated moves (Home All, Go Home, Find Limits, Auto
+> Centre-Find). Position and velocity values are the **drive's own units**, not mm/deg.
 
 For how the software works internally, see the **[Developer Guide](../developer-guide/)**.
 
@@ -26,6 +26,9 @@ For how the software works internally, see the **[Developer Guide](../developer-
 * **.NET 10 (Windows) runtime / SDK** — to build and run.
 * The **NanoLib** package (`nanotec.services.nanolib` 1.4.0) is restored automatically as
   a project dependency.
+* **HALCON** (26.05 Progress) — for the camera and the vision protocols. It is referenced by
+  an absolute path in the project file, so it must be installed at that location to build.
+  Motion works even if the camera fails to open; only the vision features go dark.
 
 ### The application must run **as Administrator**
 Raw packet access through Npcap requires elevation. If you launch without admin rights,
@@ -42,21 +45,34 @@ the bus scan will either find no adapters or fail to open the EtherCAT NIC.
 
 ## 2. The main window at a glance
 
+The window has a **left column** (all motion controls) and a **right column** (the live camera).
+
+> ⚠️ **The screenshot below is out of date.** It predates the camera column, the STOP button,
+> the RAW/VISION mode switch, the relative-move panel, the direction d-pad, and the move of the
+> log into a pop-out window. Use the table, not the picture, until it is re-captured.
+
 ![Main window annotated](images/main-window-annotated.png)
 
-| Ref. no | Area | What it does |
-|---|---|---|
-| 1.|**Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
-| 2.|**Connect / Disconnect** | Open or close the link to all drives. |
-| 3.|**Parameters…** | Opens the parameters window: a read-only dump of each drive's limits & unit/scaling settings, plus an **expert** option to write objects (RAM) or save to NV (see §10). |
-| 4.|**Calibration…** | Opens the travel-limits & Home window (see §8). |
-| 5.|**Enable All / Disable All** | Energise / de-energise all drives. |
-| 6.|**Home All** | Retract Z, then send X & Y to their home positions (see §7). |
-| 7.|**Per-axis rows (X / Y / Z / Θ)** | Speed slider, **−/+ hold-to-jog** buttons, and a live position + state readout per axis. |
-| 8.|**Input source (Off / USB / On-screen)** | Selects the joystick input (see §6). |
-| 9.|**On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
-| 10.|**Position Map…** | Opens the absolute-positioning window: click an XY grid (or type X/Y/Z) to set a target, then Go (see §9). |
-| 11.|**Log** | Timestamped record of everything the app did. Read it — it reports every stop, limit, and error. |
+| Area | What it does |
+|---|---|
+| **Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
+| **Connect / Disconnect** | Open or close the link to all drives. |
+| **Parameters…** | Opens the parameters window: a read-only dump of each drive's limits, unit/scaling and motion-state objects, plus an **expert** option to write objects (RAM) or save to NV (see §12). |
+| **Calibration…** | Opens a small menu with two entries: **Axes — travel limits & home** (see §8) and **Vision — camera scale & centres** (see §10). |
+| **Enable All / Disable All** | Energise / de-energise all drives. |
+| **Home All** | Retract Z, then send X & Y to their home positions (see §8). |
+| **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
+| **RAW / VISION mode switch** | Changes what the whole motion cluster means (see §5). |
+| **Per-axis rows (X / Y / Z / Θ)** | Speed slider + live position and state readout per axis. |
+| **Direction d-pad** | ◀ ▶ for X, ▲ ▼ for Y, ▲ ▼ for Z, ↺ ↻ for Θ — **hold to move, release to stop**. |
+| **Invert X/Y/Θ** | Flips the commanded direction of the in-plane and rotary axes so the controls match an inverted camera view. RAW mode only. |
+| **Vision jog speed** | A separate speed slider used by VISION-mode X/Y motion. |
+| **Input source (Off / Joystick / On-screen)** | Selects the manual input (see §6). |
+| **On-screen joystick puck** | Drag-to-move analog joystick for X/Y. |
+| **Relative move (mm / °)** | Type a distance and press Go; also **Move to chuck centre** / **Move to wafer centre** (see §11). |
+| **Position Map…** | Opens the absolute-positioning window: click an XY grid (or type X/Y/Z) to set a target, then Go (see §9). |
+| **Camera column** (right) | The live view plus its toolbar — zoom, crosshair, invert, mono, measure, capture, save — and a last-capture thumbnail with **Retry camera** (see §10). |
+| **Log…** (status strip) | The strip shows the latest line; the button opens the full timestamped log in its own window. Read it — it reports every stop, limit, and error. |
 
 ---
 
@@ -93,42 +109,64 @@ or disabling always halts motion first.
 
 ---
 
-## 5. Jogging with the on-screen buttons
+## 5. Jogging — and the RAW / VISION mode switch
 
-Each axis row has:
-* A **speed slider** — that axis's jog speed (in the drive's own velocity units). The
-  live value is shown beside it. Each axis has its own sensible default and maximum.
-* **− and +** buttons — **hold to move, release to stop.** Motion only lasts as long as
-  you hold the button. There is no "latched" jog.
+Each axis row has a **speed slider** — that axis's jog speed, in the drive's own velocity
+units, with the live value shown beside it. The **d-pad arrows** are **hold to move, release to
+stop**; there is no "latched" jog. The speed is taken at the moment you press, so set the
+slider first, then press and hold.
 
-The speed is taken at the moment you press, so set the slider first, then press and hold.
+The same controls mean two different things depending on the mode:
+
+| | **⚙ RAW** | **🎥 VISION** |
+|---|---|---|
+| X / Y | jog the drive axis directly | move along the **screen** axes — the image slides purely left/right or up/down even though the camera is mounted at an angle |
+| Z | jog the drive axis | *(unchanged — Z is always raw)* |
+| Θ | spin the chuck | **rotate about the crosshair**: the chuck turns while X/Y follow, so whatever is under the crosshair stays put |
+
+Notes:
+* **Switching mode stops everything first**, so nothing carries over with a changed meaning.
+* VISION mode needs the **camera-scale calibration** (§10); rotating about the crosshair also
+  needs a **chuck centre** and the rotation sign. If they're missing, the log says so and
+  nothing moves.
+* In VISION mode the X/Y speed comes from the separate **Vision jog speed** slider, and the Θ
+  row slider becomes the **rotation** speed. The **Invert X/Y/Θ** toggle is disabled — the
+  drift-corrected jog deliberately ignores it.
 
 ---
 
 ## 6. Joystick control
 
-Pick the input with the **Off / USB / On-screen** radio buttons (only available once
-drives are enabled). The two joysticks are mutually exclusive.
+Pick the input with the **Off / Joystick / On-screen** radio buttons (only available once
+drives are enabled). The two are mutually exclusive.
 
-### USB joystick
-Any controller Windows lists in **`joy.cpl`** works. The default button map:
+### The physical joystick
+The joystick is **analog and wired directly into the drives** — it is *not* a USB game
+controller, so nothing appears in `joy.cpl` and nothing needs installing. The app reads the
+pots through the drives themselves.
 
-| Button | Function |
-|---|---|
-| **1** | **Deadman** — *must be held* for any motion. Release = immediate stop. |
-| **2** | **Fast** — multiplies the jog speed (capped at each axis's slider maximum). |
-| 3 / 4 | Z − / Z + |
-| 5 / 6 | Θ − / Θ + |
+* **Deflect to move, centre to stop.** Speed is proportional to how far you push; full
+  deflection = that axis's slider speed.
+* **Twisting the knob** drives Θ — a plain chuck spin in RAW mode, or a rotation about the
+  crosshair in VISION mode (release the twist to stop).
+* **There is no deadman button.** The machine's candidate deadman input is wired as the
+  drives' interlock — pressing it *faults* X and Z rather than enabling motion — so it is not
+  used. Moving requires only that the drives are enabled and the stick is deflected.
 
-The main stick drives **X/Y**; the D-pad/hat also works. Stick directions are digital
-(full speed when deflected). **If the joystick is unplugged or vanishes mid-use, all
-axes stop.**
+**Centring:** when you select the Joystick source, the app averages the first few readings to
+learn where "centre" is. **Leave the stick alone for that moment** — the status label and the
+live view both say `centring` while it happens. If you move it during the window the app
+discards the samples and starts over, because a biased centre would make the stick appear
+permanently deflected.
+
+If a joystick read fails, the app stops the axes it was driving and shows `Joystick: read
+FAILED`.
 
 ### On-screen joystick (mouse)
-Drag the **puck** inside the circle. Unlike the USB stick this is **analog**: the puck's
-angle sets the X/Y direction and how far you push sets the speed (rim = that axis's slider
-speed). **Release the mouse and the puck springs back to centre → motion stops.** There is
-no deadman — holding the mouse *is* the intent.
+Drag the **puck** inside the circle. The puck's angle sets the X/Y direction and how far you
+push sets the speed (rim = the relevant slider speed). **Release the mouse and the puck springs
+back to centre → motion stops.** Holding the mouse *is* the intent. In VISION mode the puck
+drives the drift-corrected screen jog instead of the raw axes.
 
 ---
 
@@ -154,8 +192,9 @@ Important caveats:
 
 ![calibration-window](images/calibration-window.jpg)
 
-Open it with **Calibration…**. It shows X, Y, Z (Θ has no home and is excluded). All
-calibration values are saved to `calibration.json` next to the app and survive restarts.
+Open it with **Calibration… → Axes — travel limits & home**. It shows X, Y, Z (Θ has no home
+and is excluded). All calibration values are saved to `calibration.json` next to the app and
+survive restarts — that one file also holds the vision calibration from §10.
 
 For each axis:
 * **Set Min / Set Max** — jog the axis to a position in the main window, then click to
@@ -168,6 +207,9 @@ For each axis:
   when done.
 * **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
   explicit Home for Z) and reports how close it landed.
+* **Steps/mm** — type the axis's motor steps per millimetre (from the stage's mechanical spec)
+  and press **Save**. Nothing moves. This is what makes the **relative moves in mm** (§11) and
+  the camera's **1 mm crosshair ticks** correct — enter it once per machine.
 
 Home model summary:
 * **X / Y:** Home = midpoint of the two limits (needs both Min and Max set).
@@ -216,16 +258,103 @@ Notes:
 
 ---
 
-## 10. Parameters (read & write drive settings)
+## 10. The camera and the vision protocols
+
+### The live view (main window, right column)
+The camera streams as soon as the app starts — it is independent of the drives, so a camera
+problem never blocks motion (and vice versa). If it fails to open, a **Retry camera** button
+appears; everything drive-side keeps working.
+
+Toolbar:
+
+| Control | What it does |
+|---|---|
+| **Zoom** (1×…10×) | A centred crop on the sensor — a *real* narrowing of the field of view, not a display scale. |
+| **Crosshair** | Shows the centre crosshair with **1 mm tick marks**. The ticks only appear once both the camera scale (below) and the axis **steps/mm** (§8) are set. |
+| **Invert** | 180° flip for display — on by default, because the camera is mounted inverted. |
+| **Mono** | Grey + contrast stretch, display only. |
+| **Measure** | A draggable ruler on the view; its length is reported in mm and follows the zoom automatically. |
+| **Capture / Save** | Grab a full-resolution still into the thumbnail, then save it as a `.bmp` under `Desktop\images`. |
+
+**Invert, Mono and Zoom are display settings — the detectors always run on the raw
+full-resolution frame.**
+
+### The protocols window
+Open it with **Calibration… → Vision — camera scale & centres**. It owns no camera of its own:
+it mirrors the main view on the left, shows each detection's overlay on the right, and drives
+the stage through the main window. It also carries a convenience copy of the vision jog and
+hold-to-rotate so you can nudge the stage while watching this window.
+
+Do these in order — each one depends on the ones before it:
+
+**1. Camera scale calibration.** Put the circular calibration fiducial in view, then repeatedly:
+jog the table a little, press **Add Sample**. You need **≥3 samples that move in *both* X and
+Y** — samples along a single line cannot define the mapping and will be rejected. Press
+**Compute & Save A**. The result reports an RMS residual; a small one means the relationship
+really is linear. Everything else on this page — the VISION jog, both centre-finds, the
+rotation — depends on this.
+
+**2. Chuck centre-find.** With the chuck edge in view, press **Add Edge** at several spots
+**spread around the rim** (≥3, more is better). Each press detects the rim point and records
+where the table would have to be to put it on the crosshair. **Add at Crosshair** is the manual
+alternative: jog the edge onto the crosshair by eye and record the position directly. You can
+**Delete Selected** a bad point or **Clear Edges** and start over. Then **Compute Centre**, and
+**Go to Centre** to drive there. The result is saved and reloaded on the next run.
+
+**3. Auto chuck centre-find** (does step 2 for you). Rough-centre the chuck by hand, set focus,
+type the **nominal chuck radius in steps**, and press **Auto Centre-Find**. The stage probes
+outward in eight directions, returning to the centre between each, and fits the result. Before
+starting, confirm the three things it asks: the chuck is roughly centred, Z/focus is set so the
+edge is sharp, and **the rim is not already in view**. The log pane is the transcript of the
+run — which directions found an edge and where. **Cancel** stops it; a cancelled or aborted run
+**discards its points** rather than leaving a half-collected set.
+
+> **Safety:** this is the one automatic feature that drives the table on its own. It aborts any
+> direction that travels past **1.8 × the radius you typed**, and never commands a target
+> outside the stored X/Y travel limits. If X/Y have no limits set, that radius guard is the
+> *only* backstop — it warns you before running. **Z is never moved.** Type the radius
+> carefully; too large a value means a longer runaway before the guard fires.
+
+**4. Wafer centre-find.** The same flow as the chuck (**Add Wafer Edge** → **Compute Centre** →
+**Go to Centre**) but detecting the wafer rim, kept as a separate stored centre.
+
+**5. Rotate about the crosshair.** Needs the camera scale **and** a chuck centre. Run the
+one-time **Sign test** first — it establishes which way a positive Θ move appears on screen and
+is saved permanently. Then **Rotate by°** / **Rotate to°** turn the chuck while X/Y keep the
+point under the crosshair pinned. The rotation *speed* is the Θ slider on the main window in
+VISION mode.
+
+---
+
+## 11. Relative moves in mm and degrees
+
+The **Relative move** panel takes a distance per axis — **mm** for X/Y/Z, **degrees** for Θ —
+and a **Go**. It is mode-aware, exactly like the jog cluster:
+
+* **RAW** — X/Y/Z move that many mm along the drive axis; Θ turns that many degrees.
+* **VISION** — the mm is measured along the **screen** axis (so it tracks what you see
+  regardless of camera rotation); Θ rotates about the crosshair.
+
+Each **Go** stays greyed until the calibration its move needs exists: **steps/mm** for that
+axis (§8), plus the camera scale for VISION X/Y, plus a chuck centre for VISION Θ. Targets go
+through the same range check as everything else.
+
+**Move to chuck centre** / **Move to wafer centre** drive X/Y straight to the stored centre from
+§10. Both ask for confirmation first — they are unbounded table traverses.
+
+---
+
+## 12. Parameters (read & write drive settings)
 
 Open it with **Parameters…**. It's a separate window with its own output log, and it does two
 very different jobs.
 
 ### Read Params — safe, read-only
 **Read Params (all axes)** dumps each connected drive's key configuration to the window's log
-**without writing anything** — current/torque limits, max speed, the unit/scaling objects that
-define what "position" and "velocity" units actually mean, and a motion-state snapshot (mode,
-target, profile accel/decel).
+**without writing anything** — current/torque limits, max speed, the profile accel/decel ramps,
+the unit/scaling objects that define what "position" and "velocity" units actually mean, and a
+motion-state snapshot (commanded vs displayed mode, statusword, target vs actual position).
+That last group is the one to read **right after** a move that didn't behave.
 
 Typical use: read once, **power-cycle the drives**, read again, and compare to confirm the
 drives kept their settings in non-volatile memory.
@@ -250,22 +379,30 @@ writes.
 
 ---
 
-## 11. Safety behaviours you can rely on
+## 13. Safety behaviours you can rely on
 
 * **Connecting performs no motion.** Drives come up disabled.
 * **Enabling holds position** with zero speed — no lurch (provided no on-drive program is
   running).
-* **All jogging is momentary** — release the button, release the deadman, or re-centre the
-  puck and motion stops.
-* **Losing window focus stops everything** and pauses the joystick. (A running operation —
-  Home, Find Limits, Move, or Go Home — is left alone, since it owns the drives.)
-* **Losing the USB joystick stops all axes.**
+* **All jogging is momentary** — release the arrow, centre the stick, or release the puck and
+  motion stops.
+* **STOP aborts any preplanned move** — Home All, Go Home, Move To, a relative move, a
+  rotation, Find Limits.
+* **Losing window focus stops everything** and pauses the joystick — including a hold-to-rotate
+  that would otherwise keep turning because its mouse-release never arrives. (A running
+  operation — Home, Find Limits, Move, Go Home — is left alone, since it owns the drives.)
+* **A failed joystick read stops the axes it was driving.**
+* **Switching RAW ⇄ VISION stops everything first**, so nothing carries over with a changed
+  meaning.
+* **While the auto centre-find runs, the manual controls are locked out** — the jog buttons,
+  the puck and the joystick all stand down, so a stray nudge cannot corrupt the measurement.
 * **Soft limits stop outward jogs** on calibrated axes.
+* **A camera failure never stops the drives**, and a drive fault never stops the camera.
 * **Closing the window** disables the drives and disconnects cleanly.
 
 ---
 
-## 12. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
@@ -273,9 +410,15 @@ writes.
 | Connect finds **no drives** | Cabling (IN vs OUT port), drive power, wrong adapter chosen in the bus picker. |
 | **Wrong number of drives** found | An unpowered drive or a bad daisy-chain link — check the log for the count. |
 | An axis **moves on Enable** | Disable immediately. Suspect a leftover target or an on-drive (NanoJ) program still running. |
-| Jog buttons are **greyed out** | Drives aren't enabled, or an operation is busy (amber LED), or the axis is parked against a soft limit in that direction. |
+| Jog buttons are **greyed out** | Drives aren't enabled, or an operation is busy (amber LED), or an auto centre-find is running, or the axis is parked against a soft limit in that direction. |
 | **"starting with NO soft limits"** at launch | `calibration.json` was missing/corrupt (a `calibration.corrupt.json` backup is kept). Re-calibrate. |
 | **Lost contact with a drive** in the log | The link dropped after several failed reads; reconnect. The soft master is not real-time, so the occasional miss is tolerated before it gives up. |
+| Joystick shows **"centring — leave the stick alone"** and won't move | It is still learning the stick's centre, and restarts the window whenever the stick moves. Let go of it for a second. |
+| The chuck **keeps rotating** after you let go of the twist | The twist centre was captured while the knob was held. Switch the input source Off and back to Joystick — without touching the knob — to re-capture it. |
+| VISION mode does nothing / logs "needs the camera-scale calibration" | Run the camera scale calibration (§10) first; rotating also needs a chuck centre and the sign test. |
+| **No camera / black view** | Press **Retry camera**. Motion is unaffected — a camera failure never blocks the drives. |
+| Auto centre-find says **"the rim is already in view"** | Jog nearer the centre so the rim is out of frame before starting; it can't tell its own starting edge from the one it's hunting. |
+| Auto centre-find skips directions or reports **no edge within the guard** | Check Z/focus (the chuck detector needs a sharp edge) and the nominal radius you typed. |
 
 ---
 

@@ -19,7 +19,7 @@ namespace NanotecController
     // All motion routes through the same serialized drive ops as the rest of FrmMain. (Partial.)
     public partial class FrmMain
     {
-        private static readonly AxisId[] _relAxes = { AxisId.X, AxisId.Y, AxisId.Z, AxisId.Theta };
+        private static readonly AxisId[] _relAxes = [AxisId.X, AxisId.Y, AxisId.Z, AxisId.Theta];
         private readonly Dictionary<AxisId, NumericUpDown> _relNum = new();
         private readonly Dictionary<AxisId, Button> _relGo = new();
         private Button _chuckCentreBtn = null!;
@@ -61,7 +61,7 @@ namespace NanotecController
                 var unit = new Label { Text = theta ? "°" : "mm", Location = new Point(158, y + 5), AutoSize = true };
                 var go = new Button { Text = "Go", Location = new Point(196, y - 2), Size = new Size(72, 30), Enabled = false };
                 AxisId captured = id;   // for the closure
-                go.Click += (s, e) => GoRelative(captured);
+                go.Click += async (s, e) => await GoRelativeAsync(captured);
 
                 group.Controls.Add(name);
                 group.Controls.Add(num);
@@ -75,9 +75,9 @@ namespace NanotecController
             // Go-to-stored-centre shortcuts (chuck / wafer). These drive X/Y to the persisted
             // user-frame centre; confirm first, since it's an unbounded table traverse.
             _chuckCentreBtn = new Button { Text = "Move to chuck centre", Location = new Point(14, 168), Size = new Size(206, 32), Enabled = false };
-            _chuckCentreBtn.Click += (s, e) => GoToStoredCentre("chuck", _calib.ChuckCenterX, _calib.ChuckCenterY);
+            _chuckCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("chuck", _calib.ChuckCenterX, _calib.ChuckCenterY);
             _waferCentreBtn = new Button { Text = "Move to wafer centre", Location = new Point(230, 168), Size = new Size(206, 32), Enabled = false };
-            _waferCentreBtn.Click += (s, e) => GoToStoredCentre("wafer", _calib.WaferCenterX, _calib.WaferCenterY);
+            _waferCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("wafer", _calib.WaferCenterX, _calib.WaferCenterY);
             group.Controls.Add(_chuckCentreBtn);
             group.Controls.Add(_waferCentreBtn);
 
@@ -92,7 +92,7 @@ namespace NanotecController
         private void RefreshRelativeMove()
         {
             if (!_relBuilt) return;
-            bool canMove = CanMoveCalibration;
+            bool canMove = CanMoveCalibration && !_externalBusy;   // see FrmMain.BeginExternalOp
             bool vision = _jogMode == JogMode.Vision;
             bool mmPerPxOk = VisionViewControl.MmPerPixel(_calib) != null;
 
@@ -113,9 +113,11 @@ namespace NanotecController
             _waferCentreBtn.Enabled = canMove && _calib.WaferCenterX.HasValue && _calib.WaferCenterY.HasValue;
         }
 
-        // A Go was pressed: dispatch by axis + current jog mode. async void — it's a UI event
-        // handler, and every path it awaits logs its own success/failure.
-        private async void GoRelative(AxisId id)
+        // A Go was pressed: dispatch by axis + current jog mode. Returns a Task (awaited by the
+        // Click handler) rather than being async void: it is reached THROUGH a lambda, not bound
+        // directly to the event, so an async void here would put any throw straight onto
+        // AppDomain.UnhandledException. Every path it awaits logs its own success/failure.
+        private async Task GoRelativeAsync(AxisId id)
         {
             if (!CanMoveCalibration) { AppendLog("Relative move: enable the drives first."); return; }
             double amount = (double)_relNum[id].Value;
@@ -185,7 +187,7 @@ namespace NanotecController
         }
 
         // Confirm, then drive X/Y to a stored USER-frame centre (chuck/wafer) via MoveToAsync.
-        private async void GoToStoredCentre(string which, long? xUser, long? yUser)
+        private async Task GoToStoredCentreAsync(string which, long? xUser, long? yUser)
         {
             if (!CanMoveCalibration) { AppendLog("Move to centre: enable the drives first."); return; }
             if (xUser is not long x || yUser is not long y) { AppendLog($"No {which} centre stored — run the {which} centre-find first."); return; }

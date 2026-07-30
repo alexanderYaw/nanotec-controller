@@ -16,7 +16,7 @@ namespace NanotecController
         // Speed box. Send-on-change so a centred puck issues a single Stop then idles.
         private void VisionPadTick()
         {
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            PixelStepAffine? a = _owner.Calibration.PixelStep;
             PointF v = _vPad.Vector;
             double vmag = Math.Min(1.0, Math.Sqrt(v.X * v.X + v.Y * v.Y));
 
@@ -26,15 +26,15 @@ namespace NanotecController
 
             if (vx == _vLastVx && vy == _vLastVy) return;   // send-on-change
             _vLastVx = vx; _vLastVy = vy;
-            if (vx == 0 && vy == 0) _owner?.VisionStop();
-            else _owner?.VisionJogUser(vx, vy);
+            if (vx == 0 && vy == 0) _owner.VisionStop();
+            else _owner.VisionJogUser(vx, vy);
         }
 
         // Discrete d-pad press (sx right+, sy up+) at the Speed-box value, drift-corrected through the
         // pixel→step affine. Reports to _status if the camera-scale calibration is missing/degenerate.
         private void VisionJog(int sx, int sy)
         {
-            PixelStepAffine? a = _owner?.Calibration.PixelStep;
+            PixelStepAffine? a = _owner.Calibration.PixelStep;
             if (a == null) { _status.Text = "Vision jog needs the camera-scale calibration first."; return; }
             // screen right = +col, up = −row (native frame)
             if (!VisionJogMath.TryUserVelocity(a, sx, -sy, (double)_vSpeed.Value, out int vx, out int vy))
@@ -42,7 +42,7 @@ namespace NanotecController
                 _status.Text = "Calibration is degenerate; recalibrate the camera scale.";
                 return;
             }
-            _owner!.VisionJogUser(vx, vy);
+            _owner.VisionJogUser(vx, vy);
         }
     }
 }
