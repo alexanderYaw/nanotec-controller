@@ -46,6 +46,7 @@
 <c>* ManualThreshold: -1 = use Otsu on the energy map. The blurry/in-focus split is strongly</c>
 <c>*                bimodal (mono frame: ~0-8 vs ~54-86, Otsu picks 33), so Otsu is well posed</c>
 <c>*                here and no fixed grey level is needed. Set a value to override.</c>
+<c>* MinFocusEnergy: reject the frame outright if nothing in it is in focus - see step 2b.</c>
 <c>* </c>
 <c>* Band parameters (the outer edge):</c>
 <c>* SmoothWindow : the band cut is made on a SMOOTHED grey image. Without it the cut also grabs</c>
@@ -75,6 +76,7 @@
 <l>MinArcLength := 800</l>
 <l>BorderMargin := 3</l>
 <l>ManualThreshold := -1</l>
+<l>MinFocusEnergy := 15</l>
 <l>SmoothWindow := 21</l>
 <l>DarkThreshold := 30</l>
 <l>BandGuideRadius := 100</l>
@@ -105,10 +107,37 @@
 <c>*    cleanly different brightnesses, with the boundary following the rim.</c>
 <l>sobel_amp (Gray, Amp, 'sum_abs', SobelWidth)</l>
 <l>mean_image (Amp, Energy, EnergyWindow, EnergyWindow)</l>
-<l>min_max_gray (Energy, Energy, 0, EnergyMin, EnergyMax, EnergyRange)</l>
+<c>*    The 0.1% percentile is taken instead of the true maximum so that a stray hot pixel or a</c>
+<c>*    speck of dirt cannot stand in for a sharp area - step 2b turns this number into a</c>
+<c>*    pass/fail decision.</c>
+<l>min_max_gray (Energy, Energy, 0.1, EnergyMin, EnergyPeak, EnergyRange)</l>
 <l>dev_display (Energy)</l>
-<l>disp_message (WindowHandle, '2: focus energy (bright=in focus, dark=blurry), range ' + EnergyMin + '-' + EnergyMax, 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '2: focus energy (bright=in focus, dark=blurry), 0.1-99.9% range ' + EnergyMin$'.1f' + '-' + EnergyPeak$'.1f', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
+<c>* 2b. Reject the frame if NOTHING in it is in focus.</c>
+<c>*     This gate is needed because step 3 is a RELATIVE split: Otsu always returns some</c>
+<c>*     threshold, so on a wholly defocused frame it simply cuts the blur in half, and every</c>
+<c>*     step after it still runs to completion and reports a confident, wrong edge - typically</c>
+<c>*     the soft bright-to-dark gradient where the rim USED to be, tens of pixels off. Nothing</c>
+<c>*     downstream can catch that: the region is solid, the arc is long, and the circle fit is</c>
+<c>*     happy, because a defocused edge is still smooth and round.</c>
+<c>*     The absolute peak of the energy map is what distinguishes the case, since defocus</c>
+<c>*     destroys gradient magnitude outright:</c>
+<c>*       frame                        99.9% of energy</c>
+<c>*       capture_20260731_105121_943            103   rim in focus - the frame tuned against</c>
+<c>*       capture_20260730_162849_830             31   dimmer, lower-contrast scene, still sharp</c>
+<c>*       capture_20260731_143559_245              6   nothing in focus  &lt;-- must be rejected</c>
+<c>*     6 is the giveaway: the whole frame is no sharper than the BLURRED side of a good one</c>
+<c>*     (that side runs 0-8), i.e. the frame carries no focus information anywhere. 15 sits</c>
+<c>*     with better than 2x margin on both sides - below the dimmest good frame, above the bad</c>
+<c>*     one. Raise it only if a rejected frame turns out to have been usable; do not raise it</c>
+<c>*     towards 31 or the low-contrast scenes start failing.</c>
+<l>if (EnergyPeak &lt; MinFocusEnergy)</l>
+<l>    dev_display (Energy)</l>
+<l>    disp_message (WindowHandle, 'REJECTED: nothing in focus - peak energy ' + EnergyPeak$'.1f' + ' &lt; ' + MinFocusEnergy + '. The frame has no chuck edge to measure; move the camera into focus and re-capture.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
 <c>* 3. Split the two sides. Otsu on the energy map lands in the gap between the blurry and</c>
 <c>*    in-focus populations; LOOK HERE if the result is wrong - the reported value should sit</c>
 <c>*    well clear of both sides, not clipped to one of them.</c>
