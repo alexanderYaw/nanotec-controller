@@ -123,10 +123,10 @@ shortens to $2\sqrt{R^2 - \delta^2}$ under a lateral offset $\delta$).
 
 ## Safety — the constraint that shapes the design
 
-The hardware offers **no protection against a runaway outward scan**: X's **+end limit switch
-is dead**, **Z has none**, and the drives' soft limits (`0x607D`) read a fake $\pm9999999$. If
-the rough centre is off, or a direction never sees an edge, an unbounded scan can drive **into
-a hard stop** (worst on X+). Therefore:
+The hardware offers **no protection against a runaway outward scan**: X has a switch at each end
+but its drive is set to **ignore** them (`0x3701 = -1`), **Z has none**, and the drives' soft
+limits (`0x607D`) read a fake $\pm9999999$. If the rough centre is off, or a direction never sees
+an edge, an unbounded scan can drive **into a hard stop**. Therefore:
 
 - **Per-direction max-travel guard** — `AUTO_GUARD_R` (1.8) × the operator-entered nominal
   radius, generous because the start may be well off-centre. The primary crash guard, and on X

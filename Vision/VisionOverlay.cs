@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 
 namespace NanotecController
 {
@@ -12,6 +13,26 @@ namespace NanotecController
     {
         /// <summary>Pen width that scales with image width (min 2 px).</summary>
         public static float PenWidth(int imageWidth) => Math.Max(2f, imageWidth / 400f);
+
+        /// <summary>
+        /// Returns a bitmap that can back a <see cref="Graphics"/>, replacing an INDEXED one with
+        /// a 24-bit copy and disposing the original. <b>Use the returned reference from then on.</b>
+        ///
+        /// A MONO camera arrives here as 8bpp indexed — <see cref="HalconBitmap"/> builds grey
+        /// frames that way, which is right for display (a third of the bytes of RGB) but
+        /// <c>Graphics.FromImage</c> rejects any indexed format outright. Converting inside
+        /// HalconBitmap instead would tax the live view, which converts every frame and only ever
+        /// displays it; only these capture-and-annotate paths need a drawable surface, so the
+        /// widening happens here, once per captured frame. Colour frames pass through untouched.
+        /// </summary>
+        public static Bitmap EnsureDrawable(Bitmap bmp)
+        {
+            if ((bmp.PixelFormat & PixelFormat.Indexed) == 0) return bmp;
+            var drawable = new Bitmap(bmp.Width, bmp.Height, PixelFormat.Format24bppRgb);
+            using (var g = Graphics.FromImage(drawable)) g.DrawImageUnscaled(bmp, 0, 0);
+            bmp.Dispose();
+            return drawable;
+        }
 
         /// <summary>Frame-centre crosshair: two short lines through (row, col), length ~width/15.</summary>
         public static void DrawCrosshair(Graphics g, int imageWidth, double row, double col, Color color)

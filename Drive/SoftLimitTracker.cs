@@ -7,8 +7,8 @@ namespace NanotecController
     /// assuming a command→position polarity): the last polled position, which axes are parked at
     /// a stored digital limit, the direction currently commanded, and the direction refused
     /// because it tripped a limit. This stops a held/re-pressed outward jog from re-lurching past
-    /// the limit each poll — critical for X+ and Z, which have no hardware switch (see the
-    /// limit-switch findings).
+    /// the limit each poll — critical for Z, which has no hardware switch at either end, and for
+    /// X, whose switches the drive itself ignores (0x3701 = -1); see the limit-switch findings.
     ///
     /// Pure state + decisions: the owner (FrmMain) performs the actual axis Stop and the logging,
     /// so this class has no drive or UI dependency and is unit-testable on its own.

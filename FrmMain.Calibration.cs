@@ -332,7 +332,10 @@ namespace NanotecController
         /// <summary>
         /// Auto-finds an axis's two travel limits by jogging into each switch, recording
         /// the position at the edge, and taking the pair as Min/Max (Home = centre).
-        /// Only Y is wired to this today (two working switches that quick-stop).
+        /// Wired to X and Y — both have a working switch at each end. Z has none and stays
+        /// manual. Detection is host-side (poll 0x60FD, then Stop), so it does not depend on
+        /// the drive's own limit reaction: Y quick-stops at its switches (0x3701 = 6) while X
+        /// ignores them (0x3701 = -1) and is stopped by this loop alone.
         /// </summary>
         public async Task FindLimitsAsync(AxisId id)
         {

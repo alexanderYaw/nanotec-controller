@@ -38,7 +38,7 @@ namespace NanotecController
         private const double AUTO_APPROACH_R = 0.8;
         // One hop, as a fraction of the frame's smaller extent in step space. Must stay well under a
         // full frame: a bigger hop can carry the rim past the camera between captures, and
-        // ChuckEdgeDetector wants a ≥MinLineLength (500 px) ridge, so a rim merely clipping a corner
+        // ChuckEdgeDetector wants a ≥MinArcLength (800 px) arc, so a rim merely clipping a corner
         // does not count as seen.
         private const double AUTO_HOP_FRAC = 0.4;
         // Backstop on one probe's hop count, in case the guard arithmetic is ever defeated by a
@@ -89,12 +89,15 @@ namespace NanotecController
                         if (IsDisposed) { raw.Dispose(); tcs.TrySetResult(result); return; }
                         if (found)
                         {
-                            DrawEdgeOverlay(raw, new ChuckEdgeDetector.EdgePoint(result.Row, result.Column), crossRow, crossCol);
+                            // Returns the bitmap drawn on — a mono frame is indexed and is
+                            // replaced by a drawable copy, so keep the returned reference.
+                            raw = DrawEdgeOverlay(raw, new ChuckEdgeDetector.EdgePoint(result.Row, result.Column), crossRow, crossCol);
                         }
                         else
                         {
-                            using var g = Graphics.FromImage(raw);
-                            VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
+                            raw = VisionOverlay.EnsureDrawable(raw);
+                            using (var g = Graphics.FromImage(raw))
+                                VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
                         }
                         ShowCaptured(raw);
                         tcs.TrySetResult(result);

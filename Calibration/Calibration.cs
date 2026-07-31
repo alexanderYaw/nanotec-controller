@@ -99,7 +99,8 @@ namespace NanotecController
         /// corrupt. <paramref name="warning"/> is set (and the bad file preserved as
         /// <c>calibration.corrupt.json</c>) when an existing file could not be read — the
         /// caller MUST surface it, because starting with an empty store silently removes the
-        /// soft limits, which on X+/Z are the only travel protection.
+        /// soft limits, which on Z (no switches) and X (switches present but ignored by the
+        /// drive, 0x3701 = -1) are the only travel protection.
         /// </summary>
         public static CalibrationStore Load(out string? warning)
         {

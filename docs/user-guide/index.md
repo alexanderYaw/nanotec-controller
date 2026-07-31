@@ -180,9 +180,10 @@ Important caveats:
 * This is a **software** guard polled a few times a second, so expect a little overshoot
   at high speed. Where physical limit switches exist, **they** are the real safety; the
   soft limit is a convenience guard.
-* On this machine, **X's + end and both ends of Z have no working limit switch**, so the
-  soft limit is the *only* protection there. Calibrate those axes before jogging them far,
-  and keep speeds modest.
+* On this machine, **both ends of Z have no working limit switch**, so the soft limit is the
+  *only* protection there. **X** has a switch at each end, but its drive is configured to
+  ignore them, so the app's guard is what actually stops it. Calibrate both axes before
+  jogging them far, and keep speeds modest.
 * If `calibration.json` is missing or unreadable at startup, the app logs a **"starting
   with NO soft limits"** warning. Take it seriously — re-calibrate before jogging.
 
@@ -202,9 +203,10 @@ For each axis:
 * **Clear Min / Clear Max** — removes a stored limit (back to "none"). This is a local edit
   only — it moves nothing — and also drops any jog block that limit was enforcing.
 * **Set Home** (Z only) — captures Z's explicit home position.
-* **Find Limits** (Y only) — **automatically** drives Y into each end switch, records both
-  edges as Min/Max, and sets Home to the centre. Watch it run; it backs off the switches
-  when done.
+* **Find Limits** (X and Y) — **automatically** drives the axis into each end switch, records
+  both edges as Min/Max, and sets Home to the centre. Watch it run; it backs off the switches
+  when done. Not offered for Z, which has no switches — set Z's limits by hand. **STOP** aborts
+  a find in progress.
 * **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
   explicit Home for Z) and reports how close it landed.
 * **Steps/mm** — type the axis's motor steps per millimetre (from the stage's mechanical spec)
@@ -293,6 +295,13 @@ Y** — samples along a single line cannot define the mapping and will be reject
 **Compute & Save A**. The result reports an RMS residual; a small one means the relationship
 really is linear. Everything else on this page — the VISION jog, both centre-finds, the
 rotation — depends on this.
+
+> The detector picks its own brightness cut per frame, so it copes with a change of lighting,
+> exposure or camera without retuning; a successful sample shows which cut it used. If it
+> reports **fiducial NOT found**, the message says how close it got — for example *"closest was
+> area=6,528 circ=0.805 (need area>=5,000, circ>=0.85)"* means it found the disk but the shape
+> was too irregular, so improve focus and lighting. *"no candidate cut segmented anything"*
+> instead means nothing stood out from the background at all: check the marker is lit and in view.
 
 **2. Chuck centre-find.** With the chuck edge in view, press **Add Edge** at several spots
 **spread around the rim** (≥3, more is better). Each press detects the rim point and records

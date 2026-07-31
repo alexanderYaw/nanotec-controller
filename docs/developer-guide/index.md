@@ -588,8 +588,9 @@ motor/encoder polarity.
 `Reset()` (via `ResetSoftLimitTracking`) clears everything on connect/disconnect and after any
 paused op, so a stale delta can't trigger a false stop.
 
-> This guard is the **only** travel protection on X+ and both ends of Z (no working switches),
-> so its correctness matters there more than anywhere.
+> This guard is the **only** travel protection on both ends of Z (no working switches) and on X
+> (switches at both ends, but `0x3701 = -1` makes the drive ignore them), so its correctness
+> matters there more than anywhere.
 
 ---
 
@@ -666,11 +667,17 @@ through it, plus Home All / Go Home internally.
 
 ## 14. Fiducial detection — the solid circle (`Vision/SolidCircleDetector.cs`)
 
-Finds the sub-pixel centre of the circular calibration fiducial — a **solid red disk, slightly
-brighter than the red background**, crossed by **bright diagonal scribe lines** with a large
-bright blob in one corner — in one frame. This is the 2D-localisable point that feeds the
-pixel→step affine fit (§15, `Vision/CameraCalibrator.cs`); a smooth wafer edge can't serve
-here because a plain arc only reveals motion along its normal (the aperture problem).
+Finds the sub-pixel centre of the circular calibration fiducial — a **solid disk distinctly
+brighter than a uniform background**, with **bright diagonal scribe lines** nearby that may or
+may not cross it — in one frame. This is the 2D-localisable point that feeds the pixel→step
+affine fit (§15, `Vision/CameraCalibrator.cs`); a smooth wafer edge can't serve here because a
+plain arc only reveals motion along its normal (the aperture problem).
+
+The scene is **not** fixed, and the detector is deliberately not tuned to one instance of it.
+The two captures on record differ completely: the colour acA5472 saw a red-lit field
+(background ~183 in the red channel) with a scribe line cutting the disk and a large bright
+blob in one corner; the mono acA4024 now in use sees a dark field (background ~53, disk ~120)
+with the lines clear of the disk.
 
 **The core idea:** clean the disk into a single near-perfect blob with morphology, then pick
 the **roundest** survivor. The scribe lines and the clipped corner blob also threshold bright,
@@ -685,15 +692,22 @@ stage for stage (with `dev_display`/`stop` after each), so it can be tuned again
 ### The pipeline
 
 1. **Load the frame.** Read the capture; grab `Width`/`Height` for display.
-2. **Isolate the red channel → byte.** The markers are red-lit, so the red channel carries
-   almost all the contrast (a luminance grey weights red only ~0.3). Mono frames pass through.
-3. **Threshold the bright structures.** `binary_threshold(… 'max_separability' 'light')`
-   auto-picks the cut (Otsu-style — no hand-tuned grey level) and keeps the bright side → the
-   disk **plus** the scribe lines and the corner blob.
+2. **Reduce to one byte channel.** A mono frame (the current acA4024) passes straight through.
+   A colour frame yields its **red** channel, not a luminance grey: the markers were red-lit
+   under the previous acA5472, and luminance weights red only ~0.3.
+3. **Threshold the bright structures — over a ladder of candidate cuts.** Steps 4-6 run once
+   per candidate and the **roundest** result wins; `LastThreshold` reports which cut that was
+   (`NaN` when nothing was found, never a stale value from an earlier call).
+   The candidates are Otsu (`binary_threshold(… 'max_separability' 'light')`) plus the 99th,
+   97th, 95th, 93rd and 90th **percentiles** of the frame's own grey histogram. No single
+   statistic suffices — see the note below. Each keeps the bright side → the disk **plus** the
+   scribe lines and any corner blob.
 4. **Close → fill → open into a clean disk.** `closing_circle` (radius `ClosingRadius`) bridges
    the rim notch where a scribe line cuts the disk and absorbs dark internal streaks; `fill_up`
-   closes any fully-enclosed holes; `opening_circle` (radius `OpenRadius`) — a disk bigger than
-   half the scribe-line width — severs/erases the thin lines, leaving a near-perfect solid circle.
+   closes any fully-enclosed holes; `opening_circle` (radius `OpenRadius`) severs thin structures
+   from the disk, leaving a near-perfect solid circle. The opening need not erase a line
+   outright — on the mono frames the ~65 px lines outlive a radius-20 opening, and step 5 drops
+   them on shape instead. What matters is that nothing thin stays *attached* to the disk.
 5. **Validate the shape.** `connection`, then `select_shape` keeps only regions that are both
    round enough (`circularity ≥ MinCircularity`) **and** the right size (`MinArea ≤ area ≤
    MaxArea`), dropping the lines, the corner blob, and vignette/background speckle.
@@ -704,16 +718,36 @@ stage for stage (with `dev_display`/`stop` after each), so it can be tuned again
    (`r = √(area/π)`) for the overlay (boundary in red, cross at the centre in yellow).
 
 ```
-red channel → threshold bright → close + fill + open → clean solid disk
-  → validate (round & sized) → pick MOST circular → area_center → centre (row, col)
+one byte channel → for each candidate cut:
+                     threshold bright → close + fill + open → clean solid disk
+                       → validate (round & sized) → pick MOST circular
+                 → keep the roundest across all cuts → area_center → centre (row, col)
 ```
+
+> **Why a ladder of cuts and not one statistic.** Measured over every capture on record, each
+> frame accepts a *band* of thresholds 11-15 grey levels wide — but no single statistic lands
+> inside all of them. Otsu is right on the mono frames (picks 85, band 60-130) and on the clean
+> colour frame (211, band 195-245), yet reads **130** on the colour frames containing a dark
+> strip at one edge: it locks onto the valley between that strip and everything else, far below
+> their 190-245 band, and the whole frame segments as one blob that fails the circularity gate.
+> The 99th percentile covers the mono frames but overshoots the colour ones (251-255); the 95th
+> only scrapes the band edges. Taken together the six candidates cover every capture at least
+> twice. Scoring on circularity — rather than taking the first cut that passes — also lands
+> mid-band, where the segmented rim is truest. A pass costs 1-17 ms and detection runs once per
+> **Add Sample** click (never per frame), so the sweep costs 100-300 ms and nothing in the live
+> path. A hard-coded cut is what broke this before: 200, measured off the colour camera,
+> segmented **four pixels** of a mono frame and the detector simply reported "not found".
 
 > **Tunables** (`ClosingRadius`, `OpenRadius`, `MinCircularity`, `MinArea`, `MaxArea`) are
 > exposed as properties and set **empirically**, not by formula: run the .hdev script on
 > representative captures, read the real area/circularity, and set the gates with margin below
 > the true values. Size `ClosingRadius` just above the widest rim gap/streak, and `OpenRadius`
-> above half the widest scribe-line width but below the disk radius (too large erases the disk
-> too). `MinCircularity` defaults to `0.85` — tight enough to reject the elongated corner blob.
+> big enough to sever a line where it crosses the disk but well below the disk radius (too large
+> erases the disk too). `MinCircularity` defaults to `0.85` — tight enough to reject a line left
+> whole by the opening. These are in **pixels**, so they assume a disk far larger than what is
+> being removed; both captures on record clear that easily (disk r = 402 px mono, 310 px colour),
+> but a heavy zoom-out would need them revisited. `BrightThreshold` is normally left **null**
+> (auto, per the ladder above) and set only to pin one cut while tuning.
 > A missed detection costs more than a rare false hit, which the downstream circle-fit/residual
 > checks catch anyway.
 
@@ -1065,6 +1099,29 @@ paints the newest finished frame.
 A camera-open failure must never block motion: the toolbar simply shows **Retry camera**, and
 everything drive-side keeps working.
 
+### Captured-bitmap pixel format — the indexed trap
+
+`HalconBitmap.ToBitmap` returns **`Format8bppIndexed` for a 1-channel (mono) frame** and
+`Format24bppRgb` for colour. Indexed is the right choice for the live view — a third of the
+bytes, and the view only ever *paints* it — but **`Graphics.FromImage` refuses any indexed
+format outright**, so every capture-and-annotate path must widen first:
+
+```csharp
+raw = VisionOverlay.EnsureDrawable(raw);   // 24bpp copy if indexed; original disposed
+using var g = Graphics.FromImage(raw);     // now safe
+```
+
+`EnsureDrawable` returns the *same instance* for an already-drawable bitmap, so colour frames
+cost nothing; **the caller must use the returned reference**, since the original is disposed when
+a copy is made. `DrawMarkOverlay`/`DrawEdgeOverlay` return the bitmap for the same reason.
+
+This is camera-dependent and therefore easy to miss: with the previous *colour* acA5472 every
+overlay path worked, and switching to the *mono* acA4024 broke all five at once — the first
+**Add Sample** threw `ArgumentException: A Graphics object cannot be created from an image that
+has an indexed pixel format`. Widening inside `HalconBitmap` instead would tax the live view,
+which converts every frame and never needs a drawable surface; hence the fix sits at the
+annotate sites, which run once per captured frame.
+
 ---
 
 ## 19. Relative moves in physical units (`FrmMain.RelativeMove.cs`)
@@ -1089,8 +1146,8 @@ traverses.
 
 ## 20. Auto limit-find (`FrmMain.Calibration.cs`)
 
-`FindLimitsAsync` (wired to **Y** only — two working switches that quick-stop) runs on a
-background worker with timers paused:
+`FindLimitsAsync` (wired to **X and Y** — both have a working switch at each end; Z has none
+and stays manual) runs on a background worker with timers paused:
 
 1. **`ClearAnyActiveLimit`** — if the axis starts *on* a switch, back off first (trying both
    directions, since polarity is unverified), so the search doesn't drive into a switch for its
@@ -1100,6 +1157,14 @@ background worker with timers paused:
 3. **`RecoverAndBackOff(-1)`** — a limit hit leaves the drive in Quick-Stop-Active;
    `EnableDrive(true)` exits it, then jog clear of the switch.
 4. Repeat for the other end. Min/Max = the captured pair; Home = centre.
+
+Detection and stopping are **entirely host-side** (poll `0x60FD`, capture `0x6064`, `Stop`), so the
+routine does not depend on the drive's own limit reaction and needs no per-axis branch: **Y**
+quick-stops at its switches (`0x3701 = 6`), **X** ignores them (`0x3701 = -1`) and is stopped by
+this loop alone. Two consequences on X: `RecoverAndBackOff`'s `EnableDrive(true)` re-enables an
+axis that was never in Quick Stop (harmless — it is unconditional), and X coasts further past the
+switch than Y before the Stop bites, because its `0x6084` decel ramp is gentler. The *stored*
+limit is unaffected either way — the position is captured the moment the bit sets, before the Stop.
 
 ---
 
@@ -1158,11 +1223,14 @@ no validation beyond the drive's own — a wrong object or value can change any 
 
 ## 23. Known limitations / open items
 
-* **No drive-side travel protection on X+ or Z.** Probed on hardware: Y has two working limit
-  switches, X only its **−end** (the +end is stuck, which is why X's `0x3701` is `-1` and must
-  **not** be set to 6), and Z has none. `0x607D` reads a fake ±9999999 on all of them. The
-  stored soft limits (§12) plus the auto centre-find's radius guard (§17) are therefore the
-  *only* protection there. A limit hit shows up as **Warning bit 7 + Quick Stop**, not a fault.
+* **No drive-side travel protection on X or Z.** Probed on hardware: Y has two working limit
+  switches and quick-stops on them (`0x3701 = 6`); **X now has a working switch at each end**
+  (the +end was dead when first probed, which is why `0x3701 = -1` was set — with `-1` the drive
+  **ignores** both switches, so X still has no drive-side stop until that is revisited); Z has
+  none. `0x607D` reads a fake ±9999999 on all of them. The stored soft limits (§12) plus the auto
+  centre-find's radius guard (§17) are therefore the *only* protection on X and Z. The host-side
+  limit-find (§20) works on X regardless, since it polls `0x60FD` and stops the axis itself. A
+  drive-side limit hit shows up as **Warning bit 7 + Quick Stop**, not a fault.
 * **Units are still raw drive units.** Positions/velocities are not converted from the factor
   group (0x60A8/0x60A9 + gear/feed/velocity factors). The only physical-unit paths are the
   **hand-entered** `StepsPerMm` (§19) and `ChuckTicksPerRev` for Θ — neither is derived from the
@@ -1272,11 +1340,12 @@ sequenceDiagram
     end
 ```
 
-### 24.3 Auto limit-find (Find Limits, Y)
+### 24.3 Auto limit-find (Find Limits, X and Y)
 
 Direction-agnostic edge detection on the 0x60FD limit bits, with a Quick-Stop recovery
 between ends (§20). Polarity is unverified, so the search keys off a *newly-set* bit, not a
-specific direction.
+specific direction. The same flow runs for either axis — the drive's own limit reaction differs
+(X ignores its switches) but never enters the routine, which stops the axis itself.
 
 ```mermaid
 sequenceDiagram
@@ -1285,24 +1354,24 @@ sequenceDiagram
     participant FC as FrmCalibration
     participant F as FrmMain.Calibration
     participant M as MultiAxisController
-    participant Y as AxisDriver(Y)
+    participant A as AxisDriver(X or Y)
 
-    U->>FC: Find Limits (Y)
-    FC->>F: FindLimitsAsync(Y)
+    U->>FC: Find Limits (X or Y)
+    FC->>F: FindLimitsAsync(id)
     F->>F: Task.Run(FindLimitsCore) — timers paused
     F->>M: ClearAnyActiveLimit — if parked on a switch, back off (try both dirs)
 
-    Note over F,Y: end A (direction +1)
+    Note over F,A: end A (direction +1)
     loop until a NEW 0x60FD bit (0 or 1) sets, or timeout
-        F->>M: JogAt(Y, +1, FIND_LIMIT_SPEED)
-        F->>M: GetDigitalInputs(Y)
+        F->>M: JogAt(id, +1, FIND_LIMIT_SPEED)
+        F->>M: GetDigitalInputs(id)
     end
-    F->>M: GetStatus(Y).Position (capture end A)
-    F->>M: Stop(Y)
+    F->>M: GetStatus(id).Position (capture end A)
+    F->>M: Stop(id)
     F->>M: RecoverAndBackOff(-1) — EnableDrive(true) exits Quick-Stop, jog clear
 
-    Note over F,Y: end B — repeat the loop with direction −1, capture end B
-    F->>M: RecoverAndBackOff(+1) — leave Y off the switch
+    Note over F,A: end B — repeat the loop with direction −1, capture end B
+    F->>M: RecoverAndBackOff(+1) — leave the axis off the switch
 
     F-->>FC: Min=min(A,B), Max=max(A,B), Home=centre → saved to calibration.json
 ```

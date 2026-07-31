@@ -19,23 +19,39 @@ namespace NanotecController
             {
                 bool found;
                 SolidCircleDetector.Mark mark;
-                try { found = _markDetector.TryDetect(frame, out mark); }
-                catch (HOperatorException) { found = false; mark = default; }
-                _view.PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw));
+                // Read the detector's diagnostics HERE, on the grab thread that just wrote them,
+                // and carry them across in the closure — the UI callback runs later, by which
+                // time another sample could have overwritten the detector's state.
+                string? why;
+                double cut;
+                try
+                {
+                    found = _markDetector.TryDetect(frame, out mark);
+                    why = _markDetector.LastFailure;
+                    cut = _markDetector.LastThreshold;
+                }
+                catch (HOperatorException ex)
+                {
+                    found = false; mark = default; cut = double.NaN;
+                    why = "HALCON error: " + ex.GetErrorMessage();
+                }
+                _view.PostFrameBitmap(frame, flip: false, raw => OnSampleGrabbed(found, mark, raw, why, cut));
             });
             _status.Text = "Sampling: detecting fiducial...";
         }
 
         // UI thread: the grab thread found (or didn't) the fiducial and handed us a raw full-res
         // frame. Pair the detected pixel with the current motor position and store a sample.
-        private void OnSampleGrabbed(bool found, SolidCircleDetector.Mark mark, Bitmap raw)
+        private void OnSampleGrabbed(bool found, SolidCircleDetector.Mark mark, Bitmap raw,
+                                     string? why, double cut)
         {
             if (IsDisposed) { raw.Dispose(); return; }
 
             if (!found)
             {
                 ShowCaptured(raw);   // show what the camera saw so the user can adjust
-                _status.Text = "Sample: fiducial NOT found - adjust framing/lighting (test thresholds in HDevelop).";
+                _status.Text = "Sample: fiducial NOT found - "
+                             + (why ?? "adjust framing/lighting (test thresholds in HDevelop).");
                 return;
             }
             if (!_owner.TryCurrentUser(AxisId.X, out long x)
@@ -47,16 +63,20 @@ namespace NanotecController
             }
 
             _calibrator.Add(mark.Row, mark.Column, x, y);
-            DrawMarkOverlay(raw, mark);
+            raw = DrawMarkOverlay(raw, mark);   // may return a widened copy; see EnsureDrawable
             ShowCaptured(raw);
             RefreshCalibUi();
-            _status.Text = $"Sample {_calibrator.Count}: pos=({x}, {y})  px=(r {mark.Row:F1}, c {mark.Column:F1})";
+            _status.Text = $"Sample {_calibrator.Count}: pos=({x}, {y})  px=(r {mark.Row:F1}, c {mark.Column:F1})"
+                         + (double.IsNaN(cut) ? "" : $"  cut {cut:F0}");
         }
 
         // Draws the detected circle + centre cross onto the (raw) sample bitmap. GDI x = column,
-        // y = row. Drawn at full-res coordinates; the Zoom pane scales it to fit.
-        private static void DrawMarkOverlay(Bitmap bmp, SolidCircleDetector.Mark mark)
+        // y = row. Drawn at full-res coordinates; the Zoom pane scales it to fit. RETURNS the
+        // bitmap drawn on — a mono frame is indexed and gets replaced by a drawable copy, so the
+        // caller must keep the returned reference (the original is disposed).
+        private static Bitmap DrawMarkOverlay(Bitmap bmp, SolidCircleDetector.Mark mark)
         {
+            bmp = VisionOverlay.EnsureDrawable(bmp);
             using var g = Graphics.FromImage(bmp);
             float cx = (float)mark.Column, cy = (float)mark.Row, r = (float)mark.Radius;
             float w = VisionOverlay.PenWidth(bmp.Width);
@@ -64,6 +84,7 @@ namespace NanotecController
             using var pen = new Pen(Color.Lime, w);   // centre cross sized to the fiducial radius
             g.DrawLine(pen, cx - r, cy, cx + r, cy);
             g.DrawLine(pen, cx, cy - r, cx, cy + r);
+            return bmp;
         }
 
         private void ClearSamples()

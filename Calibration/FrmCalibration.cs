@@ -17,6 +17,10 @@ namespace NanotecController
     {
         private static readonly AxisId[] CalibAxes = [AxisId.X, AxisId.Y, AxisId.Z];
 
+        /// <summary>Axes that can auto-find both travel limits — they have a working switch at
+        /// each end. Z is excluded: it has no switch at either end, so its limits stay manual.</summary>
+        private static readonly AxisId[] AutoFindAxes = [AxisId.X, AxisId.Y];
+
         private readonly IMotionHost _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
@@ -38,7 +42,8 @@ namespace NanotecController
                 MaximumSize = new Size(700, 0),
                 Text = "Jog an axis to a position in the main window, then Set Min / Set Max here "
                      + "(Clear Min / Clear Max removes a stored limit). Home = centre of the two limits "
-                     + "for X/Y; Z's Home is set explicitly. Find Limits drives Y into its switches automatically. "
+                     + "for X/Y; Z's Home is set explicitly. Find Limits drives X or Y into its switches automatically "
+                     + "(Z has none, so its limits stay manual). "
                      + "Steps/mm (from the stage spec) converts mm moves and scales the crosshair mm ticks.",
             };
             Controls.Add(hint);
@@ -125,9 +130,9 @@ namespace NanotecController
                 x += b.PreferredSize.Width + gap;
                 return b;
             }
-            // Z defines Home explicitly (no two references to centre); Y can auto-find its limits.
+            // Z defines Home explicitly (no two references to centre); X and Y can auto-find theirs.
             Button? setHome = id == AxisId.Z ? AddTop("Set Home") : null;
-            Button? find = id == AxisId.Y ? AddTop("Find Limits") : null;
+            Button? find = Array.IndexOf(AutoFindAxes, id) >= 0 ? AddTop("Find Limits") : null;
             Button goHome = AddTop("Go Home");
 
             // Steps/mm entry (second row, after the Clear buttons). Filled once from the store;

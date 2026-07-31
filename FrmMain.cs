@@ -48,9 +48,12 @@ namespace NanotecController
         // The joystick "fast" button multiplier (capped at each axis's slider max).
         private const int FAST_FACTOR = 3;
 
-        // Speed for the automatic limit-find (Y), in drive velocity units. Kept low so the
-        // approach into the switch is gentle; Y quick-stops at its switches (0x3701 = 6),
-        // and the overshoot cancels in the centre calc anyway.
+        // Speed for the automatic limit-find (X, Y), in drive velocity units. Kept low so the
+        // approach into the switch is gentle; the edge POSITION is captured the moment the bit
+        // sets, so physical overshoot doesn't bias the stored limit, and it cancels in the
+        // centre calc anyway. It still matters mechanically on X, which (0x3701 = -1) does not
+        // quick-stop itself and has a gentler decel ramp than Y, so it coasts further past the
+        // switch before this loop's Stop takes effect.
         private const int FIND_LIMIT_SPEED = 4000;
         // Limit-find polling + ceilings.
         private const int FIND_POLL_MS = 15;
@@ -79,8 +82,9 @@ namespace NanotecController
 
         // Soft-limit jog guard (polarity-agnostic, COMMAND space): tracks the last polled
         // position, parked-at-limit axes, the commanded direction, and the direction refused
-        // after tripping a limit — critical for X+ and Z, which have no hardware switch (see
-        // limit-switch findings). Logic lives in SoftLimitTracker; FrmMain does the Stop + log.
+        // after tripping a limit — critical for Z, which has no hardware switch at either end,
+        // and for X, whose switches the drive ignores (0x3701 = -1). Logic lives in
+        // SoftLimitTracker; FrmMain does the Stop + log.
         private readonly SoftLimitTracker _softLimits = new();
 
         private sealed record AxisRow(Button Neg, Button Pos, Label Status, TrackBar Speed, Label SpeedValue);

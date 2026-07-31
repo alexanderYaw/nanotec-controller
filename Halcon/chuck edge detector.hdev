@@ -3,30 +3,94 @@
 <procedure name="main">
 <interface/>
 <body>
-<c>* Chuck-edge detector (FOCUS/TEXTURE based) - HDevelop tuning script.</c>
-<c>* The two sides are nearly the same colour, so brightness can't separate them. The</c>
-<c>* discriminator is FOCUS: the in-focus side is full of sharp texture (high local detail),</c>
-<c>* the out-of-focus side is smooth/blurry. We build a "focus energy" map (bright = in focus),</c>
-<c>* threshold it to split the two sides, and take the boundary = the chuck edge.</c>
+<c>* Chuck-edge detector - HDevelop tuning script.</c>
+<c>* Across the rim there are THREE zones: the out-of-focus bright background; a near-black</c>
+<c>* BAND; and the in-focus, sharply-textured chuck face. The edge we report is the OUTER one,</c>
+<c>* black band against out-of-focus background - the chuck's outer silhouette.</c>
 <c>* Step with Run (F5); it pauses at each stop().</c>
+<c>* </c>
+<c>* Getting there takes two cues, because neither alone is enough:</c>
+<c>*   FOCUS separates the chuck face from everything outside it (the two are nearly the same</c>
+<c>*     brightness, so grey level cannot do it). That gives a solid, reliable in-focus region,</c>
+<c>*     but its outline is the INNER edge - band against chuck face.</c>
+<c>*   GREY LEVEL then adds the band, which is near-black (~10) where nothing else in the scene</c>
+<c>*     is. Union the two and the region's outline becomes the OUTER edge.</c>
+<c>* The outer edge is also the better feature to track: it is the machined silhouette, so it</c>
+<c>* fits a circle to ~5 px RMS, where the inner edge manages only ~21 px - the pits in the</c>
+<c>* chuck face bite into it and the focus transition is blurred by EnergyWindow pooling.</c>
+<c>* </c>
+<c>* NOTE ON THE OLD RIDGE METHOD (removed): this script used to skip the threshold and instead</c>
+<c>* pull the edge out of a FINE-scale sharpness map with lines_gauss, as a thin bright ridge.</c>
+<c>* That only worked while the chuck texture was LOW-contrast (the dim colour-camera frames,</c>
+<c>* Edge_sample*.png), where the only strong fine-scale response was the rim itself. On the</c>
+<c>* mono acA4024 frames the texture is bright and high-contrast, so the whole chuck face lights</c>
+<c>* up in that map: there is no isolated ridge any more. lines_gauss returns ~29000 short</c>
+<c>* texture fragments and NOT ONE survives the length filter, so the script died on an empty</c>
+<c>* tuple at the "nearest point" step. Focus energy is the robust discriminator - it is a broad</c>
+<c>* AREA cue, and it gets STRONGER as the texture contrast rises, so it holds on both cameras.</c>
+<c>* </c>
+<c>* EnergyWindow : pooling window for the focus map. Large enough to average over the texture</c>
+<c>*                period; it blurs the step by about half its width, but symmetrically, so the</c>
+<c>*                mid-level crossing stays on the true edge.</c>
+<c>* CloseRadius  : bridges the dark pits that bite into the rim. This is the parameter that</c>
+<c>*                matters. Sweeping it against the residual of a circle fitted to the arc:</c>
+<c>*                  radius        25     45     65     85</c>
+<c>*                  mono frame  37.6   33.5   21.3   20.8  px RMS</c>
+<c>*                  Edge_smpl2  24.2   15.6   13.9   11.6  px RMS</c>
+<c>*                65 gets nearly all of the gain; past that the arc just shortens.</c>
+<c>* OpenRadius   : drops isolated specks of texture stranded on the blurry side.</c>
+<c>* MinArcLength : the real arc spans the frame (4100-8400 px here); stubs left behind after</c>
+<c>*                clipping are a few hundred at most.</c>
+<c>* BorderMargin : the region's outline also runs along the image frame. Clipping to a</c>
+<c>*                rectangle inset by this much throws those runs away and leaves the rim.</c>
+<c>* ManualThreshold: -1 = use Otsu on the energy map. The blurry/in-focus split is strongly</c>
+<c>*                bimodal (mono frame: ~0-8 vs ~54-86, Otsu picks 33), so Otsu is well posed</c>
+<c>*                here and no fixed grey level is needed. Set a value to override.</c>
+<c>* </c>
+<c>* Band parameters (the outer edge):</c>
+<c>* SmoothWindow : the band cut is made on a SMOOTHED grey image. Without it the cut also grabs</c>
+<c>*                every dark pit in the chuck texture and the band stops being a clean ribbon.</c>
+<c>* DarkThreshold: grey cut for the band. The band floor measures 8.7-13.2 across rows (worst</c>
+<c>*                case 13.2) and the approach from the bright side is a ~200 px defocus RAMP,</c>
+<c>*                not a step - so this value genuinely sets WHERE on the ramp the edge lands.</c>
+<c>*                It is placed low deliberately: down near the floor the ramp is steepest, so</c>
+<c>*                the crossing moves only ~4-8 px for a 10-level change, and the per-row</c>
+<c>*                illumination differences (bright side varies 146-224 by row) stop mattering.</c>
+<c>*                30 keeps better than 2x margin over the 13.2 floor. Circle-fit residual:</c>
+<c>*                  DarkThreshold      20     30     40     55     70</c>
+<c>*                  with guide       2.9    4.7    8.1   13.3   17.3  px RMS</c>
+<c>*                  no guide         2.9   18.3   30.0   36.8   41.4  px RMS</c>
+<c>* BandGuideRadius: the band hugs the chuck - its outer edge sits only ~30-50 px beyond the</c>
+<c>*                in-focus face. Confining the dark cut to a collar this wide around that face</c>
+<c>*                stops isolated dark blobs sitting ~150 px out in the blurred background from</c>
+<c>*                merging in and dragging the outline inward (that is the "no guide" row</c>
+<c>*                above; worst single deviation 128 px, versus 41 px with the collar). 100 is</c>
+<c>*                the middle of the usable span: 60 clips the band itself (14.1 px RMS even at</c>
+<c>*                DarkThreshold 20), and by 250 the collar is wide enough to be no constraint.</c>
+<c>* BandCloseRadius: seals the seam where band and face meet before the outline is taken.</c>
 <l>SobelWidth := 3</l>
 <l>EnergyWindow := 41</l>
-<l>FineWindow := 9</l>
-<l>LineSigma := 1.5</l>
-<l>LineLow := 0.5</l>
-<l>LineHigh := 1.5</l>
-<l>MinLineLength := 500</l>
+<l>CloseRadius := 65</l>
+<l>OpenRadius := 25</l>
+<l>MinArcLength := 800</l>
+<l>BorderMargin := 3</l>
+<l>ManualThreshold := -1</l>
+<l>SmoothWindow := 21</l>
+<l>DarkThreshold := 30</l>
+<l>BandGuideRadius := 100</l>
+<l>BandCloseRadius := 15</l>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
-<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/Edge_sample1.png')</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260731_105121_943.bmp')</l>
 <l>get_image_size (Image, Width, Height)</l>
 <l>dev_open_window (0, 0, 750, 500, 'black', WindowHandle)</l>
 <l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
 <l>dev_set_part (0, 0, Height - 1, Width - 1)</l>
 <l>dev_display (Image)</l>
-<l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '0: input frame  ' + Width + 'x' + Height, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 1. Red channel (the markers/illumination are red).</c>
+<c>* 1. Single-channel byte image. The mono camera passes straight through; a colour frame</c>
+<c>*    yields its RED channel (the old colour-camera scenes were red-lit).</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
 <l>    access_channel (Image, Gray, 1)</l>
@@ -34,49 +98,131 @@
 <l>    copy_image (Image, Gray)</l>
 <l>endif</l>
 <l>dev_display (Gray)</l>
-<l>disp_message (WindowHandle, '1: red channel', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '1: grey (' + Channels + ' channel(s) in)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 2. Focus-energy map: gradient magnitude (high where sharp), smoothed over a window.</c>
-<c>*    Bright = in focus, dark = blurry. This is the key step - tune EnergyWindow so the two</c>
-<c>*    sides come out as cleanly different brightnesses.</c>
+<c>* 2. Focus-energy map: gradient magnitude (high where sharp), pooled over EnergyWindow.</c>
+<c>*    Bright = in focus, dark = blurry. This is the key step - the two sides must come out as</c>
+<c>*    cleanly different brightnesses, with the boundary following the rim.</c>
 <l>sobel_amp (Gray, Amp, 'sum_abs', SobelWidth)</l>
 <l>mean_image (Amp, Energy, EnergyWindow, EnergyWindow)</l>
+<l>min_max_gray (Energy, Energy, 0, EnergyMin, EnergyMax, EnergyRange)</l>
 <l>dev_display (Energy)</l>
-<l>disp_message (WindowHandle, '2: focus energy (bright=in focus, dark=blurry)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '2: focus energy (bright=in focus, dark=blurry), range ' + EnergyMin + '-' + EnergyMax, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 2b. DIAGNOSTIC: same gradient amplitude, but pooled at a FINE scale (FineWindow).</c>
-<c>*     Coarse pooling (EnergyWindow) smears the dark band's sharp edges into the fuzzy</c>
-<c>*     halo above it; a small window keeps in-focus detail crisp and lets the</c>
-<c>*     out-of-focus halo stay dark. LOOK HERE: does the in-focus dark band stand out</c>
-<c>*     from the fuzzy dark halo? If yes, 2-3 (band/halo) edge is recoverable; if the</c>
-<c>*     band's interior is as dark as the halo, it is not.</c>
-<l>mean_image (Amp, FineSharp, FineWindow, FineWindow)</l>
-<l>dev_display (FineSharp)</l>
-<l>disp_message (WindowHandle, '2b: fine sharpness - does the dark band separate from the fuzzy halo?', 'window', 12, 12, 'yellow', 'false')</l>
-<l>stop ()</l>
-<c>* 2c. DIAGNOSTIC: extract that thin bright ridge directly as a sub-pixel line - this IS</c>
-<c>*     the edge we want (top of the in-focus dark band). lines_gauss finds bright</c>
-<c>*     curvilinear ridges; select_contours_xld then keeps only long contours so the</c>
-<c>*     short texture responses below the ridge are dropped.</c>
-<l>lines_gauss (FineSharp, RidgeLines, LineSigma, LineLow, LineHigh, 'light', 'true', 'bar-shaped', 'true')</l>
-<l>select_contours_xld (RidgeLines, RidgeLong, 'contour_length', MinLineLength, 1000000, -0.5, 0.5)</l>
-<l>count_obj (RidgeLines, NumRaw)</l>
-<l>count_obj (RidgeLong, NumSel)</l>
-<l>dev_display (FineSharp)</l>
+<c>* 3. Split the two sides. Otsu on the energy map lands in the gap between the blurry and</c>
+<c>*    in-focus populations; LOOK HERE if the result is wrong - the reported value should sit</c>
+<c>*    well clear of both sides, not clipped to one of them.</c>
+<l>if (ManualThreshold &lt; 0)</l>
+<l>    binary_threshold (Energy, InFocusRaw, 'max_separability', 'light', UsedThreshold)</l>
+<l>else</l>
+<l>    UsedThreshold := ManualThreshold</l>
+<l>    threshold (Energy, InFocusRaw, UsedThreshold, 255)</l>
+<l>endif</l>
+<l>dev_display (Energy)</l>
+<l>dev_set_draw ('fill')</l>
 <l>dev_set_color ('green')</l>
-<l>dev_set_line_width (2)</l>
-<l>dev_display (RidgeLong)</l>
-<l>disp_message (WindowHandle, '2c: lines_gauss raw=' + NumRaw + ' contours, after length filter=' + NumSel + ' (shown: filtered, green on FineSharp)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>dev_display (InFocusRaw)</l>
+<l>disp_message (WindowHandle, '3: energy &gt;= ' + UsedThreshold + ' (green) - the in-focus side, before cleanup', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 3. Edge point closest to the image centre. Gather every point from the ridge</c>
-<c>*    contour(s), then pick the one with the smallest distance to the centre.</c>
+<c>* 4. Clean up to ONE solid region: close the pits that bite into the rim, open away stranded</c>
+<c>*    specks, keep the largest connected component, fill its interior. This is the chuck FACE;</c>
+<c>*    its outline is the inner edge, so step 5 still has to add the band.</c>
+<l>closing_circle (InFocusRaw, InFocusClosed, CloseRadius)</l>
+<l>opening_circle (InFocusClosed, InFocusOpened, OpenRadius)</l>
+<l>connection (InFocusOpened, InFocusParts)</l>
+<l>count_obj (InFocusParts, NumParts)</l>
+<l>select_shape_std (InFocusParts, InFocusBiggest, 'max_area', 70)</l>
+<l>fill_up (InFocusBiggest, InFocus)</l>
+<l>area_center (InFocus, InFocusArea, InFocusRow, InFocusCol)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('margin')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (InFocus)</l>
+<l>disp_message (WindowHandle, '4: in-focus chuck face - ' + NumParts + ' component(s), largest covers ' + (100.0 * InFocusArea / (Width * Height))$'.1f' + '% of the frame', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 5. Add the near-black band, so the region reaches out to the OUTER edge.</c>
+<c>*    The cut is made on a SMOOTHED grey image: at full resolution the chuck texture is full of</c>
+<c>*    pits just as dark as the band, and they would come through as speckle. Smoothing lifts</c>
+<c>*    the texture to its mid-grey average (~120) and leaves the band, which is genuinely broad</c>
+<c>*    and dark, sitting alone below the cut.</c>
+<c>*    The result is then confined to a collar around the chuck face - see BandGuideRadius.</c>
+<l>mean_image (Gray, GraySmoothed, SmoothWindow, SmoothWindow)</l>
+<l>threshold (GraySmoothed, DarkAll, 0, DarkThreshold)</l>
+<l>dilation_circle (InFocus, BandGuide, BandGuideRadius)</l>
+<l>intersection (DarkAll, BandGuide, Band)</l>
+<l>area_center (Band, BandArea, BandRow, BandCol)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('fill')</l>
+<l>dev_set_color ('red')</l>
+<l>dev_display (Band)</l>
+<l>disp_message (WindowHandle, '5: black band, grey &lt;= ' + DarkThreshold + ' after smoothing, within ' + BandGuideRadius + ' px of the face (red) - area ' + BandArea, 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 5b. Face + band = the chuck out to its outer silhouette. The closing seals the seam between</c>
+<c>*     the two; if the band came back empty (no near-black zone in this frame - true of the old</c>
+<c>*     dim colour captures, whose rim only reaches ~85 in red) this collapses back to the face</c>
+<c>*     alone and the script reports the INNER edge instead.</c>
+<l>union2 (InFocus, Band, ChuckRaw)</l>
+<l>closing_circle (ChuckRaw, ChuckClosed, BandCloseRadius)</l>
+<l>connection (ChuckClosed, ChuckParts)</l>
+<l>select_shape_std (ChuckParts, ChuckBiggest, 'max_area', 70)</l>
+<l>fill_up (ChuckBiggest, Chuck)</l>
+<l>area_center (Chuck, ChuckArea, ChuckRow, ChuckCol)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('margin')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Chuck)</l>
+<l>disp_message (WindowHandle, '5b: face + band covers ' + (100.0 * ChuckArea / (Width * Height))$'.1f' + '% of the frame (was ' + (100.0 * InFocusArea / (Width * Height))$'.1f' + '% without the band)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 6. The chuck edge = that region's outline, minus the stretches that merely run along the</c>
+<c>*    image frame. clip_contours_xld cuts the outline at a rectangle inset by BorderMargin,</c>
+<c>*    which severs those runs; the length filter then drops the stubs it leaves behind.</c>
+<l>gen_contour_region_xld (Chuck, RegionBorder, 'border')</l>
+<l>clip_contours_xld (RegionBorder, ClippedBorder, BorderMargin, BorderMargin, Height - 1 - BorderMargin, Width - 1 - BorderMargin)</l>
+<l>count_obj (ClippedBorder, NumClipped)</l>
+<l>select_contours_xld (ClippedBorder, EdgeArcs, 'contour_length', MinArcLength, 1e9, -0.5, 0.5)</l>
+<l>count_obj (EdgeArcs, NumArcs)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_display (EdgeArcs)</l>
+<l>disp_message (WindowHandle, '6: outline clipped into ' + NumClipped + ' piece(s), ' + NumArcs + ' longer than ' + MinArcLength + ' px (green)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>if (NumArcs &lt; 1)</l>
+<l>    dev_display (Energy)</l>
+<l>    disp_message (WindowHandle, 'FAILED: no arc survived. Check step 3 - if the threshold clipped to one side, the frame probably has no edge in view.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 6b. Circle fitted to the longest arc - a sanity read-out, not part of the result. The outer</c>
+<c>*     edge fits to ~5 px RMS. If it comes back near ~21 px, the band was missed and this is</c>
+<c>*     the inner edge; much larger than that and the outline wandered off the rim entirely.</c>
+<l>length_xld (EdgeArcs, ArcLengths)</l>
+<l>tuple_sort_index (ArcLengths, LengthIdx)</l>
+<l>select_obj (EdgeArcs, MainArc, LengthIdx[|LengthIdx| - 1] + 1)</l>
+<l>fit_circle_contour_xld (MainArc, 'geohuber', -1, 0, 0, 3, 2, CircRow, CircCol, CircRadius, CircStartPhi, CircEndPhi, CircPointOrder)</l>
+<l>get_contour_xld (MainArc, MainRow, MainCol)</l>
+<l>Residual := sqrt((MainRow - CircRow) * (MainRow - CircRow) + (MainCol - CircCol) * (MainCol - CircCol)) - CircRadius</l>
+<l>tuple_mean (Residual * Residual, MeanSquare)</l>
+<l>FitRms := sqrt(MeanSquare)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (MainArc)</l>
+<l>gen_circle_contour_xld (FitCircle, CircRow, CircCol, CircRadius, CircStartPhi, CircEndPhi, CircPointOrder, 1.0)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_display (FitCircle)</l>
+<l>disp_message (WindowHandle, '6b: longest arc = ' + ArcLengths[LengthIdx[|LengthIdx| - 1]]$'.0f' + ' px; fitted circle r=' + CircRadius$'.0f' + ' px (cyan), residual ' + FitRms$'.1f' + ' px RMS', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 7. Edge point closest to the image centre. Gather every point from the surviving arc(s),</c>
+<c>*    then pick the one with the smallest distance to the centre.</c>
 <l>CenterRow := Height / 2.0</l>
 <l>CenterCol := Width / 2.0</l>
 <l>AllRow := []</l>
 <l>AllCol := []</l>
-<l>count_obj (RidgeLong, NumEdge)</l>
-<l>for K := 1 to NumEdge by 1</l>
-<l>    select_obj (RidgeLong, OneContour, K)</l>
+<l>for K := 1 to NumArcs by 1</l>
+<l>    select_obj (EdgeArcs, OneContour, K)</l>
 <l>    get_contour_xld (OneContour, ContRow, ContCol)</l>
 <l>    AllRow := [AllRow, ContRow]</l>
 <l>    AllCol := [AllCol, ContCol]</l>
@@ -90,7 +236,7 @@
 <l>dev_display (Image)</l>
 <l>dev_set_color ('green')</l>
 <l>dev_set_line_width (2)</l>
-<l>dev_display (RidgeLong)</l>
+<l>dev_display (EdgeArcs)</l>
 <l>gen_cross_contour_xld (CenterCross, CenterRow, CenterCol, 60, 0.785)</l>
 <l>dev_set_color ('yellow')</l>
 <l>dev_display (CenterCross)</l>
@@ -98,7 +244,7 @@
 <l>dev_set_color ('red')</l>
 <l>dev_set_line_width (3)</l>
 <l>dev_display (NearCross)</l>
-<l>disp_message (WindowHandle, '3: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '7: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 </body>
 <docu id="main">
