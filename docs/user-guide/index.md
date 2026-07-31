@@ -205,11 +205,15 @@ For each axis:
 * **Set Home** (Z only) — captures Z's explicit home position.
 * **Find X & Y Limits (auto)** — one button at the bottom of the window that calibrates **both
   axes in a single run**: X and Y each drive into their own end switches **at the same time**,
-  both edges of each are recorded as that axis's Min/Max, and Home is set to the centre. Watch
-  it run; it backs off the switches when done. Z has no switches, so it is not included — set
-  Z's limits by hand. **STOP** aborts the run (both axes) at any point. If one axis fails —
-  e.g. it never reaches a switch and times out — it is reported on its own and the other axis's
-  result is still kept; only an axis that found **both** its ends has its limits updated.
+  both edges of each are recorded as that axis's Min/Max, and Home is set to the centre. It then
+  **homes X and Y automatically**, so the chuck finishes centred in its travel rather than parked
+  off an end switch — no separate Go Home needed. Z has no switches, so it is not included — set
+  Z's limits by hand. Note that the auto-home does **not** retract Z first (unlike Home All): the
+  find has just traversed the whole table at that same Z height, so the move back to the centre
+  covers no new ground. **STOP** aborts the run (both axes) at any point; if you stop it, the
+  limits found so far are still saved but the auto-home is skipped. If one axis fails — e.g. it
+  never reaches a switch and times out — it is reported on its own and the other axis's result is
+  still kept and homed; only an axis that found **both** its ends has its limits updated.
 * **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
   explicit Home for Z) and reports how close it landed.
 * **Steps/mm** — type the axis's motor steps per millimetre (from the stage's mechanical spec)

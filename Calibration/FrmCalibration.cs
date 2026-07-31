@@ -35,23 +35,28 @@ namespace NanotecController
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
 
+            // The hint paragraph wraps, so its height is not a constant — it grows with the text
+            // and with the display scaling. Wrap it at roughly the width the axis rows below need
+            // (they run to ~900px), then start those rows below its MEASURED bottom: a hard-coded
+            // start-y is what let the text run over the X row.
+            const int HINT_WRAP_WIDTH = 880;
             var hint = new Label
             {
                 Location = new Point(12, 8),
                 AutoSize = true,
-                MaximumSize = new Size(700, 0),
+                MaximumSize = new Size(HINT_WRAP_WIDTH, 0),
                 Text = "Jog an axis to a position in the main window, then Set Min / Set Max here "
                      + "(Clear Min / Clear Max removes a stored limit). Home = centre of the two limits "
                      + "for X/Y; Z's Home is set explicitly. Find X && Y Limits calibrates BOTH axes in one "
-                     + "run, driving each into its own switches at the same time (Z has none, so its limits "
-                     + "stay manual). "
+                     + "run, driving each into its own switches at the same time and then homing them, so the "
+                     + "chuck ends up centred (Z has none, so its limits stay manual). "
                      + "Steps/mm (from the stage spec) converts mm moves and scales the crosshair mm ticks.",
             };
-            Controls.Add(hint);
+            Controls.Add(hint);   // add first: the label takes the form's Font, then measures itself
 
             // Buttons auto-size to their text so they don't clip at higher display scaling.
-            int y = 70;
-            int maxRight = 480;
+            int y = hint.Bottom + 16;
+            int maxRight = Math.Max(480, hint.Right);
             foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 84; }
 
             var saveMm = new Button

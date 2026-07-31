@@ -1177,6 +1177,17 @@ axis's Min/Max is written only when it holds **both** ends, so a run cut short s
 pair or nothing. An operator **STOP** (`ThrowIfStopped`) halts *every* axis (`StopAll`) and
 abandons the whole run.
 
+### Auto-home to finish
+`HomeAfterFindAsync` then moves every axis the run calibrated to its new Home (`HomeTargetFor` =
+the centre of the limits just measured), both together, inside the same busy scope — so the
+chuck ends the calibration centred instead of parked just off an end switch, and no separate Go
+Home is needed. It deliberately does **not** retract Z first the way `HomeAllAsync` does: the find
+has just traversed the full X/Y travel at that same Z height, so returning to the centre of that
+travel reaches nothing new. It is skipped entirely after an operator STOP (checked both from the
+caught cancellation and from a live `_stopRequested`, for a STOP pressed as the find was
+finishing) — a stop must never be followed by another unrequested traverse. The limits measured
+before the stop are still saved.
+
 Detection and stopping are **entirely host-side** (poll `0x60FD`, record `0x6064`, `Stop`), so the
 routine does not depend on the drive's own limit reaction and needs no per-axis branch: **Y**
 quick-stops at its switches (`0x3701 = 6`), **X** ignores them (`0x3701 = -1`) and is stopped by
@@ -1393,8 +1404,13 @@ sequenceDiagram
     alt an axis throws (no limit seen before its timeout)
         F->>M: Stop(that axis) — it drops out; the other keeps running
     else operator STOP
-        F->>M: StopAll() — whole run abandoned
+        F->>M: StopAll() — whole run abandoned, auto-home skipped
     end
 
-    F-->>FC: per axis with both ends: Min=min(A,B), Max=max(A,B), Home=centre → saved to calibration.json
+    F->>F: per axis with both ends: Min=min(A,B), Max=max(A,B), Home=centre → calibration.json
+
+    Note over F,A: auto-home (unless stopped) — HomeAfterFindAsync, no Z retract
+    F->>M: MoveAbsolute(X, centre) + MoveAbsolute(Y, centre)
+    F->>M: WaitForMotionComplete(X) + (Y)
+    F-->>FC: calibrated and centred
 ```

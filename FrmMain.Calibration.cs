@@ -346,6 +346,9 @@ namespace NanotecController
         /// serialized (see <see cref="RunLimitFinds"/>) — only the motors overlap. Each axis is
         /// reported and stored independently: one that fails (no switch seen before its timeout)
         /// does not discard the other's measurement.
+        ///
+        /// The run finishes by homing every axis it calibrated (see <see cref="HomeAfterFindAsync"/>),
+        /// so the chuck ends up centred rather than parked at one end of its travel.
         /// </summary>
         public async Task FindXyLimitsAsync()
         {
@@ -357,6 +360,7 @@ namespace NanotecController
             var finds = new List<AxisLimitFind>();
             foreach (AxisId id in AutoFindAxes) finds.Add(new AxisLimitFind(this, id));
             var failed = new Dictionary<AxisId, string>();
+            bool stopped = false;
             try
             {
                 // LongRunning, not Task.Run: this parks the worker for the whole find (up to
@@ -368,6 +372,7 @@ namespace NanotecController
             }
             catch (OperationCanceledException)
             {
+                stopped = true;
                 AppendLog("Find limits STOPPED by operator.");
             }
             catch (Exception ex)
@@ -378,7 +383,7 @@ namespace NanotecController
             // Store whatever was measured. Both ends captured = a usable pair, even if the run was
             // stopped or errored afterwards (during the final back-off); the positions were taken
             // the moment each switch set, so nothing later can invalidate them.
-            bool anyStored = false;
+            var calibrated = new List<AxisId>();
             foreach (AxisLimitFind find in finds)
             {
                 if (failed.TryGetValue(find.Id, out string? why))
@@ -391,10 +396,51 @@ namespace NanotecController
                 AxisCalibration c = _calib.For(find.Id);
                 c.Min = Math.Min(find.Ends[0], find.Ends[1]);
                 c.Max = Math.Max(find.Ends[0], find.Ends[1]);
-                anyStored = true;
+                calibrated.Add(find.Id);
                 AppendLog($"{find.Id} limits: Min={c.Min:N0}, Max={c.Max:N0}, Home(centre)={c.Center:N0}.");
             }
-            if (anyStored) TrySaveCalibration();
+            if (calibrated.Count == 0) return;
+            TrySaveCalibration();
+
+            // An operator STOP ends the whole calibration: it must never be followed by another
+            // unrequested traverse. The limits found before the stop are still saved above.
+            // _stopRequested is re-checked for a STOP pressed as the find was finishing, which
+            // would otherwise start the home move and abort it a fraction of a second later.
+            if (stopped || _stopRequested) { AppendLog("Auto-home skipped (calibration was stopped)."); return; }
+            await HomeAfterFindAsync(calibrated);
+        }
+
+        /// <summary>
+        /// Sends the axes a limit-find has just calibrated to their new Home — the centre of the
+        /// limits it measured — so the chuck ends the calibration in the middle of its travel
+        /// instead of sitting just off an end switch. Both axes move together.
+        ///
+        /// Unlike <see cref="HomeAllAsync"/> this does NOT retract Z first: the find has, moments
+        /// earlier, traversed the full X/Y travel at this very Z height, so a move back to the
+        /// centre of that same travel reaches nothing new. Runs inside the caller's busy scope.
+        /// </summary>
+        private async Task HomeAfterFindAsync(List<AxisId> axes)
+        {
+            var targets = new List<(AxisId id, long pos)>();
+            foreach (AxisId id in axes)
+                if (HomeTargetFor(id) is long t) targets.Add((id, t));
+            if (targets.Count == 0) return;
+
+            string desc = "";
+            foreach ((AxisId id, long pos) t in targets)
+                desc += (desc.Length > 0 ? ", " : "") + $"{t.id}={t.pos:N0}";
+
+            AppendLog($"Auto-home after calibration: {desc}...");
+            bool ok = await RunDriveOp(() =>
+            {
+                foreach ((AxisId id, long pos) t in targets)
+                {
+                    _motion!.RecoverIfQuickStopped(t.id);   // a switch may have left the axis quick-stopped
+                    _motion.MoveAbsolute(t.id, t.pos, HomeSpeedFor(t.id));
+                }
+                foreach ((AxisId id, long pos) t in targets) WaitOrStop(t.id, FIND_TIMEOUT_MS);
+            });
+            AppendLog(ok ? "Auto-home complete - chuck is at the centre of travel." : "Auto-home FAILED - see error above.");
         }
 
         // Operator STOP inside a limit-find poll loop: halt the axis and abandon the find.
