@@ -11,7 +11,7 @@ master**.
 
 > **Commissioning note.** Treat every first motion on a new machine as a commissioning step:
 > keep the E-stop within reach, start at low jog speeds, and confirm each axis moves the way
-> you expect before trusting automated moves (Home All, Go Home, Find Limits, Auto
+> you expect before trusting automated moves (Home All, Go Home, Find X & Y Limits, Auto
 > Centre-Find). Position and velocity values are the **drive's own units**, not mm/deg.
 
 For how the software works internally, see the **[Developer Guide](../developer-guide/)**.
@@ -61,7 +61,7 @@ The window has a **left column** (all motion controls) and a **right column** (t
 | **Calibration…** | Opens a small menu with two entries: **Axes — travel limits & home** (see §8) and **Vision — camera scale & centres** (see §10). |
 | **Enable All / Disable All** | Energise / de-energise all drives. |
 | **Home All** | Retract Z, then send X & Y to their home positions (see §8). |
-| **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
+| **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find X & Y Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
 | **RAW / VISION mode switch** | Changes what the whole motion cluster means (see §5). |
 | **Per-axis rows (X / Y / Z / Θ)** | Speed slider + live position and state readout per axis. |
 | **Direction d-pad** | ◀ ▶ for X, ▲ ▼ for Y, ▲ ▼ for Z, ↺ ↻ for Θ — **hold to move, release to stop**. |
@@ -203,10 +203,13 @@ For each axis:
 * **Clear Min / Clear Max** — removes a stored limit (back to "none"). This is a local edit
   only — it moves nothing — and also drops any jog block that limit was enforcing.
 * **Set Home** (Z only) — captures Z's explicit home position.
-* **Find Limits** (X and Y) — **automatically** drives the axis into each end switch, records
-  both edges as Min/Max, and sets Home to the centre. Watch it run; it backs off the switches
-  when done. Not offered for Z, which has no switches — set Z's limits by hand. **STOP** aborts
-  a find in progress.
+* **Find X & Y Limits (auto)** — one button at the bottom of the window that calibrates **both
+  axes in a single run**: X and Y each drive into their own end switches **at the same time**,
+  both edges of each are recorded as that axis's Min/Max, and Home is set to the centre. Watch
+  it run; it backs off the switches when done. Z has no switches, so it is not included — set
+  Z's limits by hand. **STOP** aborts the run (both axes) at any point. If one axis fails —
+  e.g. it never reaches a switch and times out — it is reported on its own and the other axis's
+  result is still kept; only an axis that found **both** its ends has its limits updated.
 * **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
   explicit Home for Z) and reports how close it landed.
 * **Steps/mm** — type the axis's motor steps per millimetre (from the stage's mechanical spec)
@@ -396,10 +399,10 @@ writes.
 * **All jogging is momentary** — release the arrow, centre the stick, or release the puck and
   motion stops.
 * **STOP aborts any preplanned move** — Home All, Go Home, Move To, a relative move, a
-  rotation, Find Limits.
+  rotation, Find X & Y Limits.
 * **Losing window focus stops everything** and pauses the joystick — including a hold-to-rotate
   that would otherwise keep turning because its mouse-release never arrives. (A running
-  operation — Home, Find Limits, Move, Go Home — is left alone, since it owns the drives.)
+  operation — Home, Find X & Y Limits, Move, Go Home — is left alone, since it owns the drives.)
 * **A failed joystick read stops the axes it was driving.**
 * **Switching RAW ⇄ VISION stops everything first**, so nothing carries over with a changed
   meaning.

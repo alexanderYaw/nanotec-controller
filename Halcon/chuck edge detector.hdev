@@ -81,7 +81,7 @@
 <l>BandCloseRadius := 15</l>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
-<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260731_105121_943.bmp')</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260731_143559_245.bmp')</l>
 <l>get_image_size (Image, Width, Height)</l>
 <l>dev_open_window (0, 0, 750, 500, 'black', WindowHandle)</l>
 <l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>

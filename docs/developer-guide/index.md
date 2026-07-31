@@ -622,7 +622,7 @@ setup:
 
 `FrmMain` owns the store, all motion, persistence, and timer coordination; `FrmCalibration` is
 **pure UI** that calls back through `IMotionHost` (`SetCalibrationMin/Max/Home`,
-`ClearCalibrationMin/Max`, `FindLimitsAsync`, `GoHomeAsync`, `HomeTargetFor`,
+`ClearCalibrationMin/Max`, `FindXyLimitsAsync`, `GoHomeAsync`, `HomeTargetFor`,
 `CanCaptureCalibration`/`CanMoveCalibration`), plus a per-axis **steps/mm** box it saves
 straight into the store. This single ownership is required because NanoLib is single-channel.
 
@@ -1146,25 +1146,44 @@ traverses.
 
 ## 20. Auto limit-find (`FrmMain.Calibration.cs`)
 
-`FindLimitsAsync` (wired to **X and Y** — both have a working switch at each end; Z has none
-and stays manual) runs on a background worker with timers paused:
+`FindXyLimitsAsync` is **one unified calibration** covering `AutoFindAxes` = **X and Y** — both
+have a working switch at each end; Z has none and stays manual. It runs on a background worker
+with timers paused, and **both axes move at the same time**.
+
+Per axis (`AxisLimitFind`), the sequence is unchanged:
 
 1. **`ClearAnyActiveLimit`** — if the axis starts *on* a switch, back off first (trying both
    directions, since polarity is unverified), so the search doesn't drive into a switch for its
    whole timeout.
 2. **`JogUntilLimit(+1)`** — jog at `FIND_LIMIT_SPEED`, watching 0x60FD limit bits (0/1) for a
-   **newly-set** bit (direction-agnostic, so a NEG/POS wiring swap is moot), capture 0x6064, stop.
+   **newly-set** bit (direction-agnostic, so a NEG/POS wiring swap is moot), record 0x6064, stop.
 3. **`RecoverAndBackOff(-1)`** — a limit hit leaves the drive in Quick-Stop-Active;
    `EnableDrive(true)` exits it, then jog clear of the switch.
-4. Repeat for the other end. Min/Max = the captured pair; Home = centre.
+4. Repeat for the other end. Min/Max = the recorded pair; Home = centre.
 
-Detection and stopping are **entirely host-side** (poll `0x60FD`, capture `0x6064`, `Stop`), so the
+### Running both axes at once on a single-channel bus
+NanoLib is single-channel, so the axes cannot each own a thread. Instead each axis's sequence is
+an **iterator** (`AxisLimitFind.Run`): every step issues its bus traffic and then `yield`s,
+meaning *"I am waiting on the machine — resume me after the next poll tick"*. `RunLimitFinds`
+steps all live sequences round-robin on **one** worker thread and sleeps `FIND_POLL_MS` **once
+per round**. Bus traffic is therefore still strictly serialized — only the motors overlap — and
+because every axis gets exactly one tick per sleep, each phase's millisecond budget stays
+wall-clock accurate.
+
+Failures are **per axis**: a sequence that throws (e.g. `no limit detected within 60s`) is
+dropped with its reason recorded, the axis is stopped, and the others keep running — one bad
+axis never discards the other's measurement. Ends are accumulated in `AxisLimitFind.Ends`, and an
+axis's Min/Max is written only when it holds **both** ends, so a run cut short stores a complete
+pair or nothing. An operator **STOP** (`ThrowIfStopped`) halts *every* axis (`StopAll`) and
+abandons the whole run.
+
+Detection and stopping are **entirely host-side** (poll `0x60FD`, record `0x6064`, `Stop`), so the
 routine does not depend on the drive's own limit reaction and needs no per-axis branch: **Y**
 quick-stops at its switches (`0x3701 = 6`), **X** ignores them (`0x3701 = -1`) and is stopped by
 this loop alone. Two consequences on X: `RecoverAndBackOff`'s `EnableDrive(true)` re-enables an
 axis that was never in Quick Stop (harmless — it is unconditional), and X coasts further past the
 switch than Y before the Stop bites, because its `0x6084` decel ramp is gentler. The *stored*
-limit is unaffected either way — the position is captured the moment the bit sets, before the Stop.
+limit is unaffected either way — the position is recorded the moment the bit sets, before the Stop.
 
 ---
 
@@ -1340,12 +1359,14 @@ sequenceDiagram
     end
 ```
 
-### 24.3 Auto limit-find (Find Limits, X and Y)
+### 24.3 Auto limit-find (Find X & Y Limits, one run, both axes together)
 
 Direction-agnostic edge detection on the 0x60FD limit bits, with a Quick-Stop recovery
 between ends (§20). Polarity is unverified, so the search keys off a *newly-set* bit, not a
-specific direction. The same flow runs for either axis — the drive's own limit reaction differs
-(X ignores its switches) but never enters the routine, which stops the axis itself.
+specific direction. The same flow runs for both axes — the drive's own limit reaction differs
+(X ignores its switches) but never enters the routine, which stops the axis itself. One button
+runs X and Y **concurrently**: their sequences are interleaved tick-by-tick on one worker thread,
+so the bus stays serialized while both motors move.
 
 ```mermaid
 sequenceDiagram
@@ -1354,24 +1375,26 @@ sequenceDiagram
     participant FC as FrmCalibration
     participant F as FrmMain.Calibration
     participant M as MultiAxisController
-    participant A as AxisDriver(X or Y)
+    participant A as AxisDriver(X and Y)
 
-    U->>FC: Find Limits (X or Y)
-    FC->>F: FindLimitsAsync(id)
-    F->>F: Task.Run(FindLimitsCore) — timers paused
-    F->>M: ClearAnyActiveLimit — if parked on a switch, back off (try both dirs)
+    U->>FC: Find X & Y Limits (auto)
+    FC->>F: FindXyLimitsAsync()
+    F->>F: LongRunning worker: RunLimitFinds([X, Y]) — timers paused
 
-    Note over F,A: end A (direction +1)
-    loop until a NEW 0x60FD bit (0 or 1) sets, or timeout
-        F->>M: JogAt(id, +1, FIND_LIMIT_SPEED)
-        F->>M: GetDigitalInputs(id)
+    loop one round per FIND_POLL_MS, until every axis's sequence ends
+        Note over F,A: each live axis takes one turn on the single NanoLib channel
+        F->>M: X — next step (jog / read 0x60FD / record 0x6064 / stop)
+        F->>M: Y — next step
+        F->>F: Thread.Sleep(FIND_POLL_MS)
     end
-    F->>M: GetStatus(id).Position (capture end A)
-    F->>M: Stop(id)
-    F->>M: RecoverAndBackOff(-1) — EnableDrive(true) exits Quick-Stop, jog clear
 
-    Note over F,A: end B — repeat the loop with direction −1, capture end B
-    F->>M: RecoverAndBackOff(+1) — leave the axis off the switch
+    Note over F,A: per axis, that sequence is:<br/>ClearAnyActiveLimit (if parked on a switch, back off — try both dirs)<br/>JogUntilLimit(+1) → record end A → Stop<br/>RecoverAndBackOff(−1) — EnableDrive(true) exits Quick-Stop, jog clear<br/>JogUntilLimit(−1) → record end B → Stop<br/>RecoverAndBackOff(+1) — leave the axis off the switch
 
-    F-->>FC: Min=min(A,B), Max=max(A,B), Home=centre → saved to calibration.json
+    alt an axis throws (no limit seen before its timeout)
+        F->>M: Stop(that axis) — it drops out; the other keeps running
+    else operator STOP
+        F->>M: StopAll() — whole run abandoned
+    end
+
+    F-->>FC: per axis with both ends: Min=min(A,B), Max=max(A,B), Home=centre → saved to calibration.json
 ```
