@@ -72,10 +72,11 @@ namespace NanotecController
         private (long X, long Y)? _chuckCentre;   // last computed/loaded centre (user frame)
 
         // --- Auto chuck centre-find: the same points and the same fit, collected by the stage instead
-        // of by hand. Radius is the operator's nominal chuck radius, which arms the travel guard and
-        // (once measured) the approach jump; it seeds from the last fit. Logic lives in
-        // FrmVisionProtocols.AutoCentre.cs.
-        private readonly NumericUpDown _autoRadius = new() { Minimum = 0, Maximum = 100000000, Increment = 1000, ThousandsSeparator = true };
+        // of by hand. The run homes X/Y, offsets to the seed point, then probes 8 directions. Max R is
+        // the MAX SEARCH RADIUS in steps — the single bound on how far a probe may travel and how far
+        // out a detection is still believed. It is an operational limit, not a measurement of the
+        // feature, so it is NOT seeded from the last fit. Logic lives in FrmVisionProtocols.AutoCentre.cs.
+        private readonly NumericUpDown _autoRadius = new() { Minimum = 0, Maximum = 100000000, Increment = 1000, ThousandsSeparator = true, Value = 10000 };
         private readonly Button _autoRunBtn = new() { Text = "Auto Centre-Find", Enabled = false };
         private readonly Button _autoCancelBtn = new() { Text = "Cancel", Enabled = false };
         private readonly TextBox _autoLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
@@ -214,9 +215,9 @@ namespace NanotecController
             // 8 directions collecting the rim points the manual "Add Edge" flow collects by jogging.
             // The log pane is the run's transcript — which directions found an edge, and where.
             var autoLabel = new Label { Text = "Auto chuck centre-find", Location = new Point(700, 506), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            var autoRadiusLabel = new Label { Text = "R (steps):", Location = new Point(700, 532), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            var autoRadiusLabel = new Label { Text = "Max R (steps):", Location = new Point(700, 532), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
-            _autoRadius.Location = new Point(766, 529);
+            _autoRadius.Location = new Point(792, 529);
             _autoRadius.Size = new Size(110, 22);
             _autoRadius.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
@@ -458,10 +459,6 @@ namespace NanotecController
                 _waferGoBtn.Enabled = true;
                 _waferResult.Text = $"Saved wafer centre:\r\nX={wxLoaded}  Y={wyLoaded}";
             }
-            // Seed the auto centre-find's nominal radius from the last fit, so the guard is armed from
-            // a measurement rather than re-typed each session.
-            if (_owner.Calibration.ChuckRadius is long rLoaded && rLoaded > 0 && rLoaded <= _autoRadius.Maximum)
-                _autoRadius.Value = rLoaded;
 
             // The camera is already streaming on the main screen; gate on its live state and
             // follow open/close (e.g. a Retry on the main toolbar) while this window is open.

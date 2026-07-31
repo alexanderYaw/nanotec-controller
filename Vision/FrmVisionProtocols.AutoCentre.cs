@@ -8,10 +8,11 @@ using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVisionProtocols — AUTOMATIC chuck centre-find: the operator roughly centres the chuck once,
-    // and the stage collects the eight rim points itself. Nothing here replaces the maths — the points
-    // go into the same _chuckFinder and the same Pratt fit (ComputeCentre) as the manual flow; this is
-    // purely the orchestration that used to be the operator's hand on the jog.
+    // FrmVisionProtocols — AUTOMATIC chuck centre-find: the stage homes itself, drives to a fixed seed
+    // point and collects the eight rim points on its own, with no operator input beyond the max search
+    // radius. Nothing here replaces the maths — the points go into the same _chuckFinder and the same
+    // Pratt fit (ComputeCentre) as the manual flow; this is purely the orchestration that used to be
+    // the operator's hand on the jog.
     //
     // STEP-AND-SETTLE. Every probe advances in discrete hops and captures with the stage stopped, so
     // the motor position paired with each frame is exact and the travel guard is inherent: a target
@@ -20,22 +21,43 @@ namespace NanotecController
     // (see FrmMain.TryReadUserXyNow for why the cached one will not do).
     //
     // Shape of a run:
-    //   A  probe ±Y from the operator's rough centre   → bisect for cy
-    //   B  probe ±X from (roughX, cy)                  → bisect for cx, giving C₁ and a measured radius
+    //   0  X and Y Home, then AUTO_SEED_DY along Y     → the seed point, in place of a rough centre
+    //   A  probe ±Y from the seed point                → bisect for cy
+    //   B  probe ±X from (seedX, cy)                   → bisect for cx, giving C₁ and a measured radius
     //   C  probe the four diagonals from C₁            → four more rim points
     //   D  Pratt-fit all eight; persist centre + radius
+    //   E  report per-point radial residuals
+    //   F  drive to the fitted centre                  → the run ends with the chuck centred
     // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
     public sealed partial class FrmVisionProtocols
     {
-        // Abort a probe once it would travel past this multiple of the nominal radius. Sized generously
-        // because the operator's starting point may be well off-centre — this is the crash guard, and
-        // on X it is effectively the ONLY one (the +end limit switch is dead, and 0x607D is fake).
-        private const double AUTO_GUARD_R = 1.8;
+        // Fully automatic start: X and Y to their Home — the centre of the measured travel, which is
+        // where FindXyLimitsAsync already leaves the stage — then this far along +Y. Home is
+        // repeatable, so it replaces the operator's eye as the rough centre, and this offset is the
+        // fixed mechanical shift from Home to roughly-over-the-feature on this machine. USER frame,
+        // which is inverted from the raw drive frame (userY = −rawY), so the sign here is the one that
+        // moves the stage the right way on the machine, not a raw-frame direction. Z is NOT homed: it
+        // holds the focus the detector needs, and the traverse stays inside travel already covered at
+        // this height.
+        private const double AUTO_SEED_DY = +15000;
+        // Arrival tolerance for the two seed moves. The probes size theirs from the hop, which is not
+        // known until the first frame; this is a plain absolute band, loose enough for profile-move
+        // settling but far tighter than the offset it is checking.
+        private const double AUTO_SEED_TOL = 50;
         // Stage C only: jump straight to this multiple of the MEASURED radius before hopping. Pure time
-        // optimisation — it skips the empty chuck interior. Safe only because C₁ came from the
-        // bisection rather than the operator's eye: from a rough centre off by δ, a jump aligned with δ
-        // lands at 0.8·R + δ, which can be past the rim — and the rim is then skipped UNSEEN.
+        // optimisation — it skips the empty interior. Safe only because C₁ came from the bisection
+        // rather than a guess: from a rough centre off by δ, a jump aligned with δ lands at 0.8·R + δ,
+        // which can be past the boundary — and the boundary is then skipped UNSEEN.
         private const double AUTO_APPROACH_R = 0.8;
+        // Distance-band LOWER bounds — the only fractional bounds left. Both upper bounds are now the
+        // flat max search radius the operator enters (see AutoCentreCoreAsync), so a detection is
+        // rejected on distance only for being implausibly CLOSE to the start, never for being far.
+        // That makes the max search radius the single number governing how far a probe may travel and
+        // how far out a detection is still believed — but it also means stage C no longer re-checks a
+        // diagonal against the radius the bisection just measured, so a false edge anywhere inside the
+        // search radius is now accepted.
+        private const double AUTO_BAND_LO_FRAC = 0.2;    // stages A/B, as a fraction of the max radius
+        private const double AUTO_TIGHT_LO_FRAC = 0.7;   // stage C, as a fraction of the measured r₁
         // One hop, as a fraction of the frame's smaller extent in step space. Must stay well under a
         // full frame: a bigger hop can carry the rim past the camera between captures, and
         // ChuckEdgeDetector wants a ≥MinArcLength (800 px) arc, so a rim merely clipping a corner
@@ -146,7 +168,7 @@ namespace NanotecController
         /// </summary>
         private async Task<(ProbeOutcome Outcome, (double X, double Y) Point)> ProbeAsync(
             (double X, double Y) c, (double X, double Y) dir, PixelStepAffine a,
-            double rNom, double bandLo, double bandHi, double jump, double hop, string label)
+            double guard, double bandLo, double bandHi, double jump, double hop, string label)
         {
             _status.Text = $"Auto centre-find: probing {label}...";
             if (!WithinTravel(c.X, c.Y, out string cWhy))
@@ -157,7 +179,6 @@ namespace NanotecController
             await MoveToUserAsync(c.X, c.Y);
             if (_autoCancel) return (ProbeOutcome.Aborted, default);
 
-            double guard = AUTO_GUARD_R * rNom;
             double arriveTol = hop / 4.0;
             for (int k = 1; k <= AUTO_MAX_HOPS; k++)
             {
@@ -166,7 +187,7 @@ namespace NanotecController
                 double dist = jump + k * hop;
                 if (dist > guard)
                 {
-                    AutoLog($"{label}: no edge within the {AUTO_GUARD_R:0.0}xR guard ({guard:N0} steps) — direction skipped.");
+                    AutoLog($"{label}: no edge within the {guard:N0} step search radius — direction skipped.");
                     return (ProbeOutcome.Missed, default);
                 }
                 double tx = c.X + dir.X * dist, ty = c.Y + dir.Y * dist;
@@ -229,24 +250,34 @@ namespace NanotecController
             if (!_view.IsCameraOpen) { _status.Text = "Auto centre-find: the camera is not streaming."; return; }
             if (!_owner.CanMoveCalibration) { _status.Text = "Auto centre-find: needs the drives enabled and idle."; return; }
 
-            long rNom = (long)_autoRadius.Value;
-            if (rNom <= 0) { _status.Text = "Auto centre-find: enter the nominal chuck radius first."; return; }
+            long maxR = (long)_autoRadius.Value;
+            if (maxR <= 0) { _status.Text = "Auto centre-find: enter the max search radius first."; return; }
 
-            if (_owner.UserLimits(AxisId.X) == null || _owner.UserLimits(AxisId.Y) == null)
+            // The run STARTS by homing X and Y, so a missing Home is a hard error, not a warning: with
+            // no Home there is no defined starting point and the whole sequence is undefined. Home for
+            // X/Y is the centre of the measured travel, so this is also the check that both limits have
+            // been found — which is what makes the travel envelope below meaningful.
+            if (_owner.HomeTargetFor(AxisId.X) == null || _owner.HomeTargetFor(AxisId.Y) == null)
             {
-                if (MessageBox.Show(this,
-                        "X and/or Y has no Min/Max travel set, so the only backstop on a probe is the " +
-                        $"{AUTO_GUARD_R:0.0}x radius guard ({AUTO_GUARD_R * rNom:N0} steps).\r\n\r\nRun anyway?",
-                        "Auto centre-find", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                    return;
+                _status.Text = "Auto centre-find: X and Y need Home set (run the axis limit-find first) — the run starts by homing them.";
+                MessageBox.Show(this,
+                    "X and/or Y has no Home.\r\n\r\nHome for X/Y is the centre of the measured travel, so " +
+                    "this means their Min/Max limits have not been found. The automatic run starts by " +
+                    "sending both axes Home, so it cannot start.\r\n\r\n" +
+                    "Run the X+Y limit-find in the axis calibration window first.",
+                    "Auto centre-find", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
             if (MessageBox.Show(this,
-                    "Automatic chuck centre-find.\r\n\r\nConfirm before running:\r\n" +
-                    "  - the chuck is roughly centred in the view\r\n" +
+                    "Automatic chuck centre-find.\r\n\r\nThe stage will:\r\n" +
+                    $"  1. send X and Y to Home\r\n" +
+                    $"  2. move {Math.Abs(AUTO_SEED_DY):N0} steps along {(AUTO_SEED_DY < 0 ? "−Y" : "+Y")}\r\n" +
+                    $"  3. probe outward in 8 directions, returning to the centre estimate between\r\n" +
+                    $"     each, and abort any direction past {maxR:N0} steps\r\n\r\n" +
+                    "Confirm before running:\r\n" +
                     "  - Z / focus is set so the chuck edge is sharp\r\n" +
-                    "  - the rim is NOT currently in view\r\n\r\n" +
-                    "The stage probes outward in 8 directions, returning to the centre between each, " +
-                    $"and aborts any direction past {AUTO_GUARD_R * rNom:N0} steps. Z is never moved.\r\n\r\nProceed?",
+                    "  - the path from here to Home is clear\r\n\r\n" +
+                    "Z is never moved.\r\n\r\nProceed?",
                     "Auto centre-find", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
 
@@ -256,9 +287,15 @@ namespace NanotecController
             // Lock the MAIN window's manual controls too: _autoRunning only gates this window's
             // buttons, and between hops FrmMain's own busy flag is clear, so the d-pad and the
             // polled analog joystick would otherwise stay live and could move the stage between a
-            // move and the capture paired with it.
+            // move and the capture paired with it. Taken BEFORE the homing moves, so the seed
+            // sequence is covered by it as well as the probes.
             using IDisposable hostLock = _owner.BeginExternalOp("Auto chuck centre-find");
-            try { await AutoCentreCoreAsync(a, rNom); }
+            try
+            {
+                _autoLog.Clear();
+                if (await SeedFromHomeAsync())
+                    await AutoCentreCoreAsync(a, maxR);
+            }
             finally
             {
                 _autoRunning = false;
@@ -267,10 +304,60 @@ namespace NanotecController
             }
         }
 
-        private async Task AutoCentreCoreAsync(PixelStepAffine a, long rNom)
+        /// <summary>
+        /// Puts the stage on its starting point: X and Y Home, then <see cref="AUTO_SEED_DY"/> along Y.
+        /// This is what makes the run fully automatic — Home is repeatable, so the rough centre no
+        /// longer comes from the operator's eye. False (with the reason logged) if anything did not
+        /// arrive, because every rim point is built against the position read here.
+        /// </summary>
+        private async Task<bool> SeedFromHomeAsync()
         {
-            _autoLog.Clear();
+            _status.Text = "Auto centre-find: homing X and Y...";
+            AutoLog("Homing X and Y...");
+            await _owner.GoHomeAsync(AxisId.X);
+            if (_autoCancel) { AutoLog("Cancelled during homing."); return false; }
+            await _owner.GoHomeAsync(AxisId.Y);
+            if (_autoCancel) { AutoLog("Cancelled during homing."); return false; }
 
+            // GoHomeAsync reports only to the main log, so verify here against a FRESH read — the
+            // cached position is stale for at least a status period after every move.
+            if (!_owner.TryReadUserXyNow(out long hx, out long hy))
+            {
+                AutoLog("Motor position unavailable after homing — run aborted.");
+                _status.Text = "Auto centre-find: motor position unavailable after homing.";
+                return false;
+            }
+            AutoLog($"Home reached: ({hx}, {hy}).");
+
+            double sx = hx, sy = hy + AUTO_SEED_DY;
+            if (!WithinTravel(sx, sy, out string why))
+            {
+                AutoLog($"Seed offset rejected — {why}.");
+                _status.Text = $"Auto centre-find: the {AUTO_SEED_DY:+0;-0} step seed offset leaves the travel envelope.";
+                return false;
+            }
+            AutoLog($"Seed offset {AUTO_SEED_DY:+0;-0} on Y → ({sx:F0}, {sy:F0})...");
+            await MoveToUserAsync(sx, sy);
+            if (_autoCancel) { AutoLog("Cancelled during the seed offset."); return false; }
+
+            if (!_owner.TryReadUserXyNow(out long mx, out long my))
+            {
+                AutoLog("Motor position unavailable after the seed offset — run aborted.");
+                return false;
+            }
+            // Same arrival check the probes use, for the same reason: MoveToAsync reports a rejected
+            // move only to the main log, and starting the scan from the wrong place biases every point.
+            if (Math.Abs(mx - sx) > AUTO_SEED_TOL || Math.Abs(my - sy) > AUTO_SEED_TOL)
+            {
+                AutoLog($"Seed move did not arrive (wanted {sx:F0},{sy:F0}; at {mx},{my}) — run aborted.");
+                _status.Text = "Auto centre-find: the seed move did not arrive — see the log.";
+                return false;
+            }
+            return true;
+        }
+
+        private async Task AutoCentreCoreAsync(PixelStepAffine a, long maxR)
+        {
             // A capture at the start does double duty: it sizes the hop from the LIVE frame, and it
             // rejects the worst starting condition — the rim already in view, which would make the
             // first probe's own edge indistinguishable from the one it is looking for.
@@ -290,16 +377,17 @@ namespace NanotecController
 
             _chuckFinder.Clear();
             RefreshEdgeUi();
-            AutoLog($"Start ({c0x}, {c0y})  R_nom={rNom:N0}  hop={hop:F0} steps.");
+            AutoLog($"Start ({c0x}, {c0y})  max R={maxR:N0}  hop={hop:F0} steps.");
 
-            // Wide band for stages A/B: c0 is the operator's eye, so the rim may sit anywhere from very
-            // near to nearly the guard. It tightens in stage C once the radius has been measured.
-            double wideLo = 0.2 * rNom, wideHi = AUTO_GUARD_R * rNom;
+            // The max search radius is the guard AND the top of the acceptance band, for every stage:
+            // a probe never travels past it, and a detection past it cannot occur. Only the lower
+            // bounds stay fractional (see AUTO_BAND_LO_FRAC).
+            double wideLo = AUTO_BAND_LO_FRAC * maxR, wideHi = maxR;
 
             // ---- Stage A: vertical bisection (no jump — see AUTO_APPROACH_R) ----
-            (ProbeOutcome oN, (double X, double Y) eN) = await ProbeAsync(c0, (0, 1), a, rNom, wideLo, wideHi, 0, hop, "N");
+            (ProbeOutcome oN, (double X, double Y) eN) = await ProbeAsync(c0, (0, 1), a, maxR, wideLo, wideHi, 0, hop, "N");
             if (oN == ProbeOutcome.Aborted) { Abandon(); return; }
-            (ProbeOutcome oS, (double X, double Y) eS) = await ProbeAsync(c0, (0, -1), a, rNom, wideLo, wideHi, 0, hop, "S");
+            (ProbeOutcome oS, (double X, double Y) eS) = await ProbeAsync(c0, (0, -1), a, maxR, wideLo, wideHi, 0, hop, "S");
             if (oS == ProbeOutcome.Aborted) { Abandon(); return; }
             if (oN != ProbeOutcome.Found || oS != ProbeOutcome.Found)
             {
@@ -310,9 +398,9 @@ namespace NanotecController
 
             // ---- Stage B: horizontal bisection, from the corrected Y ----
             (double X, double Y) ch = (c0.X, cy1);
-            (ProbeOutcome oE, (double X, double Y) eE) = await ProbeAsync(ch, (1, 0), a, rNom, wideLo, wideHi, 0, hop, "E");
+            (ProbeOutcome oE, (double X, double Y) eE) = await ProbeAsync(ch, (1, 0), a, maxR, wideLo, wideHi, 0, hop, "E");
             if (oE == ProbeOutcome.Aborted) { Abandon(); return; }
-            (ProbeOutcome oW, (double X, double Y) eW) = await ProbeAsync(ch, (-1, 0), a, rNom, wideLo, wideHi, 0, hop, "W");
+            (ProbeOutcome oW, (double X, double Y) eW) = await ProbeAsync(ch, (-1, 0), a, maxR, wideLo, wideHi, 0, hop, "W");
             if (oW == ProbeOutcome.Aborted) { Abandon(); return; }
             if (oE != ProbeOutcome.Found || oW != ProbeOutcome.Found)
             {
@@ -338,7 +426,7 @@ namespace NanotecController
             // good enough to aim the diagonals; the answer comes from the Pratt fit over all eight.
 
             // ---- Stage C: four diagonals from C₁, now with the approach jump ----
-            double tightLo = 0.7 * r1, tightHi = 1.3 * r1, jump = AUTO_APPROACH_R * r1;
+            double tightLo = AUTO_TIGHT_LO_FRAC * r1, tightHi = maxR, jump = AUTO_APPROACH_R * r1;
             double k = Math.Sqrt(0.5);
             (double X, double Y, string Label)[] diagonals =
             [
@@ -347,7 +435,7 @@ namespace NanotecController
             foreach ((double X, double Y, string Label) d in diagonals)
             {
                 (ProbeOutcome o, (double X, double Y) e) =
-                    await ProbeAsync(c1, (d.X, d.Y), a, rNom, tightLo, tightHi, jump, hop, d.Label);
+                    await ProbeAsync(c1, (d.X, d.Y), a, maxR, tightLo, tightHi, jump, hop, d.Label);
                 if (o == ProbeOutcome.Aborted) { Abandon(); return; }
                 if (o == ProbeOutcome.Found) points.Add(e);
             }
@@ -362,8 +450,9 @@ namespace NanotecController
             }
             ComputeCentre();
             if (_chuckCentre == null) return;   // ComputeCentre already reported the failure
-            if (_owner.Calibration.ChuckRadius is long saved && saved > 0 && saved <= _autoRadius.Maximum)
-                _autoRadius.Value = saved;      // next run's nominal radius comes from this fit
+            // The fitted radius is NOT fed back into the max-search-radius box: that box is an
+            // operational bound on how far a probe may travel, not a measurement of the feature.
+            // ComputeCentre still persists the measured radius as ChuckRadius.
 
             // ---- Stage E: per-point residuals. The fit's own RMS hides a single bad point among
             // eight; these say which direction it came from.
@@ -374,7 +463,36 @@ namespace NanotecController
             double worst = 0;
             foreach ((double X, double Y) p in points) worst = Math.Max(worst, Math.Abs(Dist(p, fit) - rFit));
             AutoLog($"Fit over {points.Count} points: centre ({fit.X:F0}, {fit.Y:F0}), worst radial residual {worst:F0} steps.");
-            _status.Text = $"Auto centre-find complete: {points.Count} points, worst residual {worst:F0} steps.";
+
+            // ---- Stage F: drive to the centre just found, so the run ends with the chuck centred
+            // instead of parked out on the last diagonal. Bounds-checked and arrival-verified like
+            // every other move here — MoveToAsync reports a rejected target only to the main log, and
+            // a silent no-op would leave the stage at the rim while the status read "complete".
+            // The fit is already saved by ComputeCentre, so a failure here costs the position, not
+            // the measurement: it is reported and the run still ends with the centre stored.
+            if (_autoCancel)
+            {
+                _status.Text = $"Auto centre-find: centre found and saved ({points.Count} points); cancelled before returning to it.";
+                return;
+            }
+            if (!WithinTravel(fit.X, fit.Y, out string fitWhy))
+            {
+                AutoLog($"Cannot return to the centre — {fitWhy}. It is saved; the stage is left where it is.");
+                _status.Text = "Auto centre-find: centre found and saved, but it lies outside the travel envelope.";
+                return;
+            }
+            AutoLog($"Returning to the fitted centre ({fit.X:F0}, {fit.Y:F0})...");
+            _status.Text = "Auto centre-find: returning to the centre...";
+            await MoveToUserAsync(fit.X, fit.Y);
+            if (_owner.TryReadUserXyNow(out long fx, out long fy) &&
+                (Math.Abs(fx - fit.X) > AUTO_SEED_TOL || Math.Abs(fy - fit.Y) > AUTO_SEED_TOL))
+            {
+                AutoLog($"Return move did not arrive (wanted {fit.X:F0},{fit.Y:F0}; at {fx},{fy}).");
+                _status.Text = "Auto centre-find: centre found and saved, but the return move did not arrive — see the log.";
+                return;
+            }
+            AutoLog($"At the chuck centre ({fit.X:F0}, {fit.Y:F0}).");
+            _status.Text = $"Auto centre-find complete: {points.Count} points, worst residual {worst:F0} steps, stage at the centre.";
         }
 
         // --- Small helpers ----------------------------------------------------------

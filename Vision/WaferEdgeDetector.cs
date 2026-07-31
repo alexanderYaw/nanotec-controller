@@ -12,9 +12,9 @@ namespace NanotecController
     /// dies/droplets/texture inside it), and return the boundary point NEAREST the crosshair — a
     /// true point on the rim, which the centre-find needs.
     ///
-    /// Same shape as <see cref="ChuckEdgeDetector"/>, which separates the two sides by FOCUS
-    /// instead; use that one when the two sides are equally bright but differ in sharpness.
-    /// Thresholding is auto-adaptive (max_separability) so it tracks exposure; the morphology
+    /// Same shape as <see cref="ChuckEdgeDetector"/>, which also cuts on brightness but with a FIXED
+    /// threshold, because its two grey levels are set by the illumination and the material rather than
+    /// by exposure. Here the cut is auto-adaptive (max_separability) so it tracks exposure instead; the morphology
     /// radii / min-area are the levers that may need light tuning for the live arc.
     ///
     /// Pass the FULL-RESOLUTION frame (not the downscaled live-view bitmap) for accuracy.

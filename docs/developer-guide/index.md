@@ -895,14 +895,21 @@ by hand (B below) or by the stage itself (§17).
 ### A. The edge detector (`ChuckEdgeDetector.cs`)
 
 `TryDetect(image, crossRow, crossCol, …)` runs on the **full-resolution** frame and returns the
-sub-pixel rim point **nearest the crosshair**, as soon as the rim is anywhere in the field of
-view — it does not require the edge to sit *on* the crosshair. It separates the in-focus chuck
-face from the out-of-focus background by **sharpness**, not brightness, because the two sides
-are nearly the same colour.
+rim point **nearest the crosshair**, as soon as the boundary is anywhere in the field of view —
+it does not require the edge to sit *on* the crosshair.
 
-> **The pipeline, its tunables, and why both brightness and a coarse focus-energy map fail here
-> are documented in [Automated Chuck Centre-Finding](ChuckCenterFindingAutomation/).** This is
-> the one detector behind both the manual collection (B below) and the automatic run (§17).
+It tracks the chuck's **inner** circle — the boundary between the brightly-lit machined face and
+the large near-black region inside it — not the outer rim, because the outer rim has two gaps on
+*opposite* sides and the automatic scan probes in opposite pairs, so one gap pair takes out both
+ends of a pair at once. At that boundary the two sides differ by ~219 grey levels, so it cuts on
+**brightness** with a **fixed** threshold; focus is unusable there because ~19% of the frame is
+saturated and flat saturated areas have zero gradient.
+
+> **The pipeline, its tunables, the measured sweeps, and why focus fails here are documented in
+> [Automated Chuck Centre-Finding](ChuckCenterFindingAutomation/)**, with the full parameter
+> sweeps in `Halcon/innerCircleDetection.hdev`. This is the one detector behind both the manual
+> collection (B below) and the automatic run (§17). The previous focus-based **outer-rim**
+> detector is preserved in `Halcon/chuck edge detector.hdev` and in git history.
 
 ### B. Collecting rim points in step space (`FrmVisionProtocols.CentreFind.cs`)
 
@@ -974,11 +981,13 @@ The wafer flow mirrors the chuck's — its own `CentreFinder` (`_waferFinder`), 
 centre (`WaferCenterX/Y`), the same Pratt fit — but the **detector is different**, because the
 two problems are different:
 
-* **Chuck** (`ChuckEdgeDetector`): both sides of the rim are nearly the same brightness, so it
-  separates them by **focus** (the sharpness ridge — A above).
+* **Chuck** (`ChuckEdgeDetector`): thresholds the inner circle's ~219-level step with a **fixed**
+  cut, because those grey levels are set by the illumination and the material and do not move
+  with framing — while Otsu, being *relative*, would shift with how much of the frame each side
+  occupies, which is exactly what changes as the stage scans (A above).
 * **Wafer** (`WaferEdgeDetector`): the lit wafer reads clearly **brighter** than the off-wafer
-  background, so it thresholds by brightness — `binary_threshold('max_separability', 'light')`
-  (auto-adaptive, so it tracks exposure), then `opening_circle` (`CleanRadius`) to erase
+  background, and here exposure *is* what varies, so it thresholds **auto-adaptively** —
+  `binary_threshold('max_separability', 'light')` — then `opening_circle` (`CleanRadius`) to erase
   speckle, `closing_circle` (`CloseRadius`) + `fill_up` to merge dies/droplets/bevel into **one**
   solid blob, `select_shape` by `MinArea`, take the largest, and return the boundary point
   **nearest the crosshair**. `WaferIsBrighter` flips the polarity if the lighting ever inverts.
@@ -1045,9 +1054,9 @@ Guards, in the order they reject:
 Sizing: **`hop`** is `AUTO_HOP_FRAC` (0.4) of the frame's smaller extent *in step space*,
 computed per run from the live frame through the affine — never cached, because `ZoomFactor` is
 a centred-ROI crop, so the field of view in steps changes with zoom. It must stay well under a
-full frame or the rim can be carried past the camera between captures — and `ChuckEdgeDetector`
-needs a ≥`MinLineLength` (500 px) ridge, so a rim merely clipping a corner does not count as
-seen. **`jump`** (`AUTO_APPROACH_R` = 0.8 × the *measured* radius) skips the empty chuck
+full frame or the boundary can be carried past the camera between captures — and
+`ChuckEdgeDetector` needs a ≥`MinArcLength` (800 px) arc, so a boundary merely clipping a corner
+does not count as seen. **`jump`** (`AUTO_APPROACH_R` = 0.8 × the *measured* radius) skips the empty chuck
 interior in stage C only; it is safe **only** because `C₁` came from the bisection rather than
 the operator's eye.
 
