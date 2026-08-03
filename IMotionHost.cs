@@ -25,7 +25,8 @@ namespace NanotecController
         long? HomeTargetFor(AxisId id);
         Task MoveToAsync(string xText, string yText, string zText);
         Task GoHomeAsync(AxisId id);
-        Task FindLimitsAsync(AxisId id);
+        /// <summary>One unified auto-calibration of the travel limits of X and Y — both axes at once.</summary>
+        Task FindXyLimitsAsync();
         /// <summary>Aborts any preplanned move in progress. Cooperative — it only sets a flag; the
         /// running op notices at its next poll and halts the drives on its own thread.</summary>
         void RequestStop();

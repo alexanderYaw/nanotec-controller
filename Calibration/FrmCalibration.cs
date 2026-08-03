@@ -20,8 +20,12 @@ namespace NanotecController
         private readonly IMotionHost _owner;
         private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
-        private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button? Find, Button GoHome, TextBox StepsPerMm);
+        private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button GoHome, TextBox StepsPerMm);
         private readonly Dictionary<AxisId, Row> _rows = new();
+
+        // The one auto-calibration button: X and Y find their limits together (Z has no
+        // switches, so it stays manual). Not per-axis — the run covers both.
+        private Button _findXy = null!;
 
         public FrmCalibration(IMotionHost owner)
         {
@@ -31,21 +35,28 @@ namespace NanotecController
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
 
+            // The hint paragraph wraps, so its height is not a constant — it grows with the text
+            // and with the display scaling. Wrap it at roughly the width the axis rows below need
+            // (they run to ~900px), then start those rows below its MEASURED bottom: a hard-coded
+            // start-y is what let the text run over the X row.
+            const int HINT_WRAP_WIDTH = 880;
             var hint = new Label
             {
                 Location = new Point(12, 8),
                 AutoSize = true,
-                MaximumSize = new Size(700, 0),
+                MaximumSize = new Size(HINT_WRAP_WIDTH, 0),
                 Text = "Jog an axis to a position in the main window, then Set Min / Set Max here "
                      + "(Clear Min / Clear Max removes a stored limit). Home = centre of the two limits "
-                     + "for X/Y; Z's Home is set explicitly. Find Limits drives Y into its switches automatically. "
+                     + "for X/Y; Z's Home is set explicitly. Find X && Y Limits calibrates BOTH axes in one "
+                     + "run, driving each into its own switches at the same time and then homing them, so the "
+                     + "chuck ends up centred (Z has none, so its limits stay manual). "
                      + "Steps/mm (from the stage spec) converts mm moves and scales the crosshair mm ticks.",
             };
-            Controls.Add(hint);
+            Controls.Add(hint);   // add first: the label takes the form's Font, then measures itself
 
             // Buttons auto-size to their text so they don't clip at higher display scaling.
-            int y = 70;
-            int maxRight = 480;
+            int y = hint.Bottom + 16;
+            int maxRight = Math.Max(480, hint.Right);
             foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 84; }
 
             var saveMm = new Button
@@ -58,6 +69,21 @@ namespace NanotecController
             };
             saveMm.Click += (s, e) => SaveStepsPerMm();
             Controls.Add(saveMm);
+
+            // Widths come from PreferredSize (not .Right): an AutoSize button has not been
+            // laid out yet, so its Width is still the default until the form paints.
+            int findX = 12 + saveMm.PreferredSize.Width + 12;
+            _findXy = new Button
+            {
+                Text = "Find X && Y Limits (auto)",
+                Location = new Point(findX, y + 2),
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(8, 3, 8, 3),
+            };
+            _findXy.Click += async (s, e) => { await _owner.FindXyLimitsAsync(); UpdateUi(); };
+            Controls.Add(_findXy);
+            maxRight = Math.Max(maxRight, findX + _findXy.PreferredSize.Width);
             y += 42;
 
             ClientSize = new Size(maxRight + 12, y + 8);
@@ -125,16 +151,19 @@ namespace NanotecController
                 x += b.PreferredSize.Width + gap;
                 return b;
             }
-            // Z defines Home explicitly (no two references to centre); Y can auto-find its limits.
+            // Z defines Home explicitly (no two references to centre). X and Y auto-find theirs
+            // through the single Find X & Y Limits button below, not per row.
             Button? setHome = id == AxisId.Z ? AddTop("Set Home") : null;
-            Button? find = id == AxisId.Y ? AddTop("Find Limits") : null;
             Button goHome = AddTop("Go Home");
 
             // Steps/mm entry (second row, after the Clear buttons). Filled once from the store;
             // the refresh timer must NOT touch it, or it would overwrite the user mid-typing.
             var mmLabel = new Label { Text = "steps/mm:", Location = new Point(x, row2 + 6), AutoSize = true };
-            Controls.Add(mmLabel);
-            var mmBox = new TextBox { Location = new Point(x + 68, row2 + 2), Size = new Size(90, 24) };
+            Controls.Add(mmLabel);   // add first so it takes the form's Font before it is measured
+            // Start the box past the label's MEASURED width: a hard-coded offset cleared the label
+            // at 100% scaling only, and the label (drawn first, so ahead in z-order) covered the
+            // box at higher display scaling.
+            var mmBox = new TextBox { Location = new Point(x + mmLabel.PreferredSize.Width + gap, row2 + 2), Size = new Size(90, 24) };
             mmBox.Text = _owner.Calibration.For(id).StepsPerMm?.ToString("0.####") ?? "";
             Controls.Add(mmBox);
             x = Math.Max(x, mmBox.Right + gap);
@@ -144,10 +173,9 @@ namespace NanotecController
             setMax.Click += (s, e) => { _owner.SetCalibrationMax(id); UpdateUi(); };
             clearMax.Click += (s, e) => { _owner.ClearCalibrationMax(id); UpdateUi(); };
             if (setHome != null) setHome.Click += (s, e) => { _owner.SetCalibrationHome(id); UpdateUi(); };
-            if (find != null) find.Click += async (s, e) => { await _owner.FindLimitsAsync(id); UpdateUi(); };
             goHome.Click += async (s, e) => { await _owner.GoHomeAsync(id); UpdateUi(); };
 
-            _rows[id] = new Row(readout, setMin, clearMin, setMax, clearMax, setHome, find, goHome, mmBox);
+            _rows[id] = new Row(readout, setMin, clearMin, setMax, clearMax, setHome, goHome, mmBox);
             return x;
         }
 
@@ -168,9 +196,9 @@ namespace NanotecController
                 r.ClearMin.Enabled = c.Min.HasValue;   // clearing is a local edit; only needs a value to clear
                 r.ClearMax.Enabled = c.Max.HasValue;
                 if (r.SetHome != null) r.SetHome.Enabled = canCapture;
-                if (r.Find != null) r.Find.Enabled = canMove;
                 r.GoHome.Enabled = canMove && _owner.HomeTargetFor(id).HasValue;
             }
+            _findXy.Enabled = canMove;
         }
 
         // Parses and persists all three steps/mm entries (empty clears one). All-or-nothing:

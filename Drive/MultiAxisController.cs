@@ -9,13 +9,19 @@ namespace NanotecController
     /// and every consumer — the joystick, the GUI buttons, and later the automation
     /// sequencer — drives the table through THIS class, never the drives directly.
     ///
-    /// Threading: these calls are short SDO writes but are NOT thread-safe against
-    /// each other (NanoLib is single-channel per device). Serialize access — e.g.
-    /// drive jog start/stop from the UI thread and longer ops from one worker.
+    /// Threading: NanoLib is single-channel per device, so every method takes the channel
+    /// lock. That is what lets <see cref="DrivePoller"/> read on its own thread while the UI
+    /// thread commands. Re-entrant, so the multi-step ops nest on one thread.
     /// </summary>
     public sealed class MultiAxisController
     {
         private readonly Dictionary<AxisId, AxisDriver> _axes = new();
+        private readonly object _channel = new();
+
+        // Axes currently running a profile-velocity jog. Tracked here — the only place that changes
+        // drive state — so it cannot drift; a stale entry would silently swallow a jog (see
+        // SetJogVelocity, which skips the halt-clearing controlword when the axis is already armed).
+        private readonly HashSet<AxisId> _jogArmed = new();
 
         /// <summary>
         /// Builds a controller per axis from the connection's handles.
@@ -44,13 +50,11 @@ namespace NanotecController
         public bool Has(AxisId id) => _axes.ContainsKey(id);
 
         /// <summary>
-        /// Direct access to a single axis (e.g. for homing or status). Throws
-        /// <see cref="DriveException"/> — not KeyNotFoundException — for an axis that isn't in the
-        /// config, so a mapping slip surfaces through the same <c>catch (DriveException)</c> every
-        /// caller already has instead of escaping as an unhandled crash.
+        /// Looks up one axis. Throws <see cref="DriveException"/> — not KeyNotFoundException — for an
+        /// axis that isn't in the config, so a mapping slip surfaces through the same
+        /// <c>catch (DriveException)</c> every caller already has instead of escaping as an unhandled
+        /// crash. Private: reaching an AxisDriver from outside would bypass the channel lock.
         /// </summary>
-        public AxisDriver this[AxisId id] => Axis(id);
-
         private AxisDriver Axis(AxisId id)
             => _axes.TryGetValue(id, out AxisDriver? a)
                 ? a
@@ -61,17 +65,32 @@ namespace NanotecController
         /// <summary>Enables every axis (walks each through the CiA 402 state machine).</summary>
         public void EnableAll()
         {
-            foreach (AxisDriver axis in _axes.Values)
-                axis.EnableDrive(true);
+            lock (_channel)
+            {
+                foreach (AxisDriver axis in _axes.Values)
+                    axis.EnableDrive(true);
+                _jogArmed.Clear();   // the state-machine walk leaves every axis halted
+            }
+        }
+
+        /// <summary>Enables ONE axis — the way out of Quick-Stop when the caller already knows the
+        /// axis is parked there (the limit-find). <see cref="RecoverIfQuickStopped"/> checks first.</summary>
+        public void EnableAxis(AxisId id)
+        {
+            lock (_channel) { Axis(id).EnableDrive(true); _jogArmed.Remove(id); }
         }
 
         /// <summary>Stops then disables every axis. Best-effort: never throws.</summary>
         public void DisableAll()
         {
-            foreach (AxisDriver axis in _axes.Values)
+            lock (_channel)
             {
-                try { axis.StopManualJog(); } catch (DriveException) { }
-                try { axis.EnableDrive(false); } catch (DriveException) { }
+                foreach (AxisDriver axis in _axes.Values)
+                {
+                    try { axis.StopManualJog(); } catch (DriveException) { }
+                    try { axis.EnableDrive(false); } catch (DriveException) { }
+                }
+                _jogArmed.Clear();
             }
         }
 
@@ -84,10 +103,14 @@ namespace NanotecController
         /// </summary>
         public bool RecoverIfQuickStopped(AxisId id)
         {
-            AxisDriver axis = Axis(id);
-            if (!axis.IsQuickStopped()) return false;
-            axis.EnableDrive(true);
-            return true;
+            lock (_channel)
+            {
+                AxisDriver axis = Axis(id);
+                if (!axis.IsQuickStopped()) return false;
+                axis.EnableDrive(true);
+                _jogArmed.Remove(id);   // the re-enable leaves it halted
+                return true;
+            }
         }
 
         // --- Jog (joystick / manual) ----------------------------------------------
@@ -99,10 +122,30 @@ namespace NanotecController
         /// </summary>
         public void JogAt(AxisId id, int direction, int speed)
         {
-            AxisDriver axis = Axis(id);
-            if (direction == 0) { axis.StopManualJog(); return; }
-            int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
-            axis.StartManualJog(speed * sign);
+            lock (_channel)
+            {
+                AxisDriver axis = Axis(id);
+                if (direction == 0) { axis.StopManualJog(); _jogArmed.Remove(id); return; }
+                int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
+                axis.StartManualJog(speed * sign);
+                _jogArmed.Add(id);
+            }
+        }
+
+        /// <summary>
+        /// Commands a jog velocity: three SDO writes the first time (mode + target + controlword),
+        /// ONE thereafter while the axis stays armed. The velocity-vector inputs (analog joystick,
+        /// on-screen puck, vision jog) re-command on every change, so on the UI thread this is the
+        /// difference between three writes per update and one. Direction 0 stops (and disarms).
+        /// </summary>
+        public void SetJogVelocity(AxisId id, int direction, int speed)
+        {
+            lock (_channel)
+            {
+                if (direction == 0) { Stop(id); return; }
+                if (_jogArmed.Contains(id)) UpdateJogVelocity(id, direction, speed);
+                else JogAt(id, direction, speed);
+            }
         }
 
         /// <summary>
@@ -114,63 +157,113 @@ namespace NanotecController
         /// </summary>
         public void UpdateJogVelocity(AxisId id, int direction, int speed)
         {
-            AxisDriver axis = Axis(id);
-            int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
-            axis.UpdateJogVelocity(speed * sign);
+            lock (_channel)
+            {
+                AxisDriver axis = Axis(id);
+                int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
+                axis.UpdateJogVelocity(speed * sign);
+            }
         }
 
         /// <summary>Current profile accel/decel (0x6083/0x6084) of one axis, for save/restore.</summary>
-        public (long Accel, long Decel) GetProfileRamp(AxisId id) => Axis(id).GetProfileRamp();
+        public (long Accel, long Decel) GetProfileRamp(AxisId id)
+        {
+            lock (_channel) return Axis(id).GetProfileRamp();
+        }
 
         /// <summary>Sets profile accel/decel (0x6083/0x6084) of one axis, in counts/s² (see
         /// <see cref="AxisDriver.SetProfileRamp"/>).</summary>
-        public void SetProfileRamp(AxisId id, long accel, long decel) => Axis(id).SetProfileRamp(accel, decel);
+        public void SetProfileRamp(AxisId id, long accel, long decel)
+        {
+            lock (_channel) Axis(id).SetProfileRamp(accel, decel);
+        }
 
-        public void Stop(AxisId id) => Axis(id).StopManualJog();
+        public void Stop(AxisId id)
+        {
+            lock (_channel) { Axis(id).StopManualJog(); _jogArmed.Remove(id); }
+        }
 
         /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>
         public void StopAll()
         {
-            foreach (AxisDriver axis in _axes.Values)
+            lock (_channel)
             {
-                try { axis.StopManualJog(); } catch (DriveException) { }
+                foreach (AxisDriver axis in _axes.Values)
+                {
+                    try { axis.StopManualJog(); } catch (DriveException) { }
+                }
+                _jogArmed.Clear();
             }
         }
 
         // --- Positioning (Profile Position) ---------------------------------------
 
+        // Both leave the drive in Profile Position, so any velocity jog is over (see _jogArmed).
+
         public void MoveAbsolute(AxisId id, long targetPosition, int profileVelocity)
-            => Axis(id).MoveAbsolute(targetPosition, profileVelocity);
+        {
+            lock (_channel) { Axis(id).MoveAbsolute(targetPosition, profileVelocity); _jogArmed.Remove(id); }
+        }
 
         public void MoveRelative(AxisId id, long deltaPosition, int profileVelocity)
-            => Axis(id).MoveRelative(deltaPosition, profileVelocity);
+        {
+            lock (_channel) { Axis(id).MoveRelative(deltaPosition, profileVelocity); _jogArmed.Remove(id); }
+        }
 
         public bool WaitForMotionComplete(AxisId id, int timeoutMs, Func<bool>? cancel = null)
-            => Axis(id).WaitForMotionComplete(timeoutMs, cancel);
+        {
+            lock (_channel) return Axis(id).WaitForMotionComplete(timeoutMs, cancel);
+        }
 
         // --- Status ----------------------------------------------------------------
 
-        public AxisDriver.AxisStatus GetStatus(AxisId id) => Axis(id).GetStatus();
+        public AxisDriver.AxisStatus GetStatus(AxisId id)
+        {
+            lock (_channel) return Axis(id).GetStatus();
+        }
 
         /// <summary>Position-only read (one SDO transaction) for fast follow loops.</summary>
-        public long GetPosition(AxisId id) => Axis(id).GetPosition();
+        public long GetPosition(AxisId id)
+        {
+            lock (_channel) return Axis(id).GetPosition();
+        }
+
+        /// <summary>CiA 402 state-only read (one SDO transaction) — the poller's slow lane.</summary>
+        public (string State, bool HasFault) GetState(AxisId id)
+        {
+            lock (_channel) return Axis(id).GetState();
+        }
 
         /// <summary>Raw 0x60FD digital inputs for one axis (limit-switch bits drive the calibration find).</summary>
-        public long GetDigitalInputs(AxisId id) => Axis(id).ReadDigitalInputs();
+        public long GetDigitalInputs(AxisId id)
+        {
+            lock (_channel) return Axis(id).ReadDigitalInputs();
+        }
 
         /// <summary>Analogue input 1 (0x3220:01) of one axis's drive — the wired analog joystick pot.</summary>
-        public int GetAnalogInput1(AxisId id) => Axis(id).ReadAnalogInput1();
+        public int GetAnalogInput1(AxisId id)
+        {
+            lock (_channel) return Axis(id).ReadAnalogInput1();
+        }
 
         // --- Expert: arbitrary object write + NV save (the "Write Object" console) -----
 
         /// <summary>Writes an arbitrary OD entry on one axis. Expert/manual use only.</summary>
         public void WriteObject(AxisId id, ushort index, byte subIndex, long value, uint bitLength)
-            => Axis(id).WriteObject(index, subIndex, value, bitLength);
+        {
+            lock (_channel) Axis(id).WriteObject(index, subIndex, value, bitLength);
+        }
 
         /// <summary>Reads an arbitrary OD entry on one axis (read counterpart to <see cref="WriteObject"/>).</summary>
-        public long GetObject(AxisId id, ushort index, byte subIndex) => Axis(id).ReadObject(index, subIndex);
+        public long GetObject(AxisId id, ushort index, byte subIndex)
+        {
+            lock (_channel) return Axis(id).ReadObject(index, subIndex);
+        }
 
         /// <summary>Persists one axis's current parameters to non-volatile memory (0x1010:01 = "save").</summary>
-        public void SaveParametersToNV(AxisId id) => Axis(id).SaveParametersToNV();
+        public void SaveParametersToNV(AxisId id)
+        {
+            lock (_channel) Axis(id).SaveParametersToNV();
+        }
     }
 }

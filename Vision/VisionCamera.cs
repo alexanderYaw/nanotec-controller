@@ -56,8 +56,14 @@ namespace NanotecController
         public void Open()
         {
             if (_acq != null) return;
+            // Device is "default" (= the single connected camera), NOT an index. The USB3Vision
+            // interface resolves this parameter as a device NAME, so the old "0" failed to match
+            // any device and open_framegrabber threw 5312 ("device cannot be initialized") even
+            // though info_framegrabber enumerated the camera fine. The alternative is the full
+            // unique name (e.g. "26760172B178_Basler_acA402429um"), which would pin this build to
+            // one physical camera; "default" keeps it swappable while there is only ever one.
             HOperatorSet.OpenFramegrabber("USB3Vision", 0, 0, 0, 0, 0, 0, "progressive", -1,
-                "default", -1, "false", "default", "0", 0, -1, out HTuple acq);
+                "default", -1, "false", "default", "default", 0, -1, out HTuple acq);
             // Keep only the newest frame so the displayed image can't fall behind real time
             // (best-effort: not every driver exposes this GenICam param under this name).
             try

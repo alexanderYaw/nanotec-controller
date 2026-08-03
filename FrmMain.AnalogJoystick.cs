@@ -11,8 +11,8 @@ namespace NanotecController
     // loss of focus) stops. Twist → Θ: in RAW jog mode it jogs Θ at a proportional velocity; in VISION
     // jog mode it rotates the chuck ABOUT THE CROSSHAIR (the tuned HoldRotate follower), so the point
     // under the crosshair stays put — the "compensated rotation" the user asked for.
-    // Polled on joystickTimer (50 ms, UI thread), which is paused during drive ops, so the reads
-    // never contend with a background op on the NanoLib channel.
+    // The pots are read by DrivePoller (50 ms, background thread) and applied here on the UI thread;
+    // the poller is paused during drive ops, so its reads never load a running op.
     //
     // NO deadman (decision 2026-07-08): the machine's candidate deadman button (Input 4) is configured
     // as the CiA-402 interlock on the X and Z drives, so pressing it FAULTS them — it's a stop/interlock,
@@ -41,6 +41,14 @@ namespace NanotecController
             (AxisId.Y,     AxisId.Y, +1),
             (AxisId.Theta, AxisId.Z, +1),   // twist pot lives on the Z drive's AI1; sign flips if Θ turns the wrong way
         ];
+
+        /// <summary>The drives DrivePoller reads a pot from (Θ's own AI1 is the dead channel).</summary>
+        private static AxisId[] AnalogPotAxes()
+        {
+            var pots = new List<AxisId>();
+            foreach ((AxisId _, AxisId pot, int _) in AnalogAxes) pots.Add(pot);
+            return pots.ToArray();
+        }
 
         // VISION-mode stick→screen mapping. In VISION jog mode the stick does NOT drive raw X/Y;
         // its deflection is read as a SCREEN-space direction (right+/up+) and fed through the
@@ -77,59 +85,44 @@ namespace NanotecController
         private const int AI_CENTRE_MAX_SPREAD = 12;
         private readonly Dictionary<AxisId, (int min, int max)> _aiCentreRange = new();
 
-        // One poll of the analog joystick (joystickTimer tick when the Joystick source is selected).
-        // No deadman (see class header): with the drives enabled, deflecting past the deadband moves,
-        // centring stops. Reads BOTH pots (X and Y drives' analogue input 1), keeps their centres
-        // auto-captured, then dispatches on jog mode: RAW = per-axis drive velocity (unchanged);
-        // VISION = the stick's deflection as a screen direction fed through the pixel→step affine, so
-        // a pure-X push moves the chuck along the compensated (camera) X axis — the same drift-corrected
-        // path the on-screen puck (VisionPadTick) and d-pad (VisionJog) use.
-        private void TickAnalogJoystick()
+        // One poll of the analog joystick, applied from a DrivePoller sample (the pots are read on
+        // the poller thread; this runs on the UI thread). No deadman (see class header): with the
+        // drives enabled, deflecting past the deadband moves, centring stops. Keeps each pot's centre
+        // auto-captured, then dispatches on jog mode: RAW = per-axis drive velocity; VISION = the
+        // stick's deflection as a screen direction fed through the pixel→step affine, so a pure-X push
+        // moves the chuck along the compensated (camera) X axis — the same drift-corrected path the
+        // on-screen puck (VisionPadTick) and d-pad (VisionJog) use.
+        private void TickAnalogJoystick(DriveSample sample)
         {
-            if (_motion == null) return;
+            if (_motion == null || !_analogInputOn) return;   // source/focus may have changed since the poll
             bool enabled = ManualInputAllowed;   // also false during an external op (auto centre-find)
 
-            // Read every pot + keep auto-centring (they all finish on the same tick — they start together
-            // at ResetJoy). Bail on a read error; wait until all centres are captured before moving.
-            var dev = new Dictionary<AxisId, int>();
-            try
-            {
-                foreach ((AxisId cmd, AxisId pot, int _) in AnalogAxes)
-                {
-                    if (!TryReadDeflection(cmd, pot, out int d))
-                    {
-                        joystickStatusLabel.Text = "Joystick: centring — leave the stick alone";
-                        _visionView.CenteringOverlay = true;   // warn on the live view until the centre is captured
-                        return;
-                    }
-                    dev[cmd] = d;
-                }
-                _visionView.CenteringOverlay = false;   // all axes centred — clear the warning
-            }
-            catch (DriveException)
+            if (sample.AnalogError || sample.Analog == null)
             {
                 joystickStatusLabel.Text = "Joystick: read FAILED";
-                StopAnalogAxes();                                 // stop raw axes + clear their send-on-change cache
-                _visionLastVx = _visionLastVy = 0;                // and the vision cache (so a resume re-commands)
+                StopAnalogAxes();                    // stop raw axes + clear their send-on-change cache
+                _visionLastVx = _visionLastVy = 0;   // and the vision cache (so a resume re-commands)
                 return;
             }
 
+            // Keep auto-centring; wait until all centres are captured before moving.
+            var dev = new Dictionary<AxisId, int>();
+            foreach ((AxisId cmd, AxisId pot, int _) in AnalogAxes)
+            {
+                if (!sample.Analog.TryGetValue(pot, out int raw)) return;
+                CaptureCentre(cmd, raw);
+                if (!_aiMid.TryGetValue(cmd, out int mid))
+                {
+                    joystickStatusLabel.Text = "Joystick: centring — leave the stick alone";
+                    _visionView.CenteringOverlay = true;   // warn on the live view until the centre is captured
+                    return;
+                }
+                dev[cmd] = raw - mid;
+            }
+            _visionView.CenteringOverlay = false;   // all axes centred — clear the warning
+
             if (_jogMode == JogMode.Vision) TickAnalogVision(dev, enabled);
             else                            TickAnalogRaw(dev, enabled);
-        }
-
-        // Reads one pot (analogue input 1 of the drive it's wired to), updates the centre of the axis
-        // it commands, and returns the signed deflection (raw − centre). Read drive ≠ command axis for Θ
-        // (twist pot on the Z drive). Returns false while the centre is still being averaged. Throws on a
-        // read error.
-        private bool TryReadDeflection(AxisId cmd, AxisId pot, out int dev)
-        {
-            dev = 0;
-            int raw = _motion!.GetAnalogInput1(pot);
-            CaptureCentre(cmd, raw);
-            if (!_aiMid.TryGetValue(cmd, out int mid)) return false;
-            dev = raw - mid;
-            return true;
         }
 
         // RAW mode: each pot drives its command axis (X, Y, and Θ from the twist) at a velocity

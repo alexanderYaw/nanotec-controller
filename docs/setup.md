@@ -72,7 +72,7 @@ is the standard way a soft EtherCAT master runs on Windows.
   EtherCAT bus options (see below). The app's status poll also tolerates a few
   consecutive failed reads before declaring the link lost
   (`MAX_CONSECUTIVE_READ_FAILURES = 5`, in `FrmMain.cs`; enforced in
-  `FrmMain.Jog.cs`'s `statusTimer_Tick`) — a single hiccup is ignored rather
+  `FrmMain.Jog.cs`'s `OnDriveSample`) — a single hiccup is ignored rather
   than aborting.
 - **The one timing-sensitive path** is the rotate-about-crosshair follow loop
   (~25 ms, three axes under velocity command). It is tuned to tolerate soft-master

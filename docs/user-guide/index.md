@@ -11,7 +11,7 @@ master**.
 
 > **Commissioning note.** Treat every first motion on a new machine as a commissioning step:
 > keep the E-stop within reach, start at low jog speeds, and confirm each axis moves the way
-> you expect before trusting automated moves (Home All, Go Home, Find Limits, Auto
+> you expect before trusting automated moves (Home All, Go Home, Find X & Y Limits, Auto
 > Centre-Find). Position and velocity values are the **drive's own units**, not mm/deg.
 
 For how the software works internally, see the **[Developer Guide](../developer-guide/)**.
@@ -58,10 +58,10 @@ The window has a **left column** (all motion controls) and a **right column** (t
 | **Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
 | **Connect / Disconnect** | Open or close the link to all drives. |
 | **Parameters…** | Opens the parameters window: a read-only dump of each drive's limits, unit/scaling and motion-state objects, plus an **expert** option to write objects (RAM) or save to NV (see §12). |
-| **Calibration…** | Opens a small menu with two entries: **Axes — travel limits & home** (see §8) and **Vision — camera scale & centres** (see §10). |
+| **Calibration…** | Opens a small menu: **Axes — travel limits & home** (see §8), **Vision — camera scale & centres** (see §10), and **Home & centre chuck (auto)**, which runs the first window's X+Y limit-find and then the second's automatic chuck centre-find, back to back (see §10.3). |
 | **Enable All / Disable All** | Energise / de-energise all drives. |
 | **Home All** | Retract Z, then send X & Y to their home positions (see §8). |
-| **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
+| **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find X & Y Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
 | **RAW / VISION mode switch** | Changes what the whole motion cluster means (see §5). |
 | **Per-axis rows (X / Y / Z / Θ)** | Speed slider + live position and state readout per axis. |
 | **Direction d-pad** | ◀ ▶ for X, ▲ ▼ for Y, ▲ ▼ for Z, ↺ ↻ for Θ — **hold to move, release to stop**. |
@@ -180,9 +180,10 @@ Important caveats:
 * This is a **software** guard polled a few times a second, so expect a little overshoot
   at high speed. Where physical limit switches exist, **they** are the real safety; the
   soft limit is a convenience guard.
-* On this machine, **X's + end and both ends of Z have no working limit switch**, so the
-  soft limit is the *only* protection there. Calibrate those axes before jogging them far,
-  and keep speeds modest.
+* On this machine, **both ends of Z have no working limit switch**, so the soft limit is the
+  *only* protection there. **X** has a switch at each end, but its drive is configured to
+  ignore them, so the app's guard is what actually stops it. Calibrate both axes before
+  jogging them far, and keep speeds modest.
 * If `calibration.json` is missing or unreadable at startup, the app logs a **"starting
   with NO soft limits"** warning. Take it seriously — re-calibrate before jogging.
 
@@ -202,9 +203,17 @@ For each axis:
 * **Clear Min / Clear Max** — removes a stored limit (back to "none"). This is a local edit
   only — it moves nothing — and also drops any jog block that limit was enforcing.
 * **Set Home** (Z only) — captures Z's explicit home position.
-* **Find Limits** (Y only) — **automatically** drives Y into each end switch, records both
-  edges as Min/Max, and sets Home to the centre. Watch it run; it backs off the switches
-  when done.
+* **Find X & Y Limits (auto)** — one button at the bottom of the window that calibrates **both
+  axes in a single run**: X and Y each drive into their own end switches **at the same time**,
+  both edges of each are recorded as that axis's Min/Max, and Home is set to the centre. It then
+  **homes X and Y automatically**, so the chuck finishes centred in its travel rather than parked
+  off an end switch — no separate Go Home needed. Z has no switches, so it is not included — set
+  Z's limits by hand. Note that the auto-home does **not** retract Z first (unlike Home All): the
+  find has just traversed the whole table at that same Z height, so the move back to the centre
+  covers no new ground. **STOP** aborts the run (both axes) at any point; if you stop it, the
+  limits found so far are still saved but the auto-home is skipped. If one axis fails — e.g. it
+  never reaches a switch and times out — it is reported on its own and the other axis's result is
+  still kept and homed; only an axis that found **both** its ends has its limits updated.
 * **Go Home** — moves the axis to its home (the **centre of Min/Max** for X/Y, the
   explicit Home for Z) and reports how close it landed.
 * **Steps/mm** — type the axis's motor steps per millimetre (from the stage's mechanical spec)
@@ -294,6 +303,13 @@ Y** — samples along a single line cannot define the mapping and will be reject
 really is linear. Everything else on this page — the VISION jog, both centre-finds, the
 rotation — depends on this.
 
+> The detector picks its own brightness cut per frame, so it copes with a change of lighting,
+> exposure or camera without retuning; a successful sample shows which cut it used. If it
+> reports **fiducial NOT found**, the message says how close it got — for example *"closest was
+> area=6,528 circ=0.805 (need area>=5,000, circ>=0.85)"* means it found the disk but the shape
+> was too irregular, so improve focus and lighting. *"no candidate cut segmented anything"*
+> instead means nothing stood out from the background at all: check the marker is lit and in view.
+
 **2. Chuck centre-find.** With the chuck edge in view, press **Add Edge** at several spots
 **spread around the rim** (≥3, more is better). Each press detects the rim point and records
 where the table would have to be to put it on the crosshair. **Add at Crosshair** is the manual
@@ -301,19 +317,28 @@ alternative: jog the edge onto the crosshair by eye and record the position dire
 **Delete Selected** a bad point or **Clear Edges** and start over. Then **Compute Centre**, and
 **Go to Centre** to drive there. The result is saved and reloaded on the next run.
 
-**3. Auto chuck centre-find** (does step 2 for you). Rough-centre the chuck by hand, set focus,
-type the **nominal chuck radius in steps**, and press **Auto Centre-Find**. The stage probes
-outward in eight directions, returning to the centre between each, and fits the result. Before
-starting, confirm the three things it asks: the chuck is roughly centred, Z/focus is set so the
-edge is sharp, and **the rim is not already in view**. The log pane is the transcript of the
-run — which directions found an edge and where. **Cancel** stops it; a cancelled or aborted run
-**discards its points** rather than leaving a half-collected set.
+**3. Auto chuck centre-find** (does step 2 for you, and finds its own starting point). Set focus,
+type the **max search radius in steps**, and press **Auto Centre-Find**. The stage sends X and Y
+to **Home**, moves a fixed offset along Y to land roughly over the chuck, probes outward in eight
+directions returning to the centre estimate between each, fits the result, and finally **drives to
+the centre it just found**. Before starting, confirm what it asks: Z/focus is set so the edge is
+sharp, and the path from here to Home is clear. The log pane is the transcript of the run — which
+directions found an edge and where. **Cancel** stops it; a cancelled or aborted run **discards its
+points** rather than leaving a half-collected set.
 
-> **Safety:** this is the one automatic feature that drives the table on its own. It aborts any
-> direction that travels past **1.8 × the radius you typed**, and never commands a target
-> outside the stored X/Y travel limits. If X/Y have no limits set, that radius guard is the
-> *only* backstop — it warns you before running. **Z is never moved.** Type the radius
-> carefully; too large a value means a longer runaway before the guard fires.
+Because the run *starts* at Home, **X and Y must already have their limits found** — Home for
+those axes is the centre of the measured travel. If either has no Home the run refuses outright
+and tells you to do the limit-find first.
+
+**Calibration… → Home & centre chuck (auto)** does both halves in one press: the X+Y limit-find
+(§8), then this centre-find. It confirms once up front, and the centre-find still asks its own
+confirmation before it moves. Pressing **STOP** during the limit-find cancels the centre-find too.
+
+> **Safety:** this is the one automatic feature that drives the table on its own. It never
+> commands a target outside the stored X/Y travel limits, and it aborts any direction that travels
+> past **the max search radius you typed** — that number is now the single limit on both how far a
+> probe may travel and how far out a detection is still believed, so type it carefully. **Z is
+> never moved.**
 
 **4. Wafer centre-find.** The same flow as the chuck (**Add Wafer Edge** → **Compute Centre** →
 **Go to Centre**) but detecting the wafer rim, kept as a separate stored centre.
@@ -387,10 +412,10 @@ writes.
 * **All jogging is momentary** — release the arrow, centre the stick, or release the puck and
   motion stops.
 * **STOP aborts any preplanned move** — Home All, Go Home, Move To, a relative move, a
-  rotation, Find Limits.
+  rotation, Find X & Y Limits.
 * **Losing window focus stops everything** and pauses the joystick — including a hold-to-rotate
   that would otherwise keep turning because its mouse-release never arrives. (A running
-  operation — Home, Find Limits, Move, Go Home — is left alone, since it owns the drives.)
+  operation — Home, Find X & Y Limits, Move, Go Home — is left alone, since it owns the drives.)
 * **A failed joystick read stops the axes it was driving.**
 * **Switching RAW ⇄ VISION stops everything first**, so nothing carries over with a changed
   meaning.

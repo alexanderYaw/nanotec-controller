@@ -58,19 +58,23 @@ namespace NanotecController
 
             var (ex, ey) = _chuckFinder.Add(edge.Row, edge.Column, crossRow, crossCol, a, mx, my);
 
-            DrawEdgeOverlay(raw, edge, crossRow, crossCol);
+            raw = DrawEdgeOverlay(raw, edge, crossRow, crossCol);   // may return a widened copy
             ShowCaptured(raw);
             RefreshEdgeUi();
             _status.Text = $"Edge {_chuckFinder.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
         }
 
         // Draws the frame-centre crosshair (green) and the detected edge point (yellow circle).
-        private static void DrawEdgeOverlay(Bitmap bmp, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol)
+        // RETURNS the bitmap drawn on — a mono frame is indexed and gets replaced by a drawable
+        // copy, so the caller must keep the returned reference (the original is disposed).
+        private static Bitmap DrawEdgeOverlay(Bitmap bmp, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol)
         {
+            bmp = VisionOverlay.EnsureDrawable(bmp);
             using var g = Graphics.FromImage(bmp);
             float w = VisionOverlay.PenWidth(bmp.Width), rad = bmp.Width / 60f;
             VisionOverlay.DrawCrosshair(g, bmp.Width, crossRow, crossCol, Color.Lime);
             VisionOverlay.DrawPoint(g, edge.Row, edge.Column, rad, Color.Yellow, w);
+            return bmp;
         }
 
         // UI thread: a wafer-rim point was (or wasn't) found. On success convert it to step space
@@ -103,6 +107,7 @@ namespace NanotecController
 
             var (ex, ey) = _waferFinder.Add(edge.Row, edge.Column, crossRow, crossCol, a, mx, my);
 
+            raw = VisionOverlay.EnsureDrawable(raw);
             using (var g = Graphics.FromImage(raw))
             {
                 float w = VisionOverlay.PenWidth(raw.Width), rad = raw.Width / 60f;
@@ -206,6 +211,7 @@ namespace NanotecController
                 _view.PostFrameBitmap(frame, flip: false, raw =>
                 {
                     if (IsDisposed) { raw.Dispose(); return; }
+                    raw = VisionOverlay.EnsureDrawable(raw);
                     using (var g = Graphics.FromImage(raw))
                         VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
                     ShowCaptured(raw);

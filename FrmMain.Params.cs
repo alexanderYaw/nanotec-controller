@@ -35,7 +35,7 @@ namespace NanotecController
             if (!CanAccessParams) { sink.Report("Read: link not ready."); return; }
 
             using var busyScope = BeginBusy();
-            statusTimer.Stop(); joystickTimer.Stop();
+            PausePolling();
             sink.Report("=== Read drive parameters (read-only; writes nothing) ===");
             await Task.Run(() =>
             {
@@ -78,7 +78,7 @@ namespace NanotecController
             if (!_motion!.Has(id)) { sink.Report($"Write: axis {id} is not connected."); return; }
 
             using var busyScope = BeginBusy();
-            statusTimer.Stop(); joystickTimer.Stop();
+            PausePolling();
             try
             {
                 await Task.Run(() => _motion.WriteObject(id, index, sub, value, bits));
@@ -97,7 +97,7 @@ namespace NanotecController
             if (!_motion!.Has(id)) { sink.Report($"Save NV: axis {id} is not connected."); return; }
 
             using var busyScope = BeginBusy();
-            statusTimer.Stop(); joystickTimer.Stop();
+            PausePolling();
             try
             {
                 await Task.Run(() => _motion.SaveParametersToNV(id));

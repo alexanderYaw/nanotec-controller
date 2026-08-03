@@ -212,7 +212,7 @@ flowchart TB
 
 | Folder | Files | Role |
 |---|---|---|
-| **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `SoftLimitTracker.cs`, `DriveDiagnostics.cs` | The motion stack: types, link, per-axis CiA 402, shared API, the soft-limit state machine, diagnostics. |
+| **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `DrivePoller.cs`, `SoftLimitTracker.cs`, `DriveDiagnostics.cs` | The motion stack: types, link, per-axis CiA 402, shared API, the background read poller, the soft-limit state machine, diagnostics. |
 | **`Input/`** | `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | The on-screen analog puck, and the Position Map grid control + its window. (The physical joystick is **analog, wired into the drives** — see §11 — so there is no HID reader here.) |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits / home / steps-per-mm / vision-calibration store and its UI window. |
 | **`Vision/`** | `VisionCamera.cs`, `VisionViewControl.cs`, `IVisionFrameSource.cs`, `HalconBitmap.cs`, `FrmVisionProtocols.*.cs`, detectors (`SolidCircleDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | The HALCON camera, the embeddable live-view control + the frame-source interface windows share, the protocols window (split into partials), the edge/fiducial detectors, and the calibration / centre-find vision logic plus overlay and jog-velocity helpers. |
@@ -247,6 +247,11 @@ full mutual access to every field and method:
   auto-centring, and the RAW / VISION dispatch (including twist → rotate-about-crosshair).
 * `FrmMain.Calibration.cs` — Home All, Move To, limit capture/find, Go Home, plus the
   Position Map window's data feed (position cache + USER-frame accessors + open-button).
+  Self-contained: the `CalibrationStore` field, the fixed home/find speeds (`HOME_SPEED_*`,
+  `FIND_LIMIT_SPEED`) and the poll/timeout ceilings (`FIND_POLL_MS`, `FIND_TIMEOUT_MS`,
+  `BACKOFF_TIMEOUT_MS`, `SW_LIMIT_BITS`) are declared at the top of this file, not in
+  `FrmMain.cs`. `FIND_TIMEOUT_MS` doubles as the arrival ceiling for every preplanned move
+  in the app, so `FrmMain.RelativeMove.cs` reaches across for it.
 * `FrmMain.RelativeMove.cs` — physical-unit relative moves (mm / °) and the go-to-stored-centre
   buttons.
 * `FrmMain.Params.cs` — the per-axis parameter read-out plus the object write / save-to-NV host
@@ -430,6 +435,14 @@ caught at build time, not as a null move later.
 
 * `EnableAll` / `DisableAll` (disable is best-effort, never throws).
 * `JogAt` / `Stop` / `StopAll` (stop paths never throw — they're safety paths).
+* `SetJogVelocity(id, dir, speed)` — the **velocity-vector** entry point (analog joystick,
+  on-screen puck, vision jog), which re-commands on every change. Three SDO writes to arm the
+  axis, then **one** per update while it stays armed, by falling through to `UpdateJogVelocity`
+  instead of re-sending mode + controlword. Arming is tracked in `_jogArmed` **inside the
+  controller** — the only place drive state changes — because a stale entry would skip the
+  halt-clearing controlword and silently swallow a jog. Every path that leaves an axis not
+  jogging (`Stop`, `StopAll`, `DisableAll`, `EnableAll`/`EnableAxis`,
+  `RecoverIfQuickStopped`, `MoveAbsolute`/`MoveRelative`) clears it.
 * `MoveAbsolute` / `MoveRelative` / `WaitForMotionComplete(id, ms, cancel)`.
 * `RecoverIfQuickStopped(id)` — re-enables an axis a limit hit left in Quick-Stop-Active
   (returns whether it had to).
@@ -443,28 +456,67 @@ other (NanoLib is single-channel per device). Callers must serialize — see §1
 
 ---
 
-## 10. GUI threading & timer model
+## 10. GUI threading & the drive poller
 
-Two `System.Windows.Forms.Timer`s, both firing on the **UI thread** (so they never overlap
-each other):
+**No drive read runs on the UI thread.** `DrivePoller` (`Drive/DrivePoller.cs`) owns a
+dedicated background thread and pushes each result to the UI thread as a `DriveSample`;
+`FrmMain.OnDriveSample` consumes it (axis readouts, soft-limit guard, analog joystick).
 
-* **`statusTimer` (200 ms)** — reads each axis's position + state into its row and runs the
-  soft-limit guard.
-* **`joystickTimer` (50 ms)** — polls the active joystick and applies it (send-on-change).
+This was not always so, and the reason it changed is worth keeping: both polls used to be
+`System.Windows.Forms.Timer`s running on the UI thread — a 200 ms `GetStatus` sweep (2 SDOs ×
+4 axes) plus a 50 ms 3-pot joystick read, about **100 blocking SDO round-trips per second on
+the thread that paints**. Each one stalls the message pump for its round-trip, so the live
+camera view visibly juddered *while jogging* but stayed smooth during a preplanned move —
+because those pause the polls and run on a worker, leaving the UI thread free. Moving the
+polling off the UI thread gives manual jogging the same freedom. The UI thread keeps only the
+**commands**, where exact ordering matters and the traffic is send-on-change — and those are
+kept to one SDO write per update on the hot path (see `SetJogVelocity`, §9).
+
+**Measuring it:** the live view's status line reports the **painted** frame rate, not the
+grabbed one, and appends `(grab N)` only when the camera is running ahead of the UI. Those two
+numbers diverging is the direct symptom of a blocked UI thread — a frame gets superseded before
+`ShowPending` runs. If they agree, the view is as smooth as the camera allows.
+
+Poller cadence, per 50 ms tick:
+
+| What | Rate | Cost |
+|---|---|---|
+| Analogue inputs (3 pots), while `PollAnalog` | every tick | 3 SDO |
+| Positions (`GetPosition`, all axes) | every 4th tick (200 ms) | 4 SDO |
+| Statuswords (`GetState`, all axes) | every 3rd position poll (600 ms) | 4 SDO |
+
+Splitting `GetStatus` into `GetPosition` + `GetState` is what halves the old cost: the decoded
+CiA 402 state is display-only and changes far more slowly than the position, so it no longer
+pays the position's rate. Idle (no joystick) went from 40 to ~25 SDO/s.
+
+Samples are **newest-only** — one the UI hasn't taken yet is superseded rather than queued, so
+a busy UI thread can never build a backlog. `Positions`/`States` are carried forward in every
+sample, so a superseded one loses no value.
+
+Serialization is by **`MultiAxisController`'s channel lock**: NanoLib is single-channel per
+device, so every method there takes it, which is what makes the poller thread and the UI
+thread safe against each other. It is re-entrant, so the multi-step ops nest on one thread.
 
 Longer drive operations (enable/disable, Home, Find, Move, rotate) run on a **background
-thread** via **`RunDriveOp`**, which **pauses both timers first** so the worker has the single
-NanoLib channel to itself. It uses `TaskCreationOptions.LongRunning` rather than `Task.Run`,
+thread** via **`RunDriveOp`**, which calls **`PausePolling()`** first. That is *not* needed for
+correctness — the lock covers it — but so the poller neither parks on the lock for the whole op
+nor adds bus traffic to the timing-sensitive rotate follow loop. It uses
+`TaskCreationOptions.LongRunning` rather than `Task.Run`,
 because these ops sleep for their whole duration (up to minutes) and would otherwise mislead
 the thread pool's injection heuristic. Its `catch`-all is the last line of defence: it
 best-effort `StopAll`s before reporting, so an op that threw outside its own `finally` can't
 leave an axis under a velocity command.
 
+One `System.Windows.Forms.Timer` survives: **`joystickTimer` (50 ms)** now drives *only* the
+on-screen puck, which reads a UI control and needs no bus traffic. `ApplyInputSourcePolling`
+routes the selected input to its ticker — puck to the timer, analog joystick to the poller's
+`PollAnalog` — so the two are started and stopped in one place.
+
 Three scopes coordinate the UI:
 
 * **`BeginBusy()`** (`using var busyScope = BeginBusy();`) sets `_busy`, clears any stale stop
-  request, and on `Dispose` clears `_busy`, restarts the timers, and refreshes the buttons —
-  so the invariant runs even when the op throws. `RestartTimers` re-baselines soft-limit
+  request, and on `Dispose` clears `_busy`, resumes polling, and refreshes the buttons —
+  so the invariant runs even when the op throws. `ResumePolling` re-baselines soft-limit
   tracking first.
 * **`BeginExternalOp(what)`** latches `_externalBusy` for a **sequence** of awaited drive ops
   driven from another window (the auto centre-find, §17). Between those ops `_busy` is false,
@@ -516,7 +568,8 @@ so an axis a limit hit left in Quick-Stop can be jogged back off the switch.
 ### Analog joystick (`FrmMain.AnalogJoystick.cs`)
 The physical joystick is **analog, wired directly into the drives' I/O — not a USB HID
 device**, so there is no HID reader in the app. Each pot is read as **analogue input 1
-(0x3220:01)** of the drive it is wired to, on the 50 ms `joystickTimer`:
+(0x3220:01)** of the drive it is wired to, by `DrivePoller` on its 50 ms tick (§10) and applied
+on the UI thread from `OnDriveSample`:
 
 | Pot | Read from | Commands |
 |---|---|---|
@@ -569,7 +622,7 @@ it is unit-testable on its own. `FrmMain` performs the actual `Stop` and the log
 cooperating mechanisms, both polarity-agnostic (they never assume which way positive velocity
 moves the encoder):
 
-### Reactive stop — `Evaluate(id, pos, calib, drivesEnabled)` (in the 200 ms poll)
+### Reactive stop — `Evaluate(id, pos, calib, drivesEnabled)` (in the 200 ms position poll)
 Infers travel direction from the **position delta** (`pos - prevPos`). It returns
 `Decision(Stop, Log)` — stop only when the axis is **at/beyond a stored Min/Max AND still
 moving further out**, so jogging back into range is always allowed. The log line fires once per
@@ -588,8 +641,9 @@ motor/encoder polarity.
 `Reset()` (via `ResetSoftLimitTracking`) clears everything on connect/disconnect and after any
 paused op, so a stale delta can't trigger a false stop.
 
-> This guard is the **only** travel protection on X+ and both ends of Z (no working switches),
-> so its correctness matters there more than anywhere.
+> This guard is the **only** travel protection on both ends of Z (no working switches) and on X
+> (switches at both ends, but `0x3701 = -1` makes the drive ignore them), so its correctness
+> matters there more than anywhere.
 
 ---
 
@@ -621,7 +675,7 @@ setup:
 
 `FrmMain` owns the store, all motion, persistence, and timer coordination; `FrmCalibration` is
 **pure UI** that calls back through `IMotionHost` (`SetCalibrationMin/Max/Home`,
-`ClearCalibrationMin/Max`, `FindLimitsAsync`, `GoHomeAsync`, `HomeTargetFor`,
+`ClearCalibrationMin/Max`, `FindXyLimitsAsync`, `GoHomeAsync`, `HomeTargetFor`,
 `CanCaptureCalibration`/`CanMoveCalibration`), plus a per-axis **steps/mm** box it saves
 straight into the store. This single ownership is required because NanoLib is single-channel.
 
@@ -648,8 +702,8 @@ through `FrmMain` in the **USER frame**:
   also swaps Min/Max, so the limits are re-sorted before returning). `PositionGrid` therefore
   never re-implements the Y flip — it just renders whatever user-frame numbers it's handed, and
   `MoveToAsync`'s own `TryCoord` flips the entered Y back to raw.
-* The live position is served from **`_lastPos`**, a raw-per-axis cache the 200 ms status poll
-  fills and `ResetSoftLimitTracking` clears. The window's own **250 ms** timer reads it and also
+* The live position is served from **`_lastPos`**, a raw-per-axis cache the 200 ms position poll
+  fills (via `OnDriveSample`) and `ResetSoftLimitTracking` clears. The window's own **250 ms** timer reads it and also
   reflects `CanMoveCalibration` onto the **Go** button.
 
 `PositionGrid` is a self-contained `Control`: a filled current-position dot + a hollow target
@@ -666,11 +720,17 @@ through it, plus Home All / Go Home internally.
 
 ## 14. Fiducial detection — the solid circle (`Vision/SolidCircleDetector.cs`)
 
-Finds the sub-pixel centre of the circular calibration fiducial — a **solid red disk, slightly
-brighter than the red background**, crossed by **bright diagonal scribe lines** with a large
-bright blob in one corner — in one frame. This is the 2D-localisable point that feeds the
-pixel→step affine fit (§15, `Vision/CameraCalibrator.cs`); a smooth wafer edge can't serve
-here because a plain arc only reveals motion along its normal (the aperture problem).
+Finds the sub-pixel centre of the circular calibration fiducial — a **solid disk distinctly
+brighter than a uniform background**, with **bright diagonal scribe lines** nearby that may or
+may not cross it — in one frame. This is the 2D-localisable point that feeds the pixel→step
+affine fit (§15, `Vision/CameraCalibrator.cs`); a smooth wafer edge can't serve here because a
+plain arc only reveals motion along its normal (the aperture problem).
+
+The scene is **not** fixed, and the detector is deliberately not tuned to one instance of it.
+The two captures on record differ completely: the colour acA5472 saw a red-lit field
+(background ~183 in the red channel) with a scribe line cutting the disk and a large bright
+blob in one corner; the mono acA4024 now in use sees a dark field (background ~53, disk ~120)
+with the lines clear of the disk.
 
 **The core idea:** clean the disk into a single near-perfect blob with morphology, then pick
 the **roundest** survivor. The scribe lines and the clipped corner blob also threshold bright,
@@ -685,15 +745,22 @@ stage for stage (with `dev_display`/`stop` after each), so it can be tuned again
 ### The pipeline
 
 1. **Load the frame.** Read the capture; grab `Width`/`Height` for display.
-2. **Isolate the red channel → byte.** The markers are red-lit, so the red channel carries
-   almost all the contrast (a luminance grey weights red only ~0.3). Mono frames pass through.
-3. **Threshold the bright structures.** `binary_threshold(… 'max_separability' 'light')`
-   auto-picks the cut (Otsu-style — no hand-tuned grey level) and keeps the bright side → the
-   disk **plus** the scribe lines and the corner blob.
+2. **Reduce to one byte channel.** A mono frame (the current acA4024) passes straight through.
+   A colour frame yields its **red** channel, not a luminance grey: the markers were red-lit
+   under the previous acA5472, and luminance weights red only ~0.3.
+3. **Threshold the bright structures — over a ladder of candidate cuts.** Steps 4-6 run once
+   per candidate and the **roundest** result wins; `LastThreshold` reports which cut that was
+   (`NaN` when nothing was found, never a stale value from an earlier call).
+   The candidates are Otsu (`binary_threshold(… 'max_separability' 'light')`) plus the 99th,
+   97th, 95th, 93rd and 90th **percentiles** of the frame's own grey histogram. No single
+   statistic suffices — see the note below. Each keeps the bright side → the disk **plus** the
+   scribe lines and any corner blob.
 4. **Close → fill → open into a clean disk.** `closing_circle` (radius `ClosingRadius`) bridges
    the rim notch where a scribe line cuts the disk and absorbs dark internal streaks; `fill_up`
-   closes any fully-enclosed holes; `opening_circle` (radius `OpenRadius`) — a disk bigger than
-   half the scribe-line width — severs/erases the thin lines, leaving a near-perfect solid circle.
+   closes any fully-enclosed holes; `opening_circle` (radius `OpenRadius`) severs thin structures
+   from the disk, leaving a near-perfect solid circle. The opening need not erase a line
+   outright — on the mono frames the ~65 px lines outlive a radius-20 opening, and step 5 drops
+   them on shape instead. What matters is that nothing thin stays *attached* to the disk.
 5. **Validate the shape.** `connection`, then `select_shape` keeps only regions that are both
    round enough (`circularity ≥ MinCircularity`) **and** the right size (`MinArea ≤ area ≤
    MaxArea`), dropping the lines, the corner blob, and vignette/background speckle.
@@ -704,16 +771,36 @@ stage for stage (with `dev_display`/`stop` after each), so it can be tuned again
    (`r = √(area/π)`) for the overlay (boundary in red, cross at the centre in yellow).
 
 ```
-red channel → threshold bright → close + fill + open → clean solid disk
-  → validate (round & sized) → pick MOST circular → area_center → centre (row, col)
+one byte channel → for each candidate cut:
+                     threshold bright → close + fill + open → clean solid disk
+                       → validate (round & sized) → pick MOST circular
+                 → keep the roundest across all cuts → area_center → centre (row, col)
 ```
+
+> **Why a ladder of cuts and not one statistic.** Measured over every capture on record, each
+> frame accepts a *band* of thresholds 11-15 grey levels wide — but no single statistic lands
+> inside all of them. Otsu is right on the mono frames (picks 85, band 60-130) and on the clean
+> colour frame (211, band 195-245), yet reads **130** on the colour frames containing a dark
+> strip at one edge: it locks onto the valley between that strip and everything else, far below
+> their 190-245 band, and the whole frame segments as one blob that fails the circularity gate.
+> The 99th percentile covers the mono frames but overshoots the colour ones (251-255); the 95th
+> only scrapes the band edges. Taken together the six candidates cover every capture at least
+> twice. Scoring on circularity — rather than taking the first cut that passes — also lands
+> mid-band, where the segmented rim is truest. A pass costs 1-17 ms and detection runs once per
+> **Add Sample** click (never per frame), so the sweep costs 100-300 ms and nothing in the live
+> path. A hard-coded cut is what broke this before: 200, measured off the colour camera,
+> segmented **four pixels** of a mono frame and the detector simply reported "not found".
 
 > **Tunables** (`ClosingRadius`, `OpenRadius`, `MinCircularity`, `MinArea`, `MaxArea`) are
 > exposed as properties and set **empirically**, not by formula: run the .hdev script on
 > representative captures, read the real area/circularity, and set the gates with margin below
 > the true values. Size `ClosingRadius` just above the widest rim gap/streak, and `OpenRadius`
-> above half the widest scribe-line width but below the disk radius (too large erases the disk
-> too). `MinCircularity` defaults to `0.85` — tight enough to reject the elongated corner blob.
+> big enough to sever a line where it crosses the disk but well below the disk radius (too large
+> erases the disk too). `MinCircularity` defaults to `0.85` — tight enough to reject a line left
+> whole by the opening. These are in **pixels**, so they assume a disk far larger than what is
+> being removed; both captures on record clear that easily (disk r = 402 px mono, 310 px colour),
+> but a heavy zoom-out would need them revisited. `BrightThreshold` is normally left **null**
+> (auto, per the ladder above) and set only to pin one cut while tuning.
 > A missed detection costs more than a rare false hit, which the downstream circle-fit/residual
 > checks catch anyway.
 
@@ -861,14 +948,21 @@ by hand (B below) or by the stage itself (§17).
 ### A. The edge detector (`ChuckEdgeDetector.cs`)
 
 `TryDetect(image, crossRow, crossCol, …)` runs on the **full-resolution** frame and returns the
-sub-pixel rim point **nearest the crosshair**, as soon as the rim is anywhere in the field of
-view — it does not require the edge to sit *on* the crosshair. It separates the in-focus chuck
-face from the out-of-focus background by **sharpness**, not brightness, because the two sides
-are nearly the same colour.
+rim point **nearest the crosshair**, as soon as the boundary is anywhere in the field of view —
+it does not require the edge to sit *on* the crosshair.
 
-> **The pipeline, its tunables, and why both brightness and a coarse focus-energy map fail here
-> are documented in [Automated Chuck Centre-Finding](ChuckCenterFindingAutomation/).** This is
-> the one detector behind both the manual collection (B below) and the automatic run (§17).
+It tracks the chuck's **inner** circle — the boundary between the brightly-lit machined face and
+the large near-black region inside it — not the outer rim, because the outer rim has two gaps on
+*opposite* sides and the automatic scan probes in opposite pairs, so one gap pair takes out both
+ends of a pair at once. At that boundary the two sides differ by ~219 grey levels, so it cuts on
+**brightness** with a **fixed** threshold; focus is unusable there because ~19% of the frame is
+saturated and flat saturated areas have zero gradient.
+
+> **The pipeline, its tunables, the measured sweeps, and why focus fails here are documented in
+> [Automated Chuck Centre-Finding](ChuckCenterFindingAutomation/)**, with the full parameter
+> sweeps in `Halcon/innerCircleDetection.hdev`. This is the one detector behind both the manual
+> collection (B below) and the automatic run (§17). The previous focus-based **outer-rim**
+> detector is preserved in `Halcon/chuck edge detector.hdev` and in git history.
 
 ### B. Collecting rim points in step space (`FrmVisionProtocols.CentreFind.cs`)
 
@@ -940,11 +1034,13 @@ The wafer flow mirrors the chuck's — its own `CentreFinder` (`_waferFinder`), 
 centre (`WaferCenterX/Y`), the same Pratt fit — but the **detector is different**, because the
 two problems are different:
 
-* **Chuck** (`ChuckEdgeDetector`): both sides of the rim are nearly the same brightness, so it
-  separates them by **focus** (the sharpness ridge — A above).
+* **Chuck** (`ChuckEdgeDetector`): thresholds the inner circle's ~219-level step with a **fixed**
+  cut, because those grey levels are set by the illumination and the material and do not move
+  with framing — while Otsu, being *relative*, would shift with how much of the frame each side
+  occupies, which is exactly what changes as the stage scans (A above).
 * **Wafer** (`WaferEdgeDetector`): the lit wafer reads clearly **brighter** than the off-wafer
-  background, so it thresholds by brightness — `binary_threshold('max_separability', 'light')`
-  (auto-adaptive, so it tracks exposure), then `opening_circle` (`CleanRadius`) to erase
+  background, and here exposure *is* what varies, so it thresholds **auto-adaptively** —
+  `binary_threshold('max_separability', 'light')` — then `opening_circle` (`CleanRadius`) to erase
   speckle, `closing_circle` (`CloseRadius`) + `fill_up` to merge dies/droplets/bevel into **one**
   solid blob, `select_shape` by `MinArea`, take the largest, and return the boundary point
   **nearest the crosshair**. `WaferIsBrighter` flips the polarity if the lighting ever inverts.
@@ -957,10 +1053,16 @@ nearest point. Tuning mirror: `Halcon/wafer center.hdev`.
 ## 17. Automatic chuck centre-find (`Vision/FrmVisionProtocols.AutoCentre.cs`)
 
 The same points and the same Pratt fit as §16 — collected by the **stage** instead of by the
-operator's hand on the jog. The operator roughly centres the chuck once, enters the nominal
-radius, and the run probes outward in **eight** directions. Nothing here replaces the maths;
-it is purely orchestration, and it feeds the same `_chuckFinder` and calls the same
-`ComputeCentre`.
+operator's hand on the jog. The run finds its own starting point (X/Y Home plus a fixed offset),
+probes outward in **eight** directions, and ends by driving to the centre it fitted. The only
+operator input is the **max search radius**. Nothing here replaces the maths; it is purely
+orchestration, and it feeds the same `_chuckFinder` and calls the same `ComputeCentre`.
+
+Two entry points, one run path: the window's own **Auto Centre-Find** button, and the main
+window's **Calibration… → Home & centre chuck (auto)** (`FrmMain.HomeAndCentreChuckAsync`), which
+chains `FindXyLimitsAsync` and then `RunAutoCentreFromHostAsync` — a public alias for the button's
+handler, so preconditions, confirmation and logging are not duplicated. The chain skips the
+centre-find if `_stopRequested` is set, the same rule the limit-find applies to its own auto-home.
 
 **Step-and-settle, always.** Every probe advances in discrete hops and captures with the stage
 **stopped**, so the motor position paired with each frame is exact, and the travel guard is
@@ -972,11 +1074,20 @@ the exposure instant.
 
 | Stage | What it does |
 |---|---|
-| **A** | probe ±Y from the operator's rough centre → bisect for `cy` |
-| **B** | probe ±X from `(roughX, cy)` → bisect for `cx`, giving `C₁` and a **measured** radius |
+| **0** | X and Y to **Home**, then `AUTO_SEED_DY` (+15000, user frame) along Y → the **seed point** |
+| **A** | probe ±Y from the seed point → bisect for `cy` |
+| **B** | probe ±X from `(seedX, cy)` → bisect for `cx`, giving `C₁` and a **measured** radius |
 | **C** | probe the four diagonals from `C₁` → four more rim points |
 | **D** | Pratt-fit all eight; persist centre + radius |
 | **E** | report per-point radial residuals (the fit's own RMS hides one bad point among eight) |
+| **F** | drive to the fitted centre → the run ends with the chuck centred |
+
+Stage 0 (`SeedFromHomeAsync`) is what makes the run fully automatic: Home for X/Y is the centre of
+the *measured* travel and is repeatable, so it replaces the operator's eye as the rough centre, and
+`AUTO_SEED_DY` is the fixed mechanical shift from Home to roughly-over-the-feature on this machine.
+Both moves are verified against a **fresh** `TryReadUserXyNow` within `AUTO_SEED_TOL` (50), because
+every rim point is built against the position read here. **Z is not homed** — it holds the focus the
+detector needs.
 
 Stages A/B are a **re-centring** stage, not the estimator: `TryDetect` returns the rim point
 nearest the *crosshair*, which lies along the ray C→M rather than on the scan line, so with a
@@ -996,32 +1107,40 @@ Guards, in the order they reject:
 
 * **Travel envelope** (`WithinTravel`) — pre-flight against the *stored* Min/Max. The drives'
   own soft limits read a fake ±9999999, so this plus the radius guard is the whole protection.
-* **Radius guard** — abort the direction past `AUTO_GUARD_R` (1.8) × nominal radius. On X this
-  is effectively the **only** crash guard (the +end switch is dead).
+* **Search-radius guard** — abort the direction past the operator's **max search radius** (a flat
+  step count, no multiplier). On X this is effectively the **only** crash guard (the +end switch
+  is dead).
 * **Arrival check** — a fresh `TryReadUserXyNow` (*not* the cached `TryCurrentUser`, which is
   stale for at least one status period after every move) must match the target within `hop/4`.
   This is what catches a move `MoveToAsync` silently rejected — which would otherwise hop in
   place until the guard and report a clean "miss" — and a quick-stop.
 * **Heading check** — a detection behind the probe direction isn't this probe's edge.
-* **Distance band** — wide (`0.2R … 1.8R`) in stages A/B where the start is the operator's eye;
-  tight (`0.7r₁ … 1.3r₁`) in stage C once the radius is measured.
+* **Distance band** — only the **lower** bounds are fractional now: `0.2 × maxR` in stages A/B,
+  `0.7 × r₁` in stage C. Both upper bounds are the flat max search radius, so a detection is
+  rejected on distance for being implausibly *close* to the start, never for being far. That makes
+  the max search radius the single number governing the run — but it also means stage C no longer
+  re-checks a diagonal against the radius the bisection just measured, so a false edge anywhere
+  inside the search radius is accepted.
 * **Two-frame confirmation** — the point must repeat on a second frame *without moving*, so a
   one-frame detector artefact can't enter the fit.
 
 Sizing: **`hop`** is `AUTO_HOP_FRAC` (0.4) of the frame's smaller extent *in step space*,
 computed per run from the live frame through the affine — never cached, because `ZoomFactor` is
 a centred-ROI crop, so the field of view in steps changes with zoom. It must stay well under a
-full frame or the rim can be carried past the camera between captures — and `ChuckEdgeDetector`
-needs a ≥`MinLineLength` (500 px) ridge, so a rim merely clipping a corner does not count as
-seen. **`jump`** (`AUTO_APPROACH_R` = 0.8 × the *measured* radius) skips the empty chuck
+full frame or the boundary can be carried past the camera between captures — and
+`ChuckEdgeDetector` needs a ≥`MinArcLength` (800 px) arc, so a boundary merely clipping a corner
+does not count as seen. **`jump`** (`AUTO_APPROACH_R` = 0.8 × the *measured* radius) skips the empty chuck
 interior in stage C only; it is safe **only** because `C₁` came from the bisection rather than
-the operator's eye.
+a guess. Every probe hops `dist = jump + k·hop`; the four cardinals pass `jump = 0` and so crawl
+outward from the seed point, which is why only the diagonals start with a single large leap.
 
 ### Preconditions and failure behaviour
 
-Refuses to start without the affine, a live camera, enabled+idle drives, and a nominal radius;
-warns if X/Y have no stored travel; and confirms with the operator (roughly centred, focus set,
-**rim not currently in view**). The opening capture does double duty — it sizes the hop *and*
+Refuses to start without the affine, a live camera, enabled+idle drives, and a max search radius.
+A **missing Home on X or Y is a hard error**, not a warning — the run *starts* by homing them, so
+with no Home there is no defined starting point (and since X/Y Home is the centre of the measured
+travel, it is also the check that both limits have been found). Then it confirms with the operator
+(focus set, path to Home clear). The opening capture does double duty — it sizes the hop *and*
 rejects the rim-already-in-view start. A run holds `BeginExternalOp` for its whole duration so
 the main window's manual controls (including the polled analog joystick) can't move the stage
 between a move and the capture paired with it. **Cancel** sets a flag and calls `RequestStop`.
@@ -1065,6 +1184,29 @@ paints the newest finished frame.
 A camera-open failure must never block motion: the toolbar simply shows **Retry camera**, and
 everything drive-side keeps working.
 
+### Captured-bitmap pixel format — the indexed trap
+
+`HalconBitmap.ToBitmap` returns **`Format8bppIndexed` for a 1-channel (mono) frame** and
+`Format24bppRgb` for colour. Indexed is the right choice for the live view — a third of the
+bytes, and the view only ever *paints* it — but **`Graphics.FromImage` refuses any indexed
+format outright**, so every capture-and-annotate path must widen first:
+
+```csharp
+raw = VisionOverlay.EnsureDrawable(raw);   // 24bpp copy if indexed; original disposed
+using var g = Graphics.FromImage(raw);     // now safe
+```
+
+`EnsureDrawable` returns the *same instance* for an already-drawable bitmap, so colour frames
+cost nothing; **the caller must use the returned reference**, since the original is disposed when
+a copy is made. `DrawMarkOverlay`/`DrawEdgeOverlay` return the bitmap for the same reason.
+
+This is camera-dependent and therefore easy to miss: with the previous *colour* acA5472 every
+overlay path worked, and switching to the *mono* acA4024 broke all five at once — the first
+**Add Sample** threw `ArgumentException: A Graphics object cannot be created from an image that
+has an indexed pixel format`. Widening inside `HalconBitmap` instead would tax the live view,
+which converts every frame and never needs a drawable surface; hence the fix sits at the
+annotate sites, which run once per captured frame.
+
 ---
 
 ## 19. Relative moves in physical units (`FrmMain.RelativeMove.cs`)
@@ -1089,17 +1231,55 @@ traverses.
 
 ## 20. Auto limit-find (`FrmMain.Calibration.cs`)
 
-`FindLimitsAsync` (wired to **Y** only — two working switches that quick-stop) runs on a
-background worker with timers paused:
+`FindXyLimitsAsync` is **one unified calibration** covering `AutoFindAxes` = **X and Y** — both
+have a working switch at each end; Z has none and stays manual. It runs on a background worker
+with timers paused, and **both axes move at the same time**.
+
+Per axis (`AxisLimitFind`), the sequence is unchanged:
 
 1. **`ClearAnyActiveLimit`** — if the axis starts *on* a switch, back off first (trying both
    directions, since polarity is unverified), so the search doesn't drive into a switch for its
    whole timeout.
 2. **`JogUntilLimit(+1)`** — jog at `FIND_LIMIT_SPEED`, watching 0x60FD limit bits (0/1) for a
-   **newly-set** bit (direction-agnostic, so a NEG/POS wiring swap is moot), capture 0x6064, stop.
+   **newly-set** bit (direction-agnostic, so a NEG/POS wiring swap is moot), record 0x6064, stop.
 3. **`RecoverAndBackOff(-1)`** — a limit hit leaves the drive in Quick-Stop-Active;
    `EnableDrive(true)` exits it, then jog clear of the switch.
-4. Repeat for the other end. Min/Max = the captured pair; Home = centre.
+4. Repeat for the other end. Min/Max = the recorded pair; Home = centre.
+
+### Running both axes at once on a single-channel bus
+NanoLib is single-channel, so the axes cannot each own a thread. Instead each axis's sequence is
+an **iterator** (`AxisLimitFind.Run`): every step issues its bus traffic and then `yield`s,
+meaning *"I am waiting on the machine — resume me after the next poll tick"*. `RunLimitFinds`
+steps all live sequences round-robin on **one** worker thread and sleeps `FIND_POLL_MS` **once
+per round**. Bus traffic is therefore still strictly serialized — only the motors overlap — and
+because every axis gets exactly one tick per sleep, each phase's millisecond budget stays
+wall-clock accurate.
+
+Failures are **per axis**: a sequence that throws (e.g. `no limit detected within 60s`) is
+dropped with its reason recorded, the axis is stopped, and the others keep running — one bad
+axis never discards the other's measurement. Ends are accumulated in `AxisLimitFind.Ends`, and an
+axis's Min/Max is written only when it holds **both** ends, so a run cut short stores a complete
+pair or nothing. An operator **STOP** (`ThrowIfStopped`) halts *every* axis (`StopAll`) and
+abandons the whole run.
+
+### Auto-home to finish
+`HomeAfterFindAsync` then moves every axis the run calibrated to its new Home (`HomeTargetFor` =
+the centre of the limits just measured), both together, inside the same busy scope — so the
+chuck ends the calibration centred instead of parked just off an end switch, and no separate Go
+Home is needed. It deliberately does **not** retract Z first the way `HomeAllAsync` does: the find
+has just traversed the full X/Y travel at that same Z height, so returning to the centre of that
+travel reaches nothing new. It is skipped entirely after an operator STOP (checked both from the
+caught cancellation and from a live `_stopRequested`, for a STOP pressed as the find was
+finishing) — a stop must never be followed by another unrequested traverse. The limits measured
+before the stop are still saved.
+
+Detection and stopping are **entirely host-side** (poll `0x60FD`, record `0x6064`, `Stop`), so the
+routine does not depend on the drive's own limit reaction and needs no per-axis branch: **Y**
+quick-stops at its switches (`0x3701 = 6`), **X** ignores them (`0x3701 = -1`) and is stopped by
+this loop alone. Two consequences on X: `RecoverAndBackOff`'s `EnableDrive(true)` re-enables an
+axis that was never in Quick Stop (harmless — it is unconditional), and X coasts further past the
+switch than Y before the Stop bites, because its `0x6084` decel ramp is gentler. The *stored*
+limit is unaffected either way — the position is recorded the moment the bit sets, before the Stop.
 
 ---
 
@@ -1158,11 +1338,14 @@ no validation beyond the drive's own — a wrong object or value can change any 
 
 ## 23. Known limitations / open items
 
-* **No drive-side travel protection on X+ or Z.** Probed on hardware: Y has two working limit
-  switches, X only its **−end** (the +end is stuck, which is why X's `0x3701` is `-1` and must
-  **not** be set to 6), and Z has none. `0x607D` reads a fake ±9999999 on all of them. The
-  stored soft limits (§12) plus the auto centre-find's radius guard (§17) are therefore the
-  *only* protection there. A limit hit shows up as **Warning bit 7 + Quick Stop**, not a fault.
+* **No drive-side travel protection on X or Z.** Probed on hardware: Y has two working limit
+  switches and quick-stops on them (`0x3701 = 6`); **X now has a working switch at each end**
+  (the +end was dead when first probed, which is why `0x3701 = -1` was set — with `-1` the drive
+  **ignores** both switches, so X still has no drive-side stop until that is revisited); Z has
+  none. `0x607D` reads a fake ±9999999 on all of them. The stored soft limits (§12) plus the auto
+  centre-find's radius guard (§17) are therefore the *only* protection on X and Z. The host-side
+  limit-find (§20) works on X regardless, since it polls `0x60FD` and stops the axis itself. A
+  drive-side limit hit shows up as **Warning bit 7 + Quick Stop**, not a fault.
 * **Units are still raw drive units.** Positions/velocities are not converted from the factor
   group (0x60A8/0x60A9 + gear/feed/velocity factors). The only physical-unit paths are the
   **hand-entered** `StepsPerMm` (§19) and `ChuckTicksPerRev` for Θ — neither is derived from the
@@ -1272,11 +1455,14 @@ sequenceDiagram
     end
 ```
 
-### 24.3 Auto limit-find (Find Limits, Y)
+### 24.3 Auto limit-find (Find X & Y Limits, one run, both axes together)
 
 Direction-agnostic edge detection on the 0x60FD limit bits, with a Quick-Stop recovery
 between ends (§20). Polarity is unverified, so the search keys off a *newly-set* bit, not a
-specific direction.
+specific direction. The same flow runs for both axes — the drive's own limit reaction differs
+(X ignores its switches) but never enters the routine, which stops the axis itself. One button
+runs X and Y **concurrently**: their sequences are interleaved tick-by-tick on one worker thread,
+so the bus stays serialized while both motors move.
 
 ```mermaid
 sequenceDiagram
@@ -1285,24 +1471,31 @@ sequenceDiagram
     participant FC as FrmCalibration
     participant F as FrmMain.Calibration
     participant M as MultiAxisController
-    participant Y as AxisDriver(Y)
+    participant A as AxisDriver(X and Y)
 
-    U->>FC: Find Limits (Y)
-    FC->>F: FindLimitsAsync(Y)
-    F->>F: Task.Run(FindLimitsCore) — timers paused
-    F->>M: ClearAnyActiveLimit — if parked on a switch, back off (try both dirs)
+    U->>FC: Find X & Y Limits (auto)
+    FC->>F: FindXyLimitsAsync()
+    F->>F: LongRunning worker: RunLimitFinds([X, Y]) — timers paused
 
-    Note over F,Y: end A (direction +1)
-    loop until a NEW 0x60FD bit (0 or 1) sets, or timeout
-        F->>M: JogAt(Y, +1, FIND_LIMIT_SPEED)
-        F->>M: GetDigitalInputs(Y)
+    loop one round per FIND_POLL_MS, until every axis's sequence ends
+        Note over F,A: each live axis takes one turn on the single NanoLib channel
+        F->>M: X — next step (jog / read 0x60FD / record 0x6064 / stop)
+        F->>M: Y — next step
+        F->>F: Thread.Sleep(FIND_POLL_MS)
     end
-    F->>M: GetStatus(Y).Position (capture end A)
-    F->>M: Stop(Y)
-    F->>M: RecoverAndBackOff(-1) — EnableDrive(true) exits Quick-Stop, jog clear
 
-    Note over F,Y: end B — repeat the loop with direction −1, capture end B
-    F->>M: RecoverAndBackOff(+1) — leave Y off the switch
+    Note over F,A: per axis, that sequence is:<br/>ClearAnyActiveLimit (if parked on a switch, back off — try both dirs)<br/>JogUntilLimit(+1) → record end A → Stop<br/>RecoverAndBackOff(−1) — EnableDrive(true) exits Quick-Stop, jog clear<br/>JogUntilLimit(−1) → record end B → Stop<br/>RecoverAndBackOff(+1) — leave the axis off the switch
 
-    F-->>FC: Min=min(A,B), Max=max(A,B), Home=centre → saved to calibration.json
+    alt an axis throws (no limit seen before its timeout)
+        F->>M: Stop(that axis) — it drops out; the other keeps running
+    else operator STOP
+        F->>M: StopAll() — whole run abandoned, auto-home skipped
+    end
+
+    F->>F: per axis with both ends: Min=min(A,B), Max=max(A,B), Home=centre → calibration.json
+
+    Note over F,A: auto-home (unless stopped) — HomeAfterFindAsync, no Z retract
+    F->>M: MoveAbsolute(X, centre) + MoveAbsolute(Y, centre)
+    F->>M: WaitForMotionComplete(X) + (Y)
+    F-->>FC: calibrated and centred
 ```

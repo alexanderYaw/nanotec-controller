@@ -321,19 +321,29 @@ namespace NanotecController
                 shown++;
                 if (sw.ElapsedMilliseconds >= 1000)
                 {
-                    double fps = shown * 1000.0 / sw.ElapsedMilliseconds;
+                    // Two rates: what the camera delivered, and what the UI thread actually painted.
+                    // They diverge exactly when a frame is superseded before ShowPending runs, which
+                    // is the signature of a blocked UI thread — the thing that makes the view judder.
+                    double grabbed = shown * 1000.0 / sw.ElapsedMilliseconds;
+                    double painted = Interlocked.Exchange(ref _paintedFrames, 0) * 1000.0 / sw.ElapsedMilliseconds;
                     sw.Restart(); shown = 0;
-                    try { BeginInvoke(new Action(() => RaiseFps(fps))); }
+                    try { BeginInvoke(new Action(() => RaiseFps(painted, grabbed))); }
                     catch (InvalidOperationException) { return; }   // handle gone (closing)
                 }
             }
         }
 
-        // UI thread: fps + buffer mode, plus the derived pixel size when calibrated — the live
-        // check that the user-entered steps/mm is plausible (risk: a wrong entry skews the ticks).
-        private void RaiseFps(double fps)
+        // Frames actually painted since the last report (UI thread), read by the grab thread.
+        private int _paintedFrames;
+
+        // UI thread: displayed fps + buffer mode, plus the derived pixel size when calibrated — the
+        // live check that the user-entered steps/mm is plausible (risk: a wrong entry skews the ticks).
+        // The grabbed rate is appended only when it runs ahead, i.e. when frames are being dropped.
+        private void RaiseFps(double painted, double grabbed)
         {
-            string text = $"{fps:0.0} fps — {_camera.BufferMode}";
+            string text = grabbed - painted >= 1.0
+                ? $"{painted:0.0} fps (grab {grabbed:0.0}) — {_camera.BufferMode}"
+                : $"{painted:0.0} fps — {_camera.BufferMode}";
             (double mmPerPxCol, double mmPerPxRow)? mm = TickScaleProvider?.Invoke();
             if (mm != null)
                 text += $" — {(mm.Value.mmPerPxCol + mm.Value.mmPerPxRow) * 500.0:0.00} µm/px";
@@ -350,6 +360,7 @@ namespace NanotecController
             Image? old = _liveBox.Image;
             _liveBox.Image = next;
             if (!ReferenceEquals(old, next)) old?.Dispose();
+            Interlocked.Increment(ref _paintedFrames);
 
             // Mirror the frame to any follower view (protocols window). Runs synchronously here on
             // the UI thread while `next` is alive; the follower clones it. Skipped when unsubscribed.

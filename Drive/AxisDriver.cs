@@ -443,6 +443,16 @@ namespace NanotecController
         /// for fast follow loops that don't need the CiA 402 state each tick.</summary>
         public long GetPosition() => ReadPosition();
 
+        /// <summary>State-only read (the other half of <see cref="GetStatus"/>, one SDO
+        /// transaction). The decoded state is display-only and changes far more slowly than the
+        /// position, so <see cref="DrivePoller"/> refreshes it at a fraction of the position rate
+        /// instead of paying for both objects on every poll.</summary>
+        public (string State, bool HasFault) GetState()
+        {
+            long sw = Read(OD_Statusword, "statusword");
+            return (DecodeState(sw), (sw & SW_FAULT) != 0);
+        }
+
         /// <summary>Reads angle + decoded CiA 402 state in one go, for live display.</summary>
         public AxisStatus GetStatus()
         {

@@ -20,9 +20,13 @@ namespace NanotecController
     {
         private NanoLibAccessor? _accessor;
         private BusHardwareId? _adapter;
-        // Bus-hardware scan kept alive between ListBuses() and Connect()/Disconnect(): the
-        // chosen BusHardwareId references it and must stay valid until closeBusHardware.
+        // Bus-hardware scan kept alive between ListBuses() and Connect()/Disconnect().
+        // _busIds is the one that matters: getResult() hands back a vector that OWNS the native
+        // storage, and its elements are NON-owning pointers into it (verified in the SWIG IL), so
+        // letting it be finalized dangles every BusHardwareId in _buses and the next getName() is
+        // an access violation. Holding only _busScan is NOT enough — getResult() returns a copy.
         private ResultBusHwIds? _busScan;
+        private BusHWIdVector? _busIds;
         private readonly List<BusHardwareId> _buses = new();
         private readonly List<DeviceHandle> _handles = new();
         private readonly List<DeviceIdentity> _devices = new();
@@ -50,8 +54,7 @@ namespace NanotecController
             _accessor ??= Nanolib.getNanoLibAccessor();
 
             log.Report("Scanning for network interfaces...");
-            _busScan?.Dispose();
-            _buses.Clear();
+            ReleaseBusScan();
             _busScan = _accessor.listAvailableBusHardware();
             if (_busScan.hasError())
             {
@@ -59,11 +62,12 @@ namespace NanotecController
                 return [];
             }
 
-            BusHWIdVector busIds = _busScan.getResult();
-            var names = new List<string>(busIds.Count);
-            for (int i = 0; i < busIds.Count; i++)
+            // Field, not a local: see _busIds — the entries added to _buses point into it.
+            _busIds = _busScan.getResult();
+            var names = new List<string>(_busIds.Count);
+            for (int i = 0; i < _busIds.Count; i++)
             {
-                BusHardwareId b = busIds[i];
+                BusHardwareId b = _busIds[i];
                 _buses.Add(b);
                 bool ecat = b.getProtocol() == Nanolib.BUS_HARDWARE_ID_PROTOCOL_ETHERCAT;
                 names.Add($"{b.getName()}  ({b.getProtocol()}){(ecat ? "  [EtherCAT]" : "")}");
@@ -195,10 +199,13 @@ namespace NanotecController
             ReleaseBusScan();
         }
 
-        /// <summary>Disposes the cached bus-hardware list (the chosen adapter must be closed first).</summary>
+        /// <summary>Disposes the cached bus-hardware list (the chosen adapter must be closed first).
+        /// Drops the non-owning element proxies BEFORE the vector that owns their storage.</summary>
         private void ReleaseBusScan()
         {
             _buses.Clear();
+            _busIds?.Dispose();
+            _busIds = null;
             _busScan?.Dispose();
             _busScan = null;
         }
