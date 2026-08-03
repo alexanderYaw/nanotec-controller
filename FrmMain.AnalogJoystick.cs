@@ -94,7 +94,7 @@ namespace NanotecController
         // on-screen puck (VisionPadTick) and d-pad (VisionJog) use.
         private void TickAnalogJoystick(DriveSample sample)
         {
-            if (_motion == null || !rbUsb.Checked) return;   // source may have changed since the poll
+            if (_motion == null || !_analogInputOn) return;   // source/focus may have changed since the poll
             bool enabled = ManualInputAllowed;   // also false during an external op (auto centre-find)
 
             if (sample.AnalogError || sample.Analog == null)

@@ -288,7 +288,7 @@ namespace NanotecController
         }
 
         /// <summary>Stops every source of bus traffic outside a drive op: the background poller and
-        /// the on-screen puck's timer. The counterpart of <see cref="RestartTimers"/>.</summary>
+        /// the on-screen puck's timer. The counterpart of <see cref="ResumePolling"/>.</summary>
         private void PausePolling()
         {
             _poller?.Pause();
@@ -296,7 +296,7 @@ namespace NanotecController
         }
 
         /// <summary>Restarts the poller (and the active input source) when connected.</summary>
-        private void RestartTimers()
+        private void ResumePolling()
         {
             if (!_connection.IsConnected) return;
             ResetSoftLimitTracking();   // a move may have happened while paused; rebaseline
@@ -312,16 +312,21 @@ namespace NanotecController
         private void ApplyInputSourcePolling(bool on)
         {
             if (on && rbScreen.Checked) joystickTimer.Start(); else joystickTimer.Stop();
-            if (_poller != null) _poller.PollAnalog = on && rbUsb.Checked;
+            _analogInputOn = on && rbUsb.Checked;
+            if (_poller != null) _poller.PollAnalog = _analogInputOn;
         }
+
+        // Gates the analog path on the UI side too: clearing PollAnalog can't recall a sample already
+        // queued to this thread, and applying one after a focus-loss StopAll would re-command the jog.
+        private bool _analogInputOn;
 
         /// <summary>
         /// Scopes a busy (operation-in-progress) section. Construction sets <c>_busy</c> and
-        /// refreshes the buttons; Dispose clears <c>_busy</c>, restarts the timers, and refreshes
+        /// refreshes the buttons; Dispose clears <c>_busy</c>, resumes polling, and refreshes
         /// again. Use as <c>using var busyScope = BeginBusy();</c> at the top of a drive op so the
-        /// clear/restart runs even if the op throws — centralizing an invariant that was previously
-        /// hand-copied (and skippable) in every op. (Timer pausing stays with the op: RunDriveOp or
-        /// the explicit statusTimer/joystickTimer.Stop() calls; Dispose only restarts.)
+        /// clear/resume runs even if the op throws — centralizing an invariant that was previously
+        /// hand-copied (and skippable) in every op. (Pausing stays with the op: RunDriveOp or the
+        /// explicit PausePolling() calls; Dispose only resumes.)
         /// </summary>
         private BusyScope BeginBusy() => new(this);
 
@@ -331,7 +336,7 @@ namespace NanotecController
             // Clear any stale Stop request as the op begins, so the Stop button (enabled while busy)
             // only cancels THIS op. RefreshButtons then enables the Stop button and greys the rest.
             public BusyScope(FrmMain f) { _f = f; f._stopRequested = false; f._busy = true; f.RefreshButtons(); }
-            public void Dispose() { _f._busy = false; _f.RestartTimers(); _f.RefreshButtons(); }
+            public void Dispose() { _f._busy = false; _f.ResumePolling(); _f.RefreshButtons(); }
         }
 
         /// <summary>

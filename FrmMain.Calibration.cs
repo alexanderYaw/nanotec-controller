@@ -154,7 +154,7 @@ namespace NanotecController
         private FrmPosition? _posWindow;
         private Button positionButton = null!;
 
-        // Last polled RAW position per axis (written in statusTimer_Tick); read in the USER
+        // Last polled RAW position per axis (written in OnDriveSample); read in the USER
         // frame via TryCurrentUser. Cleared with the soft-limit tracking so no stale dot shows.
         private readonly Dictionary<AxisId, long> _lastPos = new();
 
@@ -198,9 +198,9 @@ namespace NanotecController
 
         /// <summary>
         /// Reads X and Y from the drives RIGHT NOW (USER frame), bypassing the <see cref="_lastPos"/>
-        /// cache, and refreshes that cache. The cache is fed by statusTimer, which RunDriveOp stops for
-        /// the duration of every drive op and only restarts on BusyScope.Dispose — so for at least one
-        /// timer period after an awaited move it still holds the PRE-MOVE position. The manual
+        /// cache, and refreshes that cache. The cache is fed by DrivePoller, which RunDriveOp pauses for
+        /// the duration of every drive op and only resumes on BusyScope.Dispose — so for at least one
+        /// poll period after an awaited move it still holds the PRE-MOVE position. The manual
         /// centre-find never noticed (the operator clicks with the stage long parked), but the auto
         /// centre-find pairs a position with a freshly-grabbed frame: a stale M would build every rim
         /// point E = M + A·(p_cross − p_edge) against the wrong place. False if the link is down, an

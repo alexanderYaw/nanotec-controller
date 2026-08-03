@@ -212,7 +212,7 @@ flowchart TB
 
 | Folder | Files | Role |
 |---|---|---|
-| **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `SoftLimitTracker.cs`, `DriveDiagnostics.cs` | The motion stack: types, link, per-axis CiA 402, shared API, the soft-limit state machine, diagnostics. |
+| **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `DrivePoller.cs`, `SoftLimitTracker.cs`, `DriveDiagnostics.cs` | The motion stack: types, link, per-axis CiA 402, shared API, the background read poller, the soft-limit state machine, diagnostics. |
 | **`Input/`** | `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | The on-screen analog puck, and the Position Map grid control + its window. (The physical joystick is **analog, wired into the drives** — see §11 — so there is no HID reader here.) |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits / home / steps-per-mm / vision-calibration store and its UI window. |
 | **`Vision/`** | `VisionCamera.cs`, `VisionViewControl.cs`, `IVisionFrameSource.cs`, `HalconBitmap.cs`, `FrmVisionProtocols.*.cs`, detectors (`SolidCircleDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | The HALCON camera, the embeddable live-view control + the frame-source interface windows share, the protocols window (split into partials), the edge/fiducial detectors, and the calibration / centre-find vision logic plus overlay and jog-velocity helpers. |
@@ -448,28 +448,61 @@ other (NanoLib is single-channel per device). Callers must serialize — see §1
 
 ---
 
-## 10. GUI threading & timer model
+## 10. GUI threading & the drive poller
 
-Two `System.Windows.Forms.Timer`s, both firing on the **UI thread** (so they never overlap
-each other):
+**No drive read runs on the UI thread.** `DrivePoller` (`Drive/DrivePoller.cs`) owns a
+dedicated background thread and pushes each result to the UI thread as a `DriveSample`;
+`FrmMain.OnDriveSample` consumes it (axis readouts, soft-limit guard, analog joystick).
 
-* **`statusTimer` (200 ms)** — reads each axis's position + state into its row and runs the
-  soft-limit guard.
-* **`joystickTimer` (50 ms)** — polls the active joystick and applies it (send-on-change).
+This was not always so, and the reason it changed is worth keeping: both polls used to be
+`System.Windows.Forms.Timer`s running on the UI thread — a 200 ms `GetStatus` sweep (2 SDOs ×
+4 axes) plus a 50 ms 3-pot joystick read, about **100 blocking SDO round-trips per second on
+the thread that paints**. Each one stalls the message pump for its round-trip, so the live
+camera view visibly juddered *while jogging* but stayed smooth during a preplanned move —
+because those pause the polls and run on a worker, leaving the UI thread free. Moving the
+polling off the UI thread gives manual jogging the same freedom. The UI thread keeps only the
+**commands** (press/release), where exact ordering matters and the traffic is send-on-change.
+
+Poller cadence, per 50 ms tick:
+
+| What | Rate | Cost |
+|---|---|---|
+| Analogue inputs (3 pots), while `PollAnalog` | every tick | 3 SDO |
+| Positions (`GetPosition`, all axes) | every 4th tick (200 ms) | 4 SDO |
+| Statuswords (`GetState`, all axes) | every 3rd position poll (600 ms) | 4 SDO |
+
+Splitting `GetStatus` into `GetPosition` + `GetState` is what halves the old cost: the decoded
+CiA 402 state is display-only and changes far more slowly than the position, so it no longer
+pays the position's rate. Idle (no joystick) went from 40 to ~25 SDO/s.
+
+Samples are **newest-only** — one the UI hasn't taken yet is superseded rather than queued, so
+a busy UI thread can never build a backlog. `Positions`/`States` are carried forward in every
+sample, so a superseded one loses no value.
+
+Serialization is by **`MultiAxisController`'s channel lock**: NanoLib is single-channel per
+device, so every method there takes it, which is what makes the poller thread and the UI
+thread safe against each other. It is re-entrant, so the multi-step ops nest on one thread.
 
 Longer drive operations (enable/disable, Home, Find, Move, rotate) run on a **background
-thread** via **`RunDriveOp`**, which **pauses both timers first** so the worker has the single
-NanoLib channel to itself. It uses `TaskCreationOptions.LongRunning` rather than `Task.Run`,
+thread** via **`RunDriveOp`**, which calls **`PausePolling()`** first. That is *not* needed for
+correctness — the lock covers it — but so the poller neither parks on the lock for the whole op
+nor adds bus traffic to the timing-sensitive rotate follow loop. It uses
+`TaskCreationOptions.LongRunning` rather than `Task.Run`,
 because these ops sleep for their whole duration (up to minutes) and would otherwise mislead
 the thread pool's injection heuristic. Its `catch`-all is the last line of defence: it
 best-effort `StopAll`s before reporting, so an op that threw outside its own `finally` can't
 leave an axis under a velocity command.
 
+One `System.Windows.Forms.Timer` survives: **`joystickTimer` (50 ms)** now drives *only* the
+on-screen puck, which reads a UI control and needs no bus traffic. `ApplyInputSourcePolling`
+routes the selected input to its ticker — puck to the timer, analog joystick to the poller's
+`PollAnalog` — so the two are started and stopped in one place.
+
 Three scopes coordinate the UI:
 
 * **`BeginBusy()`** (`using var busyScope = BeginBusy();`) sets `_busy`, clears any stale stop
-  request, and on `Dispose` clears `_busy`, restarts the timers, and refreshes the buttons —
-  so the invariant runs even when the op throws. `RestartTimers` re-baselines soft-limit
+  request, and on `Dispose` clears `_busy`, resumes polling, and refreshes the buttons —
+  so the invariant runs even when the op throws. `ResumePolling` re-baselines soft-limit
   tracking first.
 * **`BeginExternalOp(what)`** latches `_externalBusy` for a **sequence** of awaited drive ops
   driven from another window (the auto centre-find, §17). Between those ops `_busy` is false,
@@ -521,7 +554,8 @@ so an axis a limit hit left in Quick-Stop can be jogged back off the switch.
 ### Analog joystick (`FrmMain.AnalogJoystick.cs`)
 The physical joystick is **analog, wired directly into the drives' I/O — not a USB HID
 device**, so there is no HID reader in the app. Each pot is read as **analogue input 1
-(0x3220:01)** of the drive it is wired to, on the 50 ms `joystickTimer`:
+(0x3220:01)** of the drive it is wired to, by `DrivePoller` on its 50 ms tick (§10) and applied
+on the UI thread from `OnDriveSample`:
 
 | Pot | Read from | Commands |
 |---|---|---|
@@ -574,7 +608,7 @@ it is unit-testable on its own. `FrmMain` performs the actual `Stop` and the log
 cooperating mechanisms, both polarity-agnostic (they never assume which way positive velocity
 moves the encoder):
 
-### Reactive stop — `Evaluate(id, pos, calib, drivesEnabled)` (in the 200 ms poll)
+### Reactive stop — `Evaluate(id, pos, calib, drivesEnabled)` (in the 200 ms position poll)
 Infers travel direction from the **position delta** (`pos - prevPos`). It returns
 `Decision(Stop, Log)` — stop only when the axis is **at/beyond a stored Min/Max AND still
 moving further out**, so jogging back into range is always allowed. The log line fires once per
@@ -654,8 +688,8 @@ through `FrmMain` in the **USER frame**:
   also swaps Min/Max, so the limits are re-sorted before returning). `PositionGrid` therefore
   never re-implements the Y flip — it just renders whatever user-frame numbers it's handed, and
   `MoveToAsync`'s own `TryCoord` flips the entered Y back to raw.
-* The live position is served from **`_lastPos`**, a raw-per-axis cache the 200 ms status poll
-  fills and `ResetSoftLimitTracking` clears. The window's own **250 ms** timer reads it and also
+* The live position is served from **`_lastPos`**, a raw-per-axis cache the 200 ms position poll
+  fills (via `OnDriveSample`) and `ResetSoftLimitTracking` clears. The window's own **250 ms** timer reads it and also
   reflects `CanMoveCalibration` onto the **Go** button.
 
 `PositionGrid` is a self-contained `Control`: a filled current-position dot + a hollow target
