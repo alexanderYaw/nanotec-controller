@@ -217,7 +217,9 @@ namespace NanotecController
             var autoLabel = new Label { Text = "Auto chuck centre-find", Location = new Point(700, 506), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             var autoRadiusLabel = new Label { Text = "Max R (steps):", Location = new Point(700, 532), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
-            _autoRadius.Location = new Point(792, 529);
+            // x=806: the AutoSize label above measures 100 px wide (700..800), so anything
+            // earlier than 800 is overlapped by it.
+            _autoRadius.Location = new Point(806, 529);
             _autoRadius.Size = new Size(110, 22);
             _autoRadius.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 

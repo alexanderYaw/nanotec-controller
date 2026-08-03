@@ -58,7 +58,7 @@ The window has a **left column** (all motion controls) and a **right column** (t
 | **Connection LED + status** | Red = disconnected, **green** = connected, **amber** = busy (an operation is running). |
 | **Connect / Disconnect** | Open or close the link to all drives. |
 | **Parameters…** | Opens the parameters window: a read-only dump of each drive's limits, unit/scaling and motion-state objects, plus an **expert** option to write objects (RAM) or save to NV (see §12). |
-| **Calibration…** | Opens a small menu with two entries: **Axes — travel limits & home** (see §8) and **Vision — camera scale & centres** (see §10). |
+| **Calibration…** | Opens a small menu: **Axes — travel limits & home** (see §8), **Vision — camera scale & centres** (see §10), and **Home & centre chuck (auto)**, which runs the first window's X+Y limit-find and then the second's automatic chuck centre-find, back to back (see §10.3). |
 | **Enable All / Disable All** | Energise / de-energise all drives. |
 | **Home All** | Retract Z, then send X & Y to their home positions (see §8). |
 | **STOP** (big red) | Aborts a **preplanned move in progress** — Home All, Go Home, Move To, a relative move, a rotation, Find X & Y Limits. Live only while an operation is running; jogging needs no STOP because it is momentary. |
@@ -317,19 +317,28 @@ alternative: jog the edge onto the crosshair by eye and record the position dire
 **Delete Selected** a bad point or **Clear Edges** and start over. Then **Compute Centre**, and
 **Go to Centre** to drive there. The result is saved and reloaded on the next run.
 
-**3. Auto chuck centre-find** (does step 2 for you). Rough-centre the chuck by hand, set focus,
-type the **nominal chuck radius in steps**, and press **Auto Centre-Find**. The stage probes
-outward in eight directions, returning to the centre between each, and fits the result. Before
-starting, confirm the three things it asks: the chuck is roughly centred, Z/focus is set so the
-edge is sharp, and **the rim is not already in view**. The log pane is the transcript of the
-run — which directions found an edge and where. **Cancel** stops it; a cancelled or aborted run
-**discards its points** rather than leaving a half-collected set.
+**3. Auto chuck centre-find** (does step 2 for you, and finds its own starting point). Set focus,
+type the **max search radius in steps**, and press **Auto Centre-Find**. The stage sends X and Y
+to **Home**, moves a fixed offset along Y to land roughly over the chuck, probes outward in eight
+directions returning to the centre estimate between each, fits the result, and finally **drives to
+the centre it just found**. Before starting, confirm what it asks: Z/focus is set so the edge is
+sharp, and the path from here to Home is clear. The log pane is the transcript of the run — which
+directions found an edge and where. **Cancel** stops it; a cancelled or aborted run **discards its
+points** rather than leaving a half-collected set.
 
-> **Safety:** this is the one automatic feature that drives the table on its own. It aborts any
-> direction that travels past **1.8 × the radius you typed**, and never commands a target
-> outside the stored X/Y travel limits. If X/Y have no limits set, that radius guard is the
-> *only* backstop — it warns you before running. **Z is never moved.** Type the radius
-> carefully; too large a value means a longer runaway before the guard fires.
+Because the run *starts* at Home, **X and Y must already have their limits found** — Home for
+those axes is the centre of the measured travel. If either has no Home the run refuses outright
+and tells you to do the limit-find first.
+
+**Calibration… → Home & centre chuck (auto)** does both halves in one press: the X+Y limit-find
+(§8), then this centre-find. It confirms once up front, and the centre-find still asks its own
+confirmation before it moves. Pressing **STOP** during the limit-find cancels the centre-find too.
+
+> **Safety:** this is the one automatic feature that drives the table on its own. It never
+> commands a target outside the stored X/Y travel limits, and it aborts any direction that travels
+> past **the max search radius you typed** — that number is now the single limit on both how far a
+> probe may travel and how far out a detection is still believed, so type it carefully. **Z is
+> never moved.**
 
 **4. Wafer centre-find.** The same flow as the chuck (**Add Wafer Edge** → **Compute Centre** →
 **Go to Centre**) but detecting the wafer rim, kept as a separate stored centre.

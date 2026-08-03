@@ -241,6 +241,15 @@ namespace NanotecController
 
         // --- Orchestration ----------------------------------------------------------
 
+        /// <summary>
+        /// Starts the automatic chuck centre-find from OUTSIDE this window — the main window's
+        /// unified "Home &amp; centre chuck" chain. Deliberately just the Run button's own handler, so
+        /// there is ONE run path: the same preconditions, the same confirmation dialog, the same
+        /// log pane. A no-op if a run is already live. The window must be visible for the operator
+        /// to read that log, which is the caller's job.
+        /// </summary>
+        public Task RunAutoCentreFromHostAsync() => RunAutoCentreAsync();
+
         private async Task RunAutoCentreAsync()
         {
             if (_autoRunning) return;

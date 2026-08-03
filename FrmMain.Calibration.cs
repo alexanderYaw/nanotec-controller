@@ -10,13 +10,57 @@ namespace NanotecController
     // pure UI that calls these internal methods): Home All, Move To, Set Min/Max/Home
     // capture, Go Home, and the unified X+Y auto limit-find. FrmMain is the single owner
     // because NanoLib is single-channel and access must be serialized. (Partial of FrmMain.)
+    //
+    // Self-contained: the calibration store, the fixed home/find speeds and the poll/timeout
+    // ceilings are all declared at the top of this file, not in FrmMain.cs.
     public partial class FrmMain
     {
+        // --- Tuning constants -----------------------------------------------------
+        // Everything the calibration motion is tuned by lives here rather than in FrmMain.cs,
+        // so a speed or ceiling can be changed without leaving the file that uses it.
+
+        // Speed for the automatic limit-find (X, Y), in drive velocity units. Kept low so the
+        // approach into the switch is gentle; the edge POSITION is captured the moment the bit
+        // sets, so physical overshoot doesn't bias the stored limit, and it cancels in the
+        // centre calc anyway. It still matters mechanically on X, which (0x3701 = -1) does not
+        // quick-stop itself and has a gentler decel ramp than Y, so it coasts further past the
+        // switch before this loop's Stop takes effect.
+        private const int FIND_LIMIT_SPEED = 5000;
+        // Limit-find polling + ceilings.
+        private const int FIND_POLL_MS = 15;
+        // Per end: fail rather than run forever. Doubles as the arrival ceiling for every
+        // preplanned move in the app (Home All, Move To, Go Home, the relative Θ move) — one
+        // generous wall-clock bound, since none of them should ever take a minute.
+        private const int FIND_TIMEOUT_MS = 60000;
+        private const int BACKOFF_TIMEOUT_MS = 5000; // backing off a switch should be quick
+        private const long SW_LIMIT_BITS = 0x3;      // 0x60FD bits 0 (neg) + 1 (pos)
+
+        // Fixed velocities for Go Home / Home All (drive velocity units) — NOT the runtime
+        // jog sliders, so homing is always at a known, repeatable speed.
+        private const int HOME_SPEED_X = 5000;
+        private const int HOME_SPEED_Y = 5000;
+        private const int HOME_SPEED_Z = 400;
+
+        private static int HomeSpeedFor(AxisId id) => id switch
+        {
+            AxisId.X => HOME_SPEED_X,
+            AxisId.Y => HOME_SPEED_Y,
+            AxisId.Z => HOME_SPEED_Z,
+            _ => HOME_SPEED_Z,   // conservative default (Theta is never homed)
+        };
+
+        // Per-axis travel limits + Home, persisted to disk (survives restarts). Owned here (the
+        // Calibration property below is its only public surface) but read by most of the other
+        // partials — the vision affine, chuck centre and rotation handedness live in it too.
+        // Assigned in the FrmMain ctor, which can log a load failure.
+        private readonly CalibrationStore _calib;
+
         // --- Calibration (chooser → two separate windows) -------------------------
         // The button now offers a choice: the axis travel-limits/home window, or the vision
         // camera-scale + centre-find window (which is fed the main-screen camera).
 
         private ContextMenuStrip? _calibMenu;
+        private FrmCalibration? _calibWindow;
         private FrmVisionProtocols? _visionProtocolsFromCalib;
 
         private void calibButton_Click(object? sender, EventArgs e)
@@ -37,12 +81,67 @@ namespace NanotecController
             });
             menu.Items.Add("Vision — camera scale && centres…", null, (s, e) =>
             {
-                if (_visionProtocolsFromCalib == null || _visionProtocolsFromCalib.IsDisposed)
-                    _visionProtocolsFromCalib = new FrmVisionProtocols(this, _visionView) { Owner = this };
-                _visionProtocolsFromCalib.Show();
-                _visionProtocolsFromCalib.BringToFront();
+                ShowVisionProtocols();
+            });
+            menu.Items.Add(new ToolStripSeparator());
+            // The third item is not a window — it RUNS the two auto routines the first two windows
+            // expose, back to back, which is the whole cold-start: undefined stage → limits and Home
+            // measured → chuck centred.
+            menu.Items.Add("Home && centre chuck (auto)", null, async (s, e) =>
+            {
+                await HomeAndCentreChuckAsync();
             });
             return menu;
+        }
+
+        // Opens (or re-focuses) the single vision window instance. Shared by the menu item and the
+        // unified chain below, which needs the window up so the operator can read its run log.
+        private FrmVisionProtocols ShowVisionProtocols()
+        {
+            if (_visionProtocolsFromCalib == null || _visionProtocolsFromCalib.IsDisposed)
+                _visionProtocolsFromCalib = new FrmVisionProtocols(this, _visionView) { Owner = this };
+            _visionProtocolsFromCalib.Show();
+            _visionProtocolsFromCalib.BringToFront();
+            return _visionProtocolsFromCalib;
+        }
+
+        /// <summary>
+        /// The unified cold start: the auto X+Y limit-find (which ends by sending both axes to the
+        /// Home it just measured), then the automatic chuck centre-find.
+        ///
+        /// This only ORDERS the two runs — both are the same entry points their own windows call, so
+        /// each keeps its own preconditions, confirmation, motion guards and logging. In particular
+        /// the centre-find re-checks that X and Y have a Home and refuses if they do not, so a
+        /// limit-find that measured nothing cannot roll on into a scan from an undefined start.
+        /// </summary>
+        private async Task HomeAndCentreChuckAsync()
+        {
+            if (!CanMoveCalibration) return;
+
+            if (MessageBox.Show(this,
+                    "Home & centre chuck — the full automatic sequence.\r\n\r\n" +
+                    "1. Find X + Y limits: drives BOTH axes into their end switches, stores Min/Max, " +
+                    "then sends them to the new Home (the centre of that travel).\r\n\r\n" +
+                    "2. Automatic chuck centre-find: probes the chuck edge in 8 directions and leaves " +
+                    "the stage sitting on the fitted centre.\r\n\r\n" +
+                    "Step 2 asks for its own confirmation before it moves, and needs the camera " +
+                    "streaming, the camera-scale calibration done, and Z focused on the chuck edge.\r\n\r\n" +
+                    "Confirm the X/Y path is clear, then proceed?",
+                    "Home & centre chuck", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
+            await FindXyLimitsAsync();
+
+            // A STOP during the limit-find must not be followed by another unrequested traverse —
+            // the same rule FindXyLimitsAsync applies to its own auto-home step.
+            if (_stopRequested)
+            {
+                AppendLog("Home & centre: chuck centre-find SKIPPED (the limit-find was stopped).");
+                return;
+            }
+
+            AppendLog("Home & centre: limit-find done, starting the automatic chuck centre-find...");
+            await ShowVisionProtocols().RunAutoCentreFromHostAsync();
         }
 
         private async void homeAllButton_Click(object? sender, EventArgs e) => await HomeAllAsync();

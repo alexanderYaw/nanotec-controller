@@ -12,7 +12,10 @@ point in each, fits the centre, and returns to it — with no jogging at all. Th
 is the max search radius.
 
 **This is implemented.** It ships as the *Auto Centre-Find* controls in the vision protocols
-window; the code is `Vision/FrmVisionProtocols.AutoCentre.cs`. This page explains *why* it is
+window; the code is `Vision/FrmVisionProtocols.AutoCentre.cs`. It can also be started from the main
+window's **Calibration… → Home & centre chuck (auto)**, which runs `FindXyLimitsAsync` and then this
+routine via `RunAutoCentreFromHostAsync` — a thin alias for the Run button's own handler, so both
+entry points share one run path (same preconditions, confirmation and log). This page explains *why* it is
 shaped the way it is — starting with the **edge detector**, which both the manual and the
 automatic flow share and whose behaviour dictates the shape of the scan. The developer guide's
 **§17** documents the as-built automation, and the user guide's **§10** the operator procedure.

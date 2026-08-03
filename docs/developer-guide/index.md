@@ -247,6 +247,11 @@ full mutual access to every field and method:
   auto-centring, and the RAW / VISION dispatch (including twist → rotate-about-crosshair).
 * `FrmMain.Calibration.cs` — Home All, Move To, limit capture/find, Go Home, plus the
   Position Map window's data feed (position cache + USER-frame accessors + open-button).
+  Self-contained: the `CalibrationStore` field, the fixed home/find speeds (`HOME_SPEED_*`,
+  `FIND_LIMIT_SPEED`) and the poll/timeout ceilings (`FIND_POLL_MS`, `FIND_TIMEOUT_MS`,
+  `BACKOFF_TIMEOUT_MS`, `SW_LIMIT_BITS`) are declared at the top of this file, not in
+  `FrmMain.cs`. `FIND_TIMEOUT_MS` doubles as the arrival ceiling for every preplanned move
+  in the app, so `FrmMain.RelativeMove.cs` reaches across for it.
 * `FrmMain.RelativeMove.cs` — physical-unit relative moves (mm / °) and the go-to-stored-centre
   buttons.
 * `FrmMain.Params.cs` — the per-axis parameter read-out plus the object write / save-to-NV host
@@ -1000,10 +1005,16 @@ nearest point. Tuning mirror: `Halcon/wafer center.hdev`.
 ## 17. Automatic chuck centre-find (`Vision/FrmVisionProtocols.AutoCentre.cs`)
 
 The same points and the same Pratt fit as §16 — collected by the **stage** instead of by the
-operator's hand on the jog. The operator roughly centres the chuck once, enters the nominal
-radius, and the run probes outward in **eight** directions. Nothing here replaces the maths;
-it is purely orchestration, and it feeds the same `_chuckFinder` and calls the same
-`ComputeCentre`.
+operator's hand on the jog. The run finds its own starting point (X/Y Home plus a fixed offset),
+probes outward in **eight** directions, and ends by driving to the centre it fitted. The only
+operator input is the **max search radius**. Nothing here replaces the maths; it is purely
+orchestration, and it feeds the same `_chuckFinder` and calls the same `ComputeCentre`.
+
+Two entry points, one run path: the window's own **Auto Centre-Find** button, and the main
+window's **Calibration… → Home & centre chuck (auto)** (`FrmMain.HomeAndCentreChuckAsync`), which
+chains `FindXyLimitsAsync` and then `RunAutoCentreFromHostAsync` — a public alias for the button's
+handler, so preconditions, confirmation and logging are not duplicated. The chain skips the
+centre-find if `_stopRequested` is set, the same rule the limit-find applies to its own auto-home.
 
 **Step-and-settle, always.** Every probe advances in discrete hops and captures with the stage
 **stopped**, so the motor position paired with each frame is exact, and the travel guard is
@@ -1015,11 +1026,20 @@ the exposure instant.
 
 | Stage | What it does |
 |---|---|
-| **A** | probe ±Y from the operator's rough centre → bisect for `cy` |
-| **B** | probe ±X from `(roughX, cy)` → bisect for `cx`, giving `C₁` and a **measured** radius |
+| **0** | X and Y to **Home**, then `AUTO_SEED_DY` (+15000, user frame) along Y → the **seed point** |
+| **A** | probe ±Y from the seed point → bisect for `cy` |
+| **B** | probe ±X from `(seedX, cy)` → bisect for `cx`, giving `C₁` and a **measured** radius |
 | **C** | probe the four diagonals from `C₁` → four more rim points |
 | **D** | Pratt-fit all eight; persist centre + radius |
 | **E** | report per-point radial residuals (the fit's own RMS hides one bad point among eight) |
+| **F** | drive to the fitted centre → the run ends with the chuck centred |
+
+Stage 0 (`SeedFromHomeAsync`) is what makes the run fully automatic: Home for X/Y is the centre of
+the *measured* travel and is repeatable, so it replaces the operator's eye as the rough centre, and
+`AUTO_SEED_DY` is the fixed mechanical shift from Home to roughly-over-the-feature on this machine.
+Both moves are verified against a **fresh** `TryReadUserXyNow` within `AUTO_SEED_TOL` (50), because
+every rim point is built against the position read here. **Z is not homed** — it holds the focus the
+detector needs.
 
 Stages A/B are a **re-centring** stage, not the estimator: `TryDetect` returns the rim point
 nearest the *crosshair*, which lies along the ray C→M rather than on the scan line, so with a
@@ -1039,15 +1059,20 @@ Guards, in the order they reject:
 
 * **Travel envelope** (`WithinTravel`) — pre-flight against the *stored* Min/Max. The drives'
   own soft limits read a fake ±9999999, so this plus the radius guard is the whole protection.
-* **Radius guard** — abort the direction past `AUTO_GUARD_R` (1.8) × nominal radius. On X this
-  is effectively the **only** crash guard (the +end switch is dead).
+* **Search-radius guard** — abort the direction past the operator's **max search radius** (a flat
+  step count, no multiplier). On X this is effectively the **only** crash guard (the +end switch
+  is dead).
 * **Arrival check** — a fresh `TryReadUserXyNow` (*not* the cached `TryCurrentUser`, which is
   stale for at least one status period after every move) must match the target within `hop/4`.
   This is what catches a move `MoveToAsync` silently rejected — which would otherwise hop in
   place until the guard and report a clean "miss" — and a quick-stop.
 * **Heading check** — a detection behind the probe direction isn't this probe's edge.
-* **Distance band** — wide (`0.2R … 1.8R`) in stages A/B where the start is the operator's eye;
-  tight (`0.7r₁ … 1.3r₁`) in stage C once the radius is measured.
+* **Distance band** — only the **lower** bounds are fractional now: `0.2 × maxR` in stages A/B,
+  `0.7 × r₁` in stage C. Both upper bounds are the flat max search radius, so a detection is
+  rejected on distance for being implausibly *close* to the start, never for being far. That makes
+  the max search radius the single number governing the run — but it also means stage C no longer
+  re-checks a diagonal against the radius the bisection just measured, so a false edge anywhere
+  inside the search radius is accepted.
 * **Two-frame confirmation** — the point must repeat on a second frame *without moving*, so a
   one-frame detector artefact can't enter the fit.
 
@@ -1058,13 +1083,16 @@ full frame or the boundary can be carried past the camera between captures — a
 `ChuckEdgeDetector` needs a ≥`MinArcLength` (800 px) arc, so a boundary merely clipping a corner
 does not count as seen. **`jump`** (`AUTO_APPROACH_R` = 0.8 × the *measured* radius) skips the empty chuck
 interior in stage C only; it is safe **only** because `C₁` came from the bisection rather than
-the operator's eye.
+a guess. Every probe hops `dist = jump + k·hop`; the four cardinals pass `jump = 0` and so crawl
+outward from the seed point, which is why only the diagonals start with a single large leap.
 
 ### Preconditions and failure behaviour
 
-Refuses to start without the affine, a live camera, enabled+idle drives, and a nominal radius;
-warns if X/Y have no stored travel; and confirms with the operator (roughly centred, focus set,
-**rim not currently in view**). The opening capture does double duty — it sizes the hop *and*
+Refuses to start without the affine, a live camera, enabled+idle drives, and a max search radius.
+A **missing Home on X or Y is a hard error**, not a warning — the run *starts* by homing them, so
+with no Home there is no defined starting point (and since X/Y Home is the centre of the measured
+travel, it is also the check that both limits have been found). Then it confirms with the operator
+(focus set, path to Home clear). The opening capture does double duty — it sizes the hop *and*
 rejects the rim-already-in-view start. A run holds `BeginExternalOp` for its whole duration so
 the main window's manual controls (including the polled analog joystick) can't move the stage
 between a move and the capture paired with it. **Cancel** sets a flag and calls `RequestStop`.

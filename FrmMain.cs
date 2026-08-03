@@ -23,7 +23,8 @@ namespace NanotecController
     ///   • FrmMain.Connection.cs  — connect/disconnect, enable/disable
     ///   • FrmMain.Jog.cs         — per-axis jog buttons, status poll, soft-limit guard
     ///   • FrmMain.Input.cs       — USB + on-screen joystick input mapping
-    ///   • FrmMain.Calibration.cs — Home All, Move To, limit capture/find, Go Home, Position Map feed
+    ///   • FrmMain.Calibration.cs — Home All, Move To, limit capture/find, Go Home, Position Map
+    ///                              feed; also owns the calibration store and the home/find speeds
     ///   • FrmMain.Params.cs      — drive-parameter read/write/save-to-NV (the FrmParams window's host)
     ///   • FrmMain.Rotation.cs    — rotate-about-crosshair (Θ + X/Y follow loop) and the handedness sign
     ///   • FrmMain.Vision.cs      — opens FrmVision; the drift-corrected vision-jog entry points
@@ -48,37 +49,8 @@ namespace NanotecController
         // The joystick "fast" button multiplier (capped at each axis's slider max).
         private const int FAST_FACTOR = 3;
 
-        // Speed for the automatic limit-find (X, Y), in drive velocity units. Kept low so the
-        // approach into the switch is gentle; the edge POSITION is captured the moment the bit
-        // sets, so physical overshoot doesn't bias the stored limit, and it cancels in the
-        // centre calc anyway. It still matters mechanically on X, which (0x3701 = -1) does not
-        // quick-stop itself and has a gentler decel ramp than Y, so it coasts further past the
-        // switch before this loop's Stop takes effect.
-        private const int FIND_LIMIT_SPEED = 4000;
-        // Limit-find polling + ceilings.
-        private const int FIND_POLL_MS = 15;
-        private const int FIND_TIMEOUT_MS = 60000;   // per end: fail rather than run forever
-        private const int BACKOFF_TIMEOUT_MS = 5000; // backing off a switch should be quick
-        private const long SW_LIMIT_BITS = 0x3;      // 0x60FD bits 0 (neg) + 1 (pos)
-
-        // Fixed velocities for Go Home / Home All (drive velocity units) — NOT the runtime
-        // jog sliders, so homing is always at a known, repeatable speed.
-        private const int HOME_SPEED_X = 4000;
-        private const int HOME_SPEED_Y = 4000;
-        private const int HOME_SPEED_Z = 400;
-
-        private static int HomeSpeedFor(AxisId id) => id switch
-        {
-            AxisId.X => HOME_SPEED_X,
-            AxisId.Y => HOME_SPEED_Y,
-            AxisId.Z => HOME_SPEED_Z,
-            _ => HOME_SPEED_Z,   // conservative default (Theta is never homed)
-        };
-
-        // Per-axis travel limits + Home, persisted to disk (survives restarts). Loaded in
-        // the ctor so a read failure (which silently drops the soft limits) can be logged.
-        private readonly CalibrationStore _calib;
-        private FrmCalibration? _calibWindow;
+        // The limit-find/home speeds, their poll and timeout ceilings, and the calibration
+        // store itself all live in FrmMain.Calibration.cs with the code that uses them.
 
         // Soft-limit jog guard (polarity-agnostic, COMMAND space): tracks the last polled
         // position, parked-at-limit axes, the commanded direction, and the direction refused
@@ -102,6 +74,8 @@ namespace NanotecController
         {
             InitializeComponent();
             _log = new Progress<string>(AppendLog);
+            // Read here, not at the declaration, so a load failure (which silently drops the
+            // soft limits) can be logged once the log ring exists — see the tail of this ctor.
             _calib = CalibrationStore.Load(out string? calibWarning);
             BuildAxisRows();
             BuildPositionButton();
