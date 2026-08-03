@@ -73,11 +73,12 @@ namespace NanotecController
             }
 
             // Go-to-stored-centre shortcuts (chuck / wafer). These drive X/Y to the persisted
-            // user-frame centre; confirm first, since it's an unbounded table traverse.
+            // user-frame centre. Chuck centre goes on the click (it's the routine move between
+            // operations); wafer still confirms, since it's the less-travelled of the two.
             _chuckCentreBtn = new Button { Text = "Move to chuck centre", Location = new Point(14, 168), Size = new Size(206, 32), Enabled = false };
-            _chuckCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("chuck", _calib.ChuckCenterX, _calib.ChuckCenterY);
+            _chuckCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("chuck", _calib.ChuckCenterX, _calib.ChuckCenterY, confirm: false);
             _waferCentreBtn = new Button { Text = "Move to wafer centre", Location = new Point(230, 168), Size = new Size(206, 32), Enabled = false };
-            _waferCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("wafer", _calib.WaferCenterX, _calib.WaferCenterY);
+            _waferCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("wafer", _calib.WaferCenterX, _calib.WaferCenterY, confirm: true);
             group.Controls.Add(_chuckCentreBtn);
             group.Controls.Add(_waferCentreBtn);
 
@@ -186,12 +187,13 @@ namespace NanotecController
             AppendLog(ok ? $"Rotate Θ complete ({start:N0} → {end:N0})." : "Rotate Θ FAILED — see error above.");
         }
 
-        // Confirm, then drive X/Y to a stored USER-frame centre (chuck/wafer) via MoveToAsync.
-        private async Task GoToStoredCentreAsync(string which, long? xUser, long? yUser)
+        // Drives X/Y to a stored USER-frame centre (chuck/wafer) via MoveToAsync, asking first
+        // only when the caller wants it.
+        private async Task GoToStoredCentreAsync(string which, long? xUser, long? yUser, bool confirm)
         {
             if (!CanMoveCalibration) { AppendLog("Move to centre: enable the drives first."); return; }
             if (xUser is not long x || yUser is not long y) { AppendLog($"No {which} centre stored — run the {which} centre-find first."); return; }
-            if (MessageBox.Show(this,
+            if (confirm && MessageBox.Show(this,
                     $"Move the table to the {which} centre?\r\n\r\nX = {x:N0}\r\nY = {y:N0}",
                     $"Move to {which} centre", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
                 return;
