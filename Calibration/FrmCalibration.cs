@@ -159,8 +159,11 @@ namespace NanotecController
             // Steps/mm entry (second row, after the Clear buttons). Filled once from the store;
             // the refresh timer must NOT touch it, or it would overwrite the user mid-typing.
             var mmLabel = new Label { Text = "steps/mm:", Location = new Point(x, row2 + 6), AutoSize = true };
-            Controls.Add(mmLabel);
-            var mmBox = new TextBox { Location = new Point(x + 68, row2 + 2), Size = new Size(90, 24) };
+            Controls.Add(mmLabel);   // add first so it takes the form's Font before it is measured
+            // Start the box past the label's MEASURED width: a hard-coded offset cleared the label
+            // at 100% scaling only, and the label (drawn first, so ahead in z-order) covered the
+            // box at higher display scaling.
+            var mmBox = new TextBox { Location = new Point(x + mmLabel.PreferredSize.Width + gap, row2 + 2), Size = new Size(90, 24) };
             mmBox.Text = _owner.Calibration.For(id).StepsPerMm?.ToString("0.####") ?? "";
             Controls.Add(mmBox);
             x = Math.Max(x, mmBox.Right + gap);

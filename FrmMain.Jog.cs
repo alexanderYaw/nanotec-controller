@@ -72,7 +72,7 @@ namespace NanotecController
             try
             {
                 if (signedVel == 0) { _motion!.Stop(id); _softLimits.RecordCommand(id, 0); }
-                else { _motion!.JogAt(id, Math.Sign(signedVel), Math.Abs(signedVel)); _softLimits.RecordCommand(id, Math.Sign(signedVel)); }
+                else { _motion!.SetJogVelocity(id, Math.Sign(signedVel), Math.Abs(signedVel)); _softLimits.RecordCommand(id, Math.Sign(signedVel)); }
             }
             catch (DriveException ex) { AppendLog($"ERROR: command {id}: {ex.Message}"); }
         }

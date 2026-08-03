@@ -435,6 +435,14 @@ caught at build time, not as a null move later.
 
 * `EnableAll` / `DisableAll` (disable is best-effort, never throws).
 * `JogAt` / `Stop` / `StopAll` (stop paths never throw — they're safety paths).
+* `SetJogVelocity(id, dir, speed)` — the **velocity-vector** entry point (analog joystick,
+  on-screen puck, vision jog), which re-commands on every change. Three SDO writes to arm the
+  axis, then **one** per update while it stays armed, by falling through to `UpdateJogVelocity`
+  instead of re-sending mode + controlword. Arming is tracked in `_jogArmed` **inside the
+  controller** — the only place drive state changes — because a stale entry would skip the
+  halt-clearing controlword and silently swallow a jog. Every path that leaves an axis not
+  jogging (`Stop`, `StopAll`, `DisableAll`, `EnableAll`/`EnableAxis`,
+  `RecoverIfQuickStopped`, `MoveAbsolute`/`MoveRelative`) clears it.
 * `MoveAbsolute` / `MoveRelative` / `WaitForMotionComplete(id, ms, cancel)`.
 * `RecoverIfQuickStopped(id)` — re-enables an axis a limit hit left in Quick-Stop-Active
   (returns whether it had to).
@@ -461,7 +469,13 @@ the thread that paints**. Each one stalls the message pump for its round-trip, s
 camera view visibly juddered *while jogging* but stayed smooth during a preplanned move —
 because those pause the polls and run on a worker, leaving the UI thread free. Moving the
 polling off the UI thread gives manual jogging the same freedom. The UI thread keeps only the
-**commands** (press/release), where exact ordering matters and the traffic is send-on-change.
+**commands**, where exact ordering matters and the traffic is send-on-change — and those are
+kept to one SDO write per update on the hot path (see `SetJogVelocity`, §9).
+
+**Measuring it:** the live view's status line reports the **painted** frame rate, not the
+grabbed one, and appends `(grab N)` only when the camera is running ahead of the UI. Those two
+numbers diverging is the direct symptom of a blocked UI thread — a frame gets superseded before
+`ShowPending` runs. If they agree, the view is as smooth as the camera allows.
 
 Poller cadence, per 50 ms tick:
 

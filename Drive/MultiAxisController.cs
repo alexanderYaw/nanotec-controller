@@ -18,6 +18,11 @@ namespace NanotecController
         private readonly Dictionary<AxisId, AxisDriver> _axes = new();
         private readonly object _channel = new();
 
+        // Axes currently running a profile-velocity jog. Tracked here — the only place that changes
+        // drive state — so it cannot drift; a stale entry would silently swallow a jog (see
+        // SetJogVelocity, which skips the halt-clearing controlword when the axis is already armed).
+        private readonly HashSet<AxisId> _jogArmed = new();
+
         /// <summary>
         /// Builds a controller per axis from the connection's handles.
         /// Throws if a config points at a bus position that wasn't connected, so a
@@ -61,26 +66,32 @@ namespace NanotecController
         public void EnableAll()
         {
             lock (_channel)
+            {
                 foreach (AxisDriver axis in _axes.Values)
                     axis.EnableDrive(true);
+                _jogArmed.Clear();   // the state-machine walk leaves every axis halted
+            }
         }
 
         /// <summary>Enables ONE axis — the way out of Quick-Stop when the caller already knows the
         /// axis is parked there (the limit-find). <see cref="RecoverIfQuickStopped"/> checks first.</summary>
         public void EnableAxis(AxisId id)
         {
-            lock (_channel) Axis(id).EnableDrive(true);
+            lock (_channel) { Axis(id).EnableDrive(true); _jogArmed.Remove(id); }
         }
 
         /// <summary>Stops then disables every axis. Best-effort: never throws.</summary>
         public void DisableAll()
         {
             lock (_channel)
+            {
                 foreach (AxisDriver axis in _axes.Values)
                 {
                     try { axis.StopManualJog(); } catch (DriveException) { }
                     try { axis.EnableDrive(false); } catch (DriveException) { }
                 }
+                _jogArmed.Clear();
+            }
         }
 
         /// <summary>
@@ -97,6 +108,7 @@ namespace NanotecController
                 AxisDriver axis = Axis(id);
                 if (!axis.IsQuickStopped()) return false;
                 axis.EnableDrive(true);
+                _jogArmed.Remove(id);   // the re-enable leaves it halted
                 return true;
             }
         }
@@ -113,9 +125,26 @@ namespace NanotecController
             lock (_channel)
             {
                 AxisDriver axis = Axis(id);
-                if (direction == 0) { axis.StopManualJog(); return; }
+                if (direction == 0) { axis.StopManualJog(); _jogArmed.Remove(id); return; }
                 int sign = Math.Sign(direction) * (axis.Config.InvertDirection ? -1 : 1);
                 axis.StartManualJog(speed * sign);
+                _jogArmed.Add(id);
+            }
+        }
+
+        /// <summary>
+        /// Commands a jog velocity: three SDO writes the first time (mode + target + controlword),
+        /// ONE thereafter while the axis stays armed. The velocity-vector inputs (analog joystick,
+        /// on-screen puck, vision jog) re-command on every change, so on the UI thread this is the
+        /// difference between three writes per update and one. Direction 0 stops (and disarms).
+        /// </summary>
+        public void SetJogVelocity(AxisId id, int direction, int speed)
+        {
+            lock (_channel)
+            {
+                if (direction == 0) { Stop(id); return; }
+                if (_jogArmed.Contains(id)) UpdateJogVelocity(id, direction, speed);
+                else JogAt(id, direction, speed);
             }
         }
 
@@ -151,29 +180,34 @@ namespace NanotecController
 
         public void Stop(AxisId id)
         {
-            lock (_channel) Axis(id).StopManualJog();
+            lock (_channel) { Axis(id).StopManualJog(); _jogArmed.Remove(id); }
         }
 
         /// <summary>Halts all axes. Best-effort: never throws (safety path).</summary>
         public void StopAll()
         {
             lock (_channel)
+            {
                 foreach (AxisDriver axis in _axes.Values)
                 {
                     try { axis.StopManualJog(); } catch (DriveException) { }
                 }
+                _jogArmed.Clear();
+            }
         }
 
         // --- Positioning (Profile Position) ---------------------------------------
 
+        // Both leave the drive in Profile Position, so any velocity jog is over (see _jogArmed).
+
         public void MoveAbsolute(AxisId id, long targetPosition, int profileVelocity)
         {
-            lock (_channel) Axis(id).MoveAbsolute(targetPosition, profileVelocity);
+            lock (_channel) { Axis(id).MoveAbsolute(targetPosition, profileVelocity); _jogArmed.Remove(id); }
         }
 
         public void MoveRelative(AxisId id, long deltaPosition, int profileVelocity)
         {
-            lock (_channel) Axis(id).MoveRelative(deltaPosition, profileVelocity);
+            lock (_channel) { Axis(id).MoveRelative(deltaPosition, profileVelocity); _jogArmed.Remove(id); }
         }
 
         public bool WaitForMotionComplete(AxisId id, int timeoutMs, Func<bool>? cancel = null)
