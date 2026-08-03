@@ -112,6 +112,36 @@ namespace NanotecController
             bool ok = await RunDriveOp(() => _motion.EnableAll());
             _drivesEnabled = ok;
             AppendLog(ok ? "All drives ENABLED." : "Enable FAILED - see error above.");
+            if (ok) WarnIfMachineRestarted();
+        }
+
+        // The X/Y/Z encoder counters are volatile — a controller power cycle zeroes them, which
+        // silently invalidates the stored limits, home and chuck centre (all absolute step counts).
+        // All three reading exactly 0 on the first enable of a session is that signature; a table
+        // left anywhere real never lands on 0,0,0 on all three at once. Runs inside the enable's
+        // BusyScope, so the poller is still paused and this read owns the channel.
+        private bool _restartCheckDone;
+
+        private void WarnIfMachineRestarted()
+        {
+            if (_restartCheckDone || _motion == null) return;
+            try
+            {
+                foreach (AxisId id in (AxisId[])[AxisId.X, AxisId.Y, AxisId.Z])
+                    if (_motion.GetPosition(id) != 0) { _restartCheckDone = true; return; }
+            }
+            catch (DriveException ex)
+            {
+                AppendLog($"WARN: restart check skipped - could not read positions: {ex.Message}");
+                return;   // retry on the next enable rather than assuming either answer
+            }
+
+            _restartCheckDone = true;
+            const string msg = "Machine restart detected, please run full automatic calibration " +
+                               "(Limits and Chuck Centering)";
+            AppendLog(msg);
+            MessageBox.Show(this, msg, "Machine restart detected",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private async void disableButton_Click(object? sender, EventArgs e)
