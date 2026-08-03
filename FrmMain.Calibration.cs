@@ -639,7 +639,7 @@ namespace NanotecController
                 _f.AppendLog($"{Id} starts on a limit switch - backing off before find...");
                 foreach (int away in (int[])[-1, +1])
                 {
-                    Motion[Id].EnableDrive(true);   // exit Quick Stop if a switch parked it there
+                    Motion.EnableAxis(Id);   // exit Quick Stop if a switch parked it there
                     if (!OnLimit) yield break;
                     Motion.JogAt(Id, away, FIND_LIMIT_SPEED);
                     int waited = 0;
@@ -683,7 +683,7 @@ namespace NanotecController
             // Enabled, then jog clear of the switch so the next pass starts off the limit.
             private IEnumerable<bool> RecoverAndBackOff(int awayDir)
             {
-                Motion[Id].EnableDrive(true);
+                Motion.EnableAxis(Id);
                 if (!OnLimit) yield break;
 
                 Motion.JogAt(Id, awayDir, FIND_LIMIT_SPEED);
