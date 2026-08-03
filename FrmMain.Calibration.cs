@@ -453,7 +453,7 @@ namespace NanotecController
         {
             if (!CanMoveCalibration) return;
             using var busyScope = BeginBusy();
-            statusTimer.Stop(); joystickTimer.Stop();
+            PausePolling();
             AppendLog($"Finding {string.Join(" + ", AutoFindAxes)} limits together (auto, speed {FIND_LIMIT_SPEED})...");
 
             var finds = new List<AxisLimitFind>();

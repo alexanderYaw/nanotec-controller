@@ -36,6 +36,8 @@ namespace NanotecController
         private readonly IProgress<string> _log;
 
         private MultiAxisController? _motion;
+        // All drive reads run here, off the UI thread; created on connect, disposed on disconnect.
+        private DrivePoller? _poller;
         private bool _drivesEnabled;
         private bool _busy;
         private int _statusFailures;
@@ -252,11 +254,10 @@ namespace NanotecController
 
         // --- Shared op / timer helpers --------------------------------------------
 
-        /// <summary>Runs a drive op off the UI thread with both timers paused.</summary>
+        /// <summary>Runs a drive op off the UI thread with polling paused.</summary>
         private async Task<bool> RunDriveOp(Action op)
         {
-            statusTimer.Stop();
-            joystickTimer.Stop();
+            PausePolling();
             try
             {
                 // LongRunning, not Task.Run: these ops Thread.Sleep for their whole duration (up to
@@ -286,13 +287,32 @@ namespace NanotecController
             }
         }
 
-        /// <summary>Restarts the status (and joystick, if on) timers when connected.</summary>
+        /// <summary>Stops every source of bus traffic outside a drive op: the background poller and
+        /// the on-screen puck's timer. The counterpart of <see cref="RestartTimers"/>.</summary>
+        private void PausePolling()
+        {
+            _poller?.Pause();
+            ApplyInputSourcePolling(on: false);
+        }
+
+        /// <summary>Restarts the poller (and the active input source) when connected.</summary>
         private void RestartTimers()
         {
             if (!_connection.IsConnected) return;
             ResetSoftLimitTracking();   // a move may have happened while paused; rebaseline
-            statusTimer.Start();
-            if (rbUsb.Checked || rbScreen.Checked) { ResetJoy(); joystickTimer.Start(); }
+            _poller?.Resume();
+            if (rbUsb.Checked || rbScreen.Checked) ResetJoy();
+            ApplyInputSourcePolling(on: true);
+        }
+
+        /// <summary>
+        /// Routes the selected manual input to its ticker. The on-screen puck is pure UI, so it
+        /// keeps the Forms timer; the analog joystick needs pot reads, so it rides the poller.
+        /// </summary>
+        private void ApplyInputSourcePolling(bool on)
+        {
+            if (on && rbScreen.Checked) joystickTimer.Start(); else joystickTimer.Stop();
+            if (_poller != null) _poller.PollAnalog = on && rbUsb.Checked;
         }
 
         /// <summary>
@@ -419,9 +439,9 @@ namespace NanotecController
         // --- Window lifecycle / focus safety --------------------------------------
 
         /// <summary>
-        /// Safety: focus loss halts all motion AND pauses the joystick poll. Stopping the
-        /// timer is essential — a Forms.Timer keeps firing while unfocused, so without this
-        /// the next tick (~50 ms) would re-command the jog right after StopAll.
+        /// Safety: focus loss halts all motion AND pauses the joystick poll. Stopping the poll
+        /// is essential — it keeps ticking while unfocused, so without this the next tick
+        /// (~50 ms) would re-command the jog right after StopAll.
         /// </summary>
         private void FrmMain_Deactivate(object? sender, EventArgs e)
         {
@@ -435,7 +455,7 @@ namespace NanotecController
             // also race the background thread on the single NanoLib channel). The calibration window
             // taking focus is the common trigger here.
             if (_busy) return;
-            joystickTimer.Stop();
+            ApplyInputSourcePolling(on: false);
             if (_motion == null) return;
             try { _motion.StopAll(); } catch (DriveException) { /* best effort */ }
             ResetJoy();
@@ -444,17 +464,19 @@ namespace NanotecController
         /// <summary>Resumes joystick polling when the window regains focus (if it was on).</summary>
         private void FrmMain_Activated(object? sender, EventArgs e)
         {
-            if (_busy) return;   // a running op manages the timers; don't restart mid-op
+            if (_busy) return;   // a running op manages polling; don't restart mid-op
             if (_connection.IsConnected && (rbUsb.Checked || rbScreen.Checked))
             {
                 ResetJoy();
-                joystickTimer.Start();
+                ApplyInputSourcePolling(on: true);
             }
         }
 
         private void FrmMain_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            statusTimer.Stop();
+            // Stop reading the drives before the handles are closed underneath the poller.
+            _poller?.Dispose();
+            _poller = null;
             joystickTimer.Stop();
             // Stop the grab thread BEFORE tearing down the drives/connection: the camera is
             // independent of NanoLib, but shutting it down first keeps teardown ordered and

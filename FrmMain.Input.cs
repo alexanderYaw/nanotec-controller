@@ -25,7 +25,7 @@ namespace NanotecController
             {
                 ResetJoy();
                 if (usb) ResetJoyCentre();   // fresh analog-source select: re-capture the centre once
-                joystickTimer.Start();
+                ApplyInputSourcePolling(on: true);
                 joystickStatusLabel.Text = usb ? "Joystick: idle" : "On-screen: idle";
                 AppendLog(usb
                     ? "Input: analog joystick (wired to the drives; deflect to move, centre to stop)."
@@ -33,15 +33,16 @@ namespace NanotecController
             }
             else
             {
-                joystickTimer.Stop();
+                ApplyInputSourcePolling(on: false);
                 joystickStatusLabel.Text = "Input: off";
             }
         }
 
+        // On-screen puck only — it reads a UI control, so it needs no drive traffic. The analog
+        // joystick's pots are read by DrivePoller and applied from OnDriveSample instead.
         private void joystickTimer_Tick(object? sender, EventArgs e)
         {
-            if (rbScreen.Checked) { TickOnScreen(); return; }   // on-screen puck path
-            if (rbUsb.Checked) { TickAnalogJoystick(); return; }  // analog joystick wired to the drives
+            if (rbScreen.Checked) TickOnScreen();
         }
 
         /// <summary>

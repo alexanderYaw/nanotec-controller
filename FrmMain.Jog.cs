@@ -79,31 +79,42 @@ namespace NanotecController
 
         // --- Live status poll -----------------------------------------------------
 
-        private void statusTimer_Tick(object? sender, EventArgs e)
+        /// <summary>
+        /// Consumes one <see cref="DrivePoller"/> sample on the UI thread: axis readouts, the
+        /// soft-limit guard, and the analog joystick. Bails while an op is running — a sample
+        /// queued just before the pause must not issue a soft-limit Stop into it.
+        /// </summary>
+        private void OnDriveSample(DriveSample s)
         {
-            if (_motion == null) return;
-            try
+            if (_motion == null || _busy) return;
+
+            if (s.Fresh)
             {
-                foreach (AxisId id in _motion.Axes)
+                if (s.Error != null)
                 {
-                    AxisDriver.AxisStatus st = _motion.GetStatus(id);
-                    _lastPos[id] = st.Position;   // cache raw; Position Map reads it in the user frame
-                    long shown = ToUser(id, st.Position);   // user frame (Y inverted) for an intuitive readout
-                    _axisRows[id].Status.Text = $"{shown,12:N0}   {st.State}{(st.HasFault ? "  [Fault]" : "")}";
-                    EnforceSoftLimits(id, st.Position);
+                    _statusFailures++;
+                    if (_statusFailures >= MAX_CONSECUTIVE_READ_FAILURES)
+                    {
+                        PausePolling();
+                        AppendLog($"Lost contact with a drive: {s.Error}");
+                        return;
+                    }
                 }
-                _statusFailures = 0;
-            }
-            catch (DriveException ex)
-            {
-                _statusFailures++;
-                if (_statusFailures >= MAX_CONSECUTIVE_READ_FAILURES)
+                else
                 {
-                    statusTimer.Stop();
-                    joystickTimer.Stop();
-                    AppendLog($"Lost contact with a drive: {ex.Message}");
+                    _statusFailures = 0;
+                    foreach ((AxisId id, long raw) in s.Positions)
+                    {
+                        _lastPos[id] = raw;   // cache raw; Position Map reads it in the user frame
+                        long shown = ToUser(id, raw);   // user frame (Y inverted) for an intuitive readout
+                        (string state, bool fault) = s.States.TryGetValue(id, out var st) ? st : ("-", false);
+                        _axisRows[id].Status.Text = $"{shown,12:N0}   {state}{(fault ? "  [Fault]" : "")}";
+                        EnforceSoftLimits(id, raw);
+                    }
                 }
             }
+
+            if (s.Analog != null || s.AnalogError) TickAnalogJoystick(s);
         }
 
         /// <summary>

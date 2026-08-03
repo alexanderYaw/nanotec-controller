@@ -71,7 +71,8 @@ namespace NanotecController
                 _statusFailures = 0;
                 rbOff.Checked = true;
                 SetState(connected: true, busy: false, $"Connected ({_connection.Handles.Count} axes)");
-                statusTimer.Start();
+                _poller = new DrivePoller(_motion, this, AnalogPotAxes(), OnDriveSample);
+                _poller.Start();
             }
             finally
             {
@@ -81,7 +82,9 @@ namespace NanotecController
 
         private async Task DisconnectAsync()
         {
-            statusTimer.Stop();
+            // Stop reading the drives before the handles are closed underneath the poller.
+            _poller?.Dispose();
+            _poller = null;
             joystickTimer.Stop();
             rbOff.Checked = true;
             SetState(connected: _connection.IsConnected, busy: true, "Disconnecting...");

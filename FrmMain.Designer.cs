@@ -47,7 +47,6 @@ namespace NanotecController
             onscreenHint = new Label();
             axesGroup = new GroupBox();
             axesPanel = new Panel();
-            statusTimer = new System.Windows.Forms.Timer(components);
             joystickTimer = new System.Windows.Forms.Timer(components);
             mainTable.SuspendLayout();
             leftPanel.SuspendLayout();
@@ -366,11 +365,6 @@ namespace NanotecController
             axesPanel.Size = new Size(636, 316);
             axesPanel.TabIndex = 0;
             //
-            // statusTimer
-            //
-            statusTimer.Interval = 200;
-            statusTimer.Tick += statusTimer_Tick;
-            //
             // joystickTimer
             //
             joystickTimer.Interval = 50;
@@ -438,7 +432,6 @@ namespace NanotecController
         private System.Windows.Forms.Label onscreenHint;
         private System.Windows.Forms.GroupBox axesGroup;
         private System.Windows.Forms.Panel axesPanel;
-        private System.Windows.Forms.Timer statusTimer;
         private System.Windows.Forms.Timer joystickTimer;
     }
 }
