@@ -340,8 +340,27 @@ confirmation before it moves. Pressing **STOP** during the limit-find cancels th
 > probe may travel and how far out a detection is still believed, so type it carefully. **Z is
 > never moved.**
 
-**4. Wafer centre-find.** The same flow as the chuck (**Add Wafer Edge** → **Compute Centre** →
-**Go to Centre**) but detecting the wafer rim, kept as a separate stored centre.
+**4. Auto wafer centre-find (Θ scan).** Fully automatic — type the **Wafer Ø (mm)** and press
+**Auto Wafer Centre (Θ)**. There is no point-by-point wafer flow, because the wafer rim is bigger
+than the table's travel: you cannot drive all the way round it. Instead the stage finds one
+reachable spot on the rim and the **chuck turns the wafer a full revolution underneath the camera**,
+re-measuring the rim at each angle. **Samples** is how many angles it visits (24 by default). Expect
+roughly three minutes, nearly all of it Θ turning.
+
+It needs the chuck centre (step 3) and steps/mm on X and Y first, and it refuses to start without
+them. The result panel reports the eccentricity in mm, the fitted radius against your nominal
+diameter, and the fit RMS — a radius well off the nominal usually means the chuck centre is off,
+not the wafer.
+
+> **The wafer is vacuum-held for a reason:** if it slips on the chuck mid-scan, every earlier
+> sample is wrong. The run re-measures its starting angle at the end as a closure check, and if
+> that disagrees it reports the failure and **saves nothing**. Confirm the vacuum is on before
+> starting. **Z is never moved.**
+
+Because the wafer sits slightly off-centre on the chuck, **its centre moves as Θ turns** — up to
+twice the eccentricity between opposite angles. So the scan does not store a single position; it
+stores the offset and works out the right target for whatever angle the chuck is standing at. **Go
+to Centre** is therefore correct at any Θ, with no need to re-scan after rotating.
 
 **5. Rotate about the crosshair.** Needs the camera scale **and** a chuck centre. Run the
 one-time **Sign test** first — it establishes which way a positive Θ move appears on screen and
@@ -364,8 +383,9 @@ Each **Go** stays greyed until the calibration its move needs exists: **steps/mm
 axis (§8), plus the camera scale for VISION X/Y, plus a chuck centre for VISION Θ. Targets go
 through the same range check as everything else.
 
-**Move to chuck centre** / **Move to wafer centre** drive X/Y straight to the stored centre from
-§10. Both ask for confirmation first — they are unbounded table traverses.
+**Move to chuck centre** / **Move to wafer centre** drive X/Y to the centres found in §10. The
+wafer one recomputes its target for the chuck's current Θ, so it stays correct after a rotation.
+Both ask for confirmation first — they are unbounded table traverses.
 
 ---
 

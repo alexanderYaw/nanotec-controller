@@ -75,6 +75,13 @@ namespace NanotecController
 
         private enum ProbeOutcome { Found, Missed, Aborted }
 
+        /// <summary>Which rim <see cref="DetectEdgeAsync"/> looks for. The chuck and wafer edges need
+        /// different detectors (fixed vs adaptive threshold) but the same hop / band / confirm
+        /// machinery, so the target is a field rather than a second copy of ProbeAsync.</summary>
+        private enum AutoTarget { Chuck, Wafer }
+
+        private AutoTarget _autoTarget = AutoTarget.Chuck;
+
         // One detection job's result, carried back off the grab thread. FrameW/FrameH are the LIVE
         // frame size (ZoomFactor is a centred-ROI crop, so this shrinks with zoom) and size the hop.
         private readonly record struct AutoDetection(
@@ -101,11 +108,23 @@ namespace NanotecController
                     HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
                     double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
                     bool found;
-                    ChuckEdgeDetector.EdgePoint edge;
-                    try { found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out edge); }
-                    catch (HOperatorException) { found = false; edge = default; }
+                    double edgeRow = 0, edgeCol = 0;
+                    try
+                    {
+                        if (_autoTarget == AutoTarget.Wafer)
+                        {
+                            found = _waferDetector.TryDetect(frame, crossRow, crossCol, out WaferEdgeDetector.EdgePoint w);
+                            edgeRow = w.Row; edgeCol = w.Column;
+                        }
+                        else
+                        {
+                            found = _edgeDetector.TryDetect(frame, crossRow, crossCol, out ChuckEdgeDetector.EdgePoint c);
+                            edgeRow = c.Row; edgeCol = c.Column;
+                        }
+                    }
+                    catch (HOperatorException) { found = false; }
 
-                    var result = new AutoDetection(found, edge.Row, edge.Column, crossRow, crossCol, fw.D, fh.D);
+                    var result = new AutoDetection(found, edgeRow, edgeCol, crossRow, crossCol, fw.D, fh.D);
                     _view.PostFrameBitmap(frame, flip: false, raw =>
                     {
                         if (IsDisposed) { raw.Dispose(); tcs.TrySetResult(result); return; }
@@ -113,7 +132,7 @@ namespace NanotecController
                         {
                             // Returns the bitmap drawn on — a mono frame is indexed and is
                             // replaced by a drawable copy, so keep the returned reference.
-                            raw = DrawEdgeOverlay(raw, new ChuckEdgeDetector.EdgePoint(result.Row, result.Column), crossRow, crossCol);
+                            raw = DrawEdgeOverlay(raw, result.Row, result.Column, crossRow, crossCol);
                         }
                         else
                         {
@@ -170,7 +189,7 @@ namespace NanotecController
             (double X, double Y) c, (double X, double Y) dir, PixelStepAffine a,
             double guard, double bandLo, double bandHi, double jump, double hop, string label)
         {
-            _status.Text = $"Auto centre-find: probing {label}...";
+            _status.Text = $"{(_autoTarget == AutoTarget.Wafer ? "Wafer Θ scan" : "Auto centre-find")}: probing {label}...";
             if (!WithinTravel(c.X, c.Y, out string cWhy))
             {
                 AutoLog($"{label}: cannot return to the centre estimate — {cWhy}.");
@@ -534,10 +553,12 @@ namespace NanotecController
             _status.Text = "Auto centre-find ABANDONED — points discarded.";
         }
 
+        // Routed by target so a wafer run's probe transcript lands in the wafer pane, not the chuck's:
+        // ProbeAsync and DetectEdgeAsync are shared, so they cannot pick the pane themselves.
         private void AutoLog(string line)
         {
             _status.Text = line;
-            _autoLog.AppendText(line + "\r\n");
+            (_autoTarget == AutoTarget.Wafer ? _waferLog : _autoLog).AppendText(line + "\r\n");
         }
 
         private void CancelAutoCentre()
@@ -553,8 +574,8 @@ namespace NanotecController
         // so a stray click cannot inject a point into the set being collected.
         private void RefreshAutoUi()
         {
-            _autoRunBtn.Enabled = _view.IsCameraOpen && !_autoRunning;
-            _autoRadius.Enabled = !_autoRunning;
+            _autoRunBtn.Enabled = _view.IsCameraOpen && !_autoRunning && !_waferRunning;
+            _autoRadius.Enabled = !_autoRunning && !_waferRunning;
             _autoCancelBtn.Enabled = _autoRunning;
             RefreshEdgeUi();
         }

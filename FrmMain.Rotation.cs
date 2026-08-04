@@ -156,6 +156,35 @@ namespace NanotecController
         }
 
         /// <summary>
+        /// Turns Θ ALONE by <paramref name="deltaDegrees"/> — a plain profile-position move, with no
+        /// X/Y compensation. Deliberately not <see cref="RotateAboutCrosshairAsync"/>: that one drags
+        /// X/Y to pin the point under the crosshair, which for the wafer Θ scan would keep re-viewing
+        /// the SAME piece of rim and yield no new information. Here the stage must stay put so the
+        /// wafer sweeps past the camera. Returns false (logged) if the move did not complete.
+        /// </summary>
+        public async Task<bool> RotateThetaOnlyAsync(double deltaDegrees, int speed)
+        {
+            if (!CanMoveCalibration) { AppendLog("Rotate Θ: needs the drives enabled and idle."); return false; }
+
+            long ticks = CrosshairRotation.DegreesToChuckTicks(deltaDegrees, CrosshairRotation.ChuckTicksPerRev);
+            if (ticks == 0) return true;
+
+            int spd = Math.Clamp(speed, 1, TableAxes.For(AxisId.Theta)?.JogVelocityMax ?? 400);
+            using var busyScope = BeginBusy();
+            bool reached = false;
+            bool ok = await RunDriveOp(() =>
+            {
+                _motion!.RecoverIfQuickStopped(AxisId.Theta);
+                long target = _motion.GetStatus(AxisId.Theta).Position + ticks;
+                _motion.MoveAbsolute(AxisId.Theta, target, spd);
+                reached = WaitOrStop(AxisId.Theta, FIND_TIMEOUT_MS);
+            });
+            if (!ok) AppendLog("Rotate Θ FAILED - see error above.");
+            else if (!reached) AppendLog($"Rotate Θ by {deltaDegrees:F2}° did not report target reached within {FIND_TIMEOUT_MS} ms.");
+            return ok && reached;
+        }
+
+        /// <summary>
         /// Rotates the chuck by <paramref name="deltaDegrees"/> about the crosshair, keeping the
         /// point currently under the crosshair fixed. CONTINUOUS: Θ jogs at a constant velocity
         /// while a fast loop steers X/Y (velocity mode) toward the position that pins the crosshair

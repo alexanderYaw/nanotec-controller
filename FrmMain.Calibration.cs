@@ -228,6 +228,31 @@ namespace NanotecController
         }
 
         /// <summary>
+        /// Reads Θ from the drive RIGHT NOW, bypassing the <see cref="_lastPos"/> cache, for the same
+        /// reason <see cref="TryReadUserXyNow"/> exists: the wafer Θ scan pairs an angle with a
+        /// freshly-grabbed frame, and the cache still holds the pre-rotation angle for at least a poll
+        /// period after each move. Raw drive ticks — fold them through
+        /// <see cref="CrosshairRotation.ChuckTicksToDegrees"/> for a chuck angle, never through the
+        /// motor's ticks/rev.
+        /// </summary>
+        public bool TryReadThetaNow(out long ticks)
+        {
+            ticks = 0;
+            if (!CanCaptureCalibration) return false;
+            try
+            {
+                ticks = _motion!.GetStatus(AxisId.Theta).Position;
+                _lastPos[AxisId.Theta] = ticks;
+                return true;
+            }
+            catch (DriveException ex)
+            {
+                AppendLog($"ERROR: read Θ position: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// An axis's travel limits in the USER frame, or null if both ends aren't set. The Y
         /// negation flips min/max order, so they're re-sorted before returning.
         /// </summary>

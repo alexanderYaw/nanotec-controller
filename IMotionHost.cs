@@ -21,6 +21,9 @@ namespace NanotecController
         bool CanMoveCalibration { get; }
         bool TryCurrentUser(AxisId id, out long user);
         bool TryReadUserXyNow(out long x, out long y);
+        /// <summary>Fresh (uncached) Θ read, in raw drive ticks. Same rationale as
+        /// <see cref="TryReadUserXyNow"/>: the cache is stale for a poll period after every move.</summary>
+        bool TryReadThetaNow(out long ticks);
         (long min, long max)? UserLimits(AxisId id);
         long? HomeTargetFor(AxisId id);
         Task MoveToAsync(string xText, string yText, string zText);
@@ -54,6 +57,9 @@ namespace NanotecController
         void SetRotationSign(int sign);
         Task RotateToAngleAsync(double targetDegrees);
         Task RotateAboutCrosshairAsync(double deltaDegrees);
+        /// <summary>Turns Θ alone, with no X/Y compensation — the wafer Θ scan needs the stage to
+        /// stay put so the rim sweeps past the camera. False if the move did not complete.</summary>
+        Task<bool> RotateThetaOnlyAsync(double deltaDegrees, int speed);
         Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null);
         void StopHoldRotate();
 

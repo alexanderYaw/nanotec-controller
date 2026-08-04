@@ -107,9 +107,11 @@ namespace NanotecController
                     {
                         _lastPos[id] = raw;   // cache raw; Position Map reads it in the user frame
                         long shown = ToUser(id, raw);   // user frame (Y inverted) for an intuitive readout
-                        (string state, bool fault) = s.States.TryGetValue(id, out var st) ? st : ("-", false);
+                        (string state, bool fault, bool quickStopped) =
+                            s.States.TryGetValue(id, out var st) ? st : ("-", false, false);
                         _axisRows[id].Status.Text = $"{shown,12:N0}   {state}{(fault ? "  [Fault]" : "")}";
                         EnforceSoftLimits(id, raw);
+                        AutoRecoverQuickStop(id, quickStopped);
                     }
                 }
             }
@@ -133,11 +135,50 @@ namespace NanotecController
             if (d.Log != null) AppendLog(d.Log);
         }
 
+        // Axes recovered from a quick stop and not yet seen out of it. The poller refreshes the
+        // state at a fraction of the position rate and carries the last value forward in between,
+        // so without this latch the same stale "Quick Stop" would re-trigger the recovery for up
+        // to a couple of position polls after it has already worked.
+        private readonly HashSet<AxisId> _quickStopRecovered = new();
+
+        /// <summary>
+        /// Clears a limit-switch quick stop as soon as the poller sees one, so the axis is jogged
+        /// off the switch instead of sitting dead in Quick-Stop-Active. Only Y's switches actually
+        /// quick-stop the drive (0x3701 = 6); X ignores its switches and Z has none, so before this
+        /// only Y could get stuck — and only on the velocity paths (analog joystick, puck, vision
+        /// jog), which unlike <see cref="StartJog"/> never called RecoverIfQuickStopped.
+        ///
+        /// The re-enable leaves the axis halted and disarmed, so it cannot resume driving into the
+        /// switch; the direction that tripped it is then refused until the operator reverses, or a
+        /// held stick would re-command straight back in and hammer the switch once per poll.
+        /// </summary>
+        private void AutoRecoverQuickStop(AxisId id, bool quickStopped)
+        {
+            if (!quickStopped) { _quickStopRecovered.Remove(id); return; }
+            if (!_drivesEnabled || _motion == null || !_quickStopRecovered.Add(id)) return;
+
+            try
+            {
+                // Re-checks the statusword under the channel lock, so a carried-forward sample for
+                // an axis something else already recovered costs one read and blocks no direction.
+                if (!_motion.RecoverIfQuickStopped(id)) return;
+                bool blocked = _softLimits.BlockCommandedDirection(id);
+                AppendLog($"{id} hit a limit switch (Quick Stop) - re-enabled" +
+                          (blocked ? "; jog back the other way." : "."));
+            }
+            catch (DriveException ex)
+            {
+                _quickStopRecovered.Remove(id);   // let the next poll try again
+                AppendLog($"ERROR: {id} quick-stop recovery failed: {ex.Message}");
+            }
+        }
+
         /// <summary>Clears soft-limit tracking so a stale position delta can't trigger a false stop.</summary>
         private void ResetSoftLimitTracking()
         {
             _softLimits.Reset();
             _lastPos.Clear();
+            _quickStopRecovered.Clear();
         }
     }
 }

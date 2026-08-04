@@ -125,8 +125,10 @@ classDiagram
         +Dictionary~AxisId, AxisCalibration~ Axes
         +PixelStepAffine? PixelStep
         +long? ChuckCenterX / ChuckCenterY / ChuckRadius
+        +long? WaferOffsetX / WaferOffsetY / WaferRadius
         +long? WaferCenterX / WaferCenterY
-        +int? RotationSign
+        +int? WaferFitSign / RotationSign
+        +WaferCentreAt(chuckAngleDeg) (long,long)?
         +For(id) AxisCalibration
         +Load(out warning) CalibrationStore$
         +Save()
@@ -215,7 +217,7 @@ flowchart TB
 | **`Drive/`** | `MotionTypes.cs`, `MultiAxisConnection.cs`, `AxisDriver.cs`, `MultiAxisController.cs`, `DrivePoller.cs`, `SoftLimitTracker.cs`, `DriveDiagnostics.cs` | The motion stack: types, link, per-axis CiA 402, shared API, the background read poller, the soft-limit state machine, diagnostics. |
 | **`Input/`** | `JoystickPad.cs`, `PositionGrid.cs`, `FrmPosition.cs` | The on-screen analog puck, and the Position Map grid control + its window. (The physical joystick is **analog, wired into the drives** — see §11 — so there is no HID reader here.) |
 | **`Calibration/`** | `Calibration.cs`, `FrmCalibration.cs` | The persisted limits / home / steps-per-mm / vision-calibration store and its UI window. |
-| **`Vision/`** | `VisionCamera.cs`, `VisionViewControl.cs`, `IVisionFrameSource.cs`, `HalconBitmap.cs`, `FrmVisionProtocols.*.cs`, detectors (`SolidCircleDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | The HALCON camera, the embeddable live-view control + the frame-source interface windows share, the protocols window (split into partials), the edge/fiducial detectors, and the calibration / centre-find vision logic plus overlay and jog-velocity helpers. |
+| **`Vision/`** | `VisionCamera.cs`, `VisionViewControl.cs`, `IVisionFrameSource.cs`, `HalconBitmap.cs`, `FrmVisionProtocols.*.cs`, detectors (`SolidCircleDetector.cs`, `ChuckEdgeDetector.cs`, `WaferEdgeDetector.cs`), `CameraCalibrator.cs`, `CentreFinder.cs`, `WaferCentreScan.cs`, `VisionOverlay.cs`, `VisionJogMath.cs` | The HALCON camera, the embeddable live-view control + the frame-source interface windows share, the protocols window (split into partials), the edge/fiducial detectors, and the calibration / centre-find vision logic (including the wafer Θ-scan maths, which is HALCON-free) plus overlay and jog-velocity helpers. |
 | **`Geometry/`** | `CircleFit.cs`, `CrosshairRotation.cs` | HALCON-free maths: the Pratt circle fit (centre-find) and the crosshair-pivot rotation geometry. |
 | **`Params/`** | `FrmParams.cs` | The drive-parameter read/write/save-to-NV window (its host logic is `FrmMain.Params.cs`). |
 | **root** | `FrmMain.*`, `IMotionHost.cs`, `FrmLog.cs`, `BusPicker.cs`, `Program.cs` | The main window (split into partials), the owner-surface interface it implements, the pop-out log window, the bus-picker dialog, and the entry point. |
@@ -334,13 +336,13 @@ private long ReadPosition() => (int)Read(OD_PosActual, "actual position");
 **Any future signed-32 object read must do the same `(int)` cast.** (Writes are fine —
 negative 32-bit writes already work, e.g. reverse jog via a negative 0x60FF.)
 `ReadAnalogInput1()` does the 16-bit version of this — `(short)` on 0x3220:01 — and
-`DriveDiagnostics` generalises it via its `SignedBits` field (§21).
+`DriveDiagnostics` generalises it via its `SignedBits` field (§22).
 
 ### Other object access
 Beyond the CiA 402 motion objects, `AxisDriver` exposes `ReadAnalogInput1()` (0x3220:01, the
 analog joystick pot — §11), `GetProfileRamp`/`SetProfileRamp` (0x6083/0x6084, saved and
 restored around a rotation — §15), a generic `ReadObject`/`WriteObject`, and
-`SaveParametersToNV()` (the `"save"` signature to 0x1010:01) behind the parameters window (§21).
+`SaveParametersToNV()` (the `"save"` signature to 0x1010:01) behind the parameters window (§22).
 
 ### `WaitForStatus`
 Polls the statusword (0x6041) until a predicate holds or it times out, throwing a
@@ -659,11 +661,12 @@ setup:
 
 | Field | Set by | Used by |
 |---|---|---|
-| `Axes[id].Min/Max/Home` | Calibration window (§13, §20) | soft limits, Home, Move To bounds |
-| `Axes[id].StepsPerMm` | Calibration window (typed from the stage's mechanical spec) | mm relative moves (§19), the crosshair mm ticks (§18) |
+| `Axes[id].Min/Max/Home` | Calibration window (§13, §21) | soft limits, Home, Move To bounds |
+| `Axes[id].StepsPerMm` | Calibration window (typed from the stage's mechanical spec) | mm relative moves (§20), the crosshair mm ticks (§19) |
 | `PixelStep` (`PixelStepAffine`) | camera-scale calibration (§15 A) | vision jog, centre-find, rotation |
 | `ChuckCenterX/Y`, `ChuckRadius` | chuck centre-find (§16) | Go to Centre, rotation pivot, the auto-find's guard |
-| `WaferCenterX/Y` | wafer centre-find (§16) | Go to wafer centre |
+| `WaferOffsetX/Y`, `WaferRadius`, `WaferFitSign` | wafer Θ scan (§18) | `WaferCentreAt(θ)` → Go to wafer centre |
+| `WaferCenterX/Y` | wafer Θ scan (§18) | a snapshot only — valid at the Θ the scan ended on |
 | `RotationSign` | the one-time sign test (§15 B) | rotate-about-crosshair handedness |
 
 * **`Load(out string? warning)`** — returns a fresh store on a missing/corrupt file and
@@ -710,7 +713,7 @@ through `FrmMain` in the **USER frame**:
 crosshair, true XY aspect (letterboxed), greyed until both X and Y limits exist. It raises
 `TargetPicked` (user-frame, clamped to limits) on click and exposes `SetCurrent` / `SetLimits` /
 `SetTarget`. `MoveToAsync` is the single absolute-move entry point: the Position Map, the
-relative-move panel (§19), the go-to-centre buttons, and the auto centre-find (§17) all funnel
+relative-move panel (§20), the go-to-centre buttons, and the auto centre-find (§17) all funnel
 through it, plus Home All / Go Home internally.
 
 > **Z-collision is operational, not coded:** there's no automatic Z guard. Set Z's Min limit
@@ -993,7 +996,7 @@ when the operator has jogged the rim onto the crosshair by eye (then `p_edge = p
 > enqueues an `Action<HObject>` onto `VisionViewControl`'s `_frameJobs`; the grab loop drains the
 > queue against the live frame, then each job marshals its bitmap + result back to the UI via
 > `PostFrameBitmap`. `IVisionFrameSource` is the interface the protocols window sees, so it can
-> request frames from the main screen's camera without owning one (§18).
+> request frames from the main screen's camera without owning one (§19).
 
 ### C. The circle fit (`CentreFinder` → `CircleFit.cs`, "Compute Centre")
 
@@ -1028,25 +1031,45 @@ Y-frame handled — §13). A saved centre is reloaded on open, so Go to Centre s
 > circle-centre via matrix determinants; `CircleFit` generalises that to a least-squares fit over
 > *N* points so noisy captures average out.
 
-### D. Wafer centre-find (`WaferEdgeDetector.cs`)
+### D. The wafer edge detector (`WaferEdgeDetector.cs`)
 
-The wafer flow mirrors the chuck's — its own `CentreFinder` (`_waferFinder`), its own stored
-centre (`WaferCenterX/Y`), the same Pratt fit — but the **detector is different**, because the
-two problems are different:
+The wafer has no manual centre-find — its rim is larger than the travel, so it is measured by
+rotating it instead (§18). But it feeds the same Pratt fit through the same `CentreFinder`
+conversion, and its **detector is different** from the chuck's, because the two problems are:
 
 * **Chuck** (`ChuckEdgeDetector`): thresholds the inner circle's ~219-level step with a **fixed**
   cut, because those grey levels are set by the illumination and the material and do not move
   with framing — while Otsu, being *relative*, would shift with how much of the frame each side
   occupies, which is exactly what changes as the stage scans (A above).
-* **Wafer** (`WaferEdgeDetector`): the lit wafer reads clearly **brighter** than the off-wafer
-  background, and here exposure *is* what varies, so it thresholds **auto-adaptively** —
-  `binary_threshold('max_separability', 'light')` — then `opening_circle` (`CleanRadius`) to erase
-  speckle, `closing_circle` (`CloseRadius`) + `fill_up` to merge dies/droplets/bevel into **one**
-  solid blob, `select_shape` by `MinArea`, take the largest, and return the boundary point
-  **nearest the crosshair**. `WaferIsBrighter` flips the polarity if the lighting ever inverts.
+* **Wafer** (`WaferEdgeDetector`): segments the **off-wafer** side — the region past the rim, which
+  is unlit and reads near-black — and returns the boundary point of that region **nearest the
+  crosshair**. Here exposure *is* what varies, so the cut is adaptive: **two-stage Otsu**, the first
+  split isolating the lit wafer and the second taken *inside the dark part alone*. Then
+  `opening_circle` (`CleanRadius`) to erase speckle, `closing_circle` (`CloseRadius`) to absorb dust
+  specks, and a **double filter** — `select_shape` by `MinArea` *and* `select_gray` by mean grey
+  against `MaxMeanFraction × cut`. `WaferIsBrighter` flips the polarity if the lighting ever
+  inverts.
 
-Frame-border segments of that boundary are far from the crosshair, so they can never be the
-nearest point. Tuning mirror: `Halcon/wafer center.hdev`.
+Segmenting the *bright* side instead — the obvious reading of "the wafer is brighter" — finds the
+**bevel**, not the rim. The bevel is a mid-grey band a few hundred pixels wide that can read either
+side of a single global cut, and when it reads dark it splits the wafer into two blobs whose shared
+boundary is nearer the crosshair than the rim is. §18 works this through against a real capture.
+Cutting on the dark side sidesteps it: the bevel is never black, only the world beyond the wafer is.
+
+That also removes the frame-border artefact the old pipeline had. With the wafer covering the whole
+view there is no large dark region, so the detector returns **false** instead of confidently
+reporting the frame border; boundary points on the frame itself are dropped outright.
+
+**Why both filters.** Otsu always returns a cut, so a frame with no rim in it still segments into
+*something*. The chuck is machined, and under oblique light its shadow troughs form long dark-ish
+blobs of 0.7–1.5 Mpx — as large as a real gap, so area alone lets them through, and one of them was
+being reported as a rim point. Grey level is what tells them apart: measured on the component that
+supplies the reported point, a real gap runs mean 10–34 against 47–63 for a trough, or 0.24–0.52 of
+the cut against 0.70–0.81. Hence `MaxMeanFraction = 0.6`, expressed as a fraction because the cut
+is relative by design and spans 37–96 across the captures on file. `select_gray` is applied as a
+*filter*, not a verdict, so when a trough happens to sit nearer the crosshair than the real gap,
+dropping it lets the gap win rather than failing the frame.
+Tuning mirror: `Halcon/wafer center.hdev`.
 
 ---
 
@@ -1156,7 +1179,115 @@ mid-run), which would otherwise hang the run forever.
 
 ---
 
-## 18. The live camera (`Vision/VisionViewControl.cs`, `Vision/IVisionFrameSource.cs`)
+## 18. Wafer centre-find by Θ scan (`Vision/FrmVisionProtocols.AutoWafer.cs`, `Vision/WaferCentreScan.cs`)
+
+§17's method cannot be pointed at the wafer, for a geometric reason rather than a software one.
+Viewing a rim point means driving the stage to it, so seeing the whole rim needs motor positions on
+a circle of the feature's own radius. The chuck's inner circle is ≈7,000 steps (≈5.6 mm); a 200 mm
+wafer's rim is ≈126,000 steps, against 220,516 of X travel and 158,624 of Y. **Neither axis has the
+span.** Only a band of the rim is reachable, and a circle fit over one short arc leaves the centre
+component perpendicular to the arc's chord essentially unconstrained.
+
+**So the wafer is turned rather than circled.** The chuck *is* the Θ axis: Θ is continuous, unbounded,
+and carries the wafer. The stage parks on one reachable spot on the rim and Θ sweeps the entire rim
+past the camera — one station, one revolution, all of it inside the reachable band.
+
+### De-rotation
+
+Each sample is still `E_k = M_k + A·(p_cross − p_k)` (`CentreFinder.ToStepPoint`, unchanged), paired
+with the chuck angle `θ_k` it was taken at. `WaferCentreScan` then converts `E_k − C` to **mm** —
+X and Y differ by 0.4 % in steps/mm, and a rotation is only a rotation once that is divided out —
+and de-rotates:
+
+```
+P_k = R(−σ·θ_k)·(E_k − C)/k
+```
+
+The `P_k` are rim points in the **chuck's rotating frame**, spanning a full 360° even though every
+one was measured from the same small patch of travel. They go into the same Pratt `CircleFit` §16
+uses: a partial-arc problem turned into a full-circle one.
+
+The angle comes from `CrosshairRotation.ChuckTicksToDegrees` (Θ turns through ≈9:1, so the motor's
+40,000 ticks/rev would wrap nine times per chuck revolution) and is read fresh via
+`IMotionHost.TryReadThetaNow`, for the same staleness reason `TryReadUserXyNow` exists.
+
+### A wrong chuck centre does not bias the offset
+
+If `C` is off by `δ`, then `P_k = W_true + R(−θ_k)·(R_w·n̂ − δ)` — still **exactly** a circle
+centred on `W_true`, with the radius changed to `|R_w·n̂ − δ|`. The error is absorbed entirely by
+the radius, so the measured eccentricity is relative to the *true* rotation axis regardless of how
+good `C` is, and a fitted radius disagreeing with the nominal wafer diameter is a free diagnostic
+on the chuck centre.
+
+### Handedness
+
+`RotationSign` is a **pixel**-space handedness (that is where `CrosshairRotation` applies it), so
+the step-space sign is `RotationSign · sign(det A)`. A wrong sign gives a mirrored but entirely
+plausible centre, and `RotationSign` may be unset, so `WaferCentreScan` fits **both** signs: the
+data decides when the two are clearly separated, the expectation breaks the tie when they are not,
+and with neither available the fit **fails** rather than guessing. The tie is real — any 3 points
+lie exactly on some circle, so at N = 3 both signs fit perfectly.
+
+### Keeping the rim in frame
+
+With X/Y parked, the rim sweeps radially past the camera by ±e and wanders tangentially by about
+the same, which a hand-placed wafer can push past a 5 × 3.7 mm frame. **The next station is the
+previous rim point** — `E_k` is by definition the position that puts it on the crosshair — so
+consecutive samples differ by only `~e·sin(Δθ)`, and every detection stays near the crosshair where
+affine error matters least. A miss searches ±3 hops along the station direction, then **skips that
+angle and carries on**; missed samples never abort a run.
+
+**Which edge gets detected matters more than it looks.** Thresholding the bright wafer finds the
+**bevel**, not the rim: in `images/capture_20260803_175836_162.bmp` the bevel is a ~310 px band at
+grey 136–148 against an Otsu cut of 163, so it splits the wafer in two — `max_area` then takes the
+wrong side, and even on the right side the nearest boundary is the bevel (348 px) rather than the
+rim (537 px). Closing the gap is not an option either: the bevel (~310 px) and the dark gap beyond
+the rim (~345 px) are near enough the same width that no radius bridges one alone. So
+`WaferEdgeDetector` cuts on the **off-wafer** side instead (§16 D), which is the only part of the
+scene that is actually black. The scan still refuses detections within 8 px of a frame edge or
+outside a `[0.70, 1.30] × nominal` radius band, but those are now a second line rather than the
+thing holding the result up.
+
+### Shape of a run
+
+| Stage | What it does |
+|---|---|
+| A | Station direction = the cardinal from `C` with the most travel headroom; refuse if none clears the nominal radius |
+| B | Acquire the rim — the existing `ProbeAsync`, outward from `C`, `0.9 × R` approach jump |
+| C | N+1 samples, Θ stepped by 360/N between them, station following the rim; the last repeats θ₀ |
+| D | De-rotate + fit; settle the handedness, drop outliers past `max(3σ, 0.3 mm)`, refit once |
+| E | Closure check, then persist |
+
+Step-and-settle throughout, and Θ is stepped **monotonically** through one revolution so backlash in
+the reduction loads identically at every sample. The **closure check** re-reads θ₀ at the end: a
+radius disagreeing with the first sample by more than 400 steps means the wafer moved on the chuck
+(vacuum off, or Θ lost steps), so every earlier sample is suspect and the result is reported but
+**not saved**. It costs one extra grab, since a full revolution returns to the start anyway.
+
+These are 200 mm wafers with a **notch**, not a flat — under half a degree of arc, so it rarely
+lands on a sample and is an ordinary outlier when it does. The dropped angle *is* the notch angle;
+the run logs it, nothing consumes it yet.
+
+### The stored result is not a point
+
+The wafer sits eccentric on the chuck, so its centre **orbits** the rotation axis as Θ turns — it
+moves by `2e` between Θ and Θ+180°. A single `WaferCenterX/Y` is only valid at one, unrecorded,
+angle. The scan therefore stores the invariant: `WaferOffsetX/Y` in the chuck's rotating frame,
+plus `WaferRadius`, `WaferFitSign` and the fit metadata.
+`CalibrationStore.WaferCentreAt(chuckAngleDeg)` rotates it back out to a motor position for any Θ,
+and is what both **Go to Centre** paths use. `WaferCenterX/Y` is still written, as a snapshot at the
+angle the run ended on.
+
+There is **no manual wafer flow** — the old "Add Wafer Edge / Compute Centre" buttons were removed
+with this change, because they could only ever collect the short, badly-conditioned arc this method
+exists to avoid.
+
+> Full derivation, the parameter table, and the verification are in
+> **[Wafer Centre-Finding by Rotation](WaferCentreByRotation/)**.
+
+---
+
+## 19. The live camera (`Vision/VisionViewControl.cs`, `Vision/IVisionFrameSource.cs`)
 
 The live view lives on the **main screen's right column**, owned by `FrmMain.Vision.cs`. The
 protocols window owns **no camera** — it is handed the same control as an
@@ -1209,7 +1340,7 @@ annotate sites, which run once per captured frame.
 
 ---
 
-## 19. Relative moves in physical units (`FrmMain.RelativeMove.cs`)
+## 20. Relative moves in physical units (`FrmMain.RelativeMove.cs`)
 
 A group under the jog cluster: a signed amount per axis (**mm** for X/Y/Z, **degrees** for Θ)
 plus a **Go**, and two go-to-stored-centre shortcuts. Mode-aware, mirroring the jog cluster:
@@ -1229,7 +1360,7 @@ traverses.
 
 ---
 
-## 20. Auto limit-find (`FrmMain.Calibration.cs`)
+## 21. Auto limit-find (`FrmMain.Calibration.cs`)
 
 `FindXyLimitsAsync` is **one unified calibration** covering `AutoFindAxes` = **X and Y** — both
 have a working switch at each end; Z has none and stays manual. It runs on a background worker
@@ -1283,7 +1414,7 @@ limit is unaffected either way — the position is recorded the moment the bit s
 
 ---
 
-## 21. Drive parameters & diagnostics (`Drive/DriveDiagnostics.cs`, `Params/FrmParams.cs`)
+## 22. Drive parameters & diagnostics (`Drive/DriveDiagnostics.cs`, `Params/FrmParams.cs`)
 
 ### Read Params — read-only
 `DriveDiagnostics` is a **read-only** sweep — it calls only `readNumber`, so it can't disturb
@@ -1314,7 +1445,7 @@ no validation beyond the drive's own — a wrong object or value can change any 
 
 ---
 
-## 22. Safety invariants (consolidated)
+## 23. Safety invariants (consolidated)
 
 * **Connect = no motion**; drives come up disabled.
 * **Enable = holding torque, zero speed** (Profile-Velocity + target 0 + Halt before
@@ -1336,7 +1467,7 @@ no validation beyond the drive's own — a wrong object or value can change any 
 
 ---
 
-## 23. Known limitations / open items
+## 24. Known limitations / open items
 
 * **No drive-side travel protection on X or Z.** Probed on hardware: Y has two working limit
   switches and quick-stops on them (`0x3701 = 6`); **X now has a working switch at each end**
@@ -1344,14 +1475,14 @@ no validation beyond the drive's own — a wrong object or value can change any 
   **ignores** both switches, so X still has no drive-side stop until that is revisited); Z has
   none. `0x607D` reads a fake ±9999999 on all of them. The stored soft limits (§12) plus the auto
   centre-find's radius guard (§17) are therefore the *only* protection on X and Z. The host-side
-  limit-find (§20) works on X regardless, since it polls `0x60FD` and stops the axis itself. A
+  limit-find (§21) works on X regardless, since it polls `0x60FD` and stops the axis itself. A
   drive-side limit hit shows up as **Warning bit 7 + Quick Stop**, not a fault.
 * **Units are still raw drive units.** Positions/velocities are not converted from the factor
   group (0x60A8/0x60A9 + gear/feed/velocity factors). The only physical-unit paths are the
-  **hand-entered** `StepsPerMm` (§19) and `ChuckTicksPerRev` for Θ — neither is derived from the
+  **hand-entered** `StepsPerMm` (§20) and `ChuckTicksPerRev` for Θ — neither is derived from the
   drive, so a drive-side scaling change silently invalidates both.
 * **Motor parameters are not managed by this app.** Current / i²t / speed limits are preset on
-  the drives in NV memory; the host commands motion and *reads* those objects (§21), but never
+  the drives in NV memory; the host commands motion and *reads* those objects (§22), but never
   writes or verifies them outside the expert write row.
 * **`RotationSign` defaults to +1** with a warning until the one-time sign test fixes it, and
   the rotation feedforward constants are measured values that must be re-measured if the
@@ -1364,7 +1495,7 @@ no validation beyond the drive's own — a wrong object or value can change any 
 
 ---
 
-## 24. Appendix — sequence diagrams (key flows)
+## 25. Appendix — sequence diagrams (key flows)
 
 Dynamic views of the flows where ordering is subtle. (Static structure is in §1.)
 
@@ -1458,7 +1589,7 @@ sequenceDiagram
 ### 24.3 Auto limit-find (Find X & Y Limits, one run, both axes together)
 
 Direction-agnostic edge detection on the 0x60FD limit bits, with a Quick-Stop recovery
-between ends (§20). Polarity is unverified, so the search keys off a *newly-set* bit, not a
+between ends (§21). Polarity is unverified, so the search keys off a *newly-set* bit, not a
 specific direction. The same flow runs for both axes — the drive's own limit reaction differs
 (X ignores its switches) but never enters the routine, which stops the axis itself. One button
 runs X and Y **concurrently**: their sequences are interleaved tick-by-tick on one worker thread,

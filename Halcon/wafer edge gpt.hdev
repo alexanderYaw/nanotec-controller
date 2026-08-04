@@ -49,14 +49,9 @@
 <c>*               Note there is deliberately NO fill_up, unlike the chuck script: if the dark</c>
 <c>*               region ever enclosed the wafer, filling would swallow the wafer whole and the</c>
 <c>*               rim would vanish from the outline.</c>
-<c>* MinArea     : the gap spans the frame and runs to ~1.5M px. Drops dark die structures on the</c>
-<c>*               wafer and the smaller shadow troughs of the machined chuck. NOT sufficient on</c>
-<c>*               its own - the larger troughs reach 1.5 Mpx, which is why MaxMeanFraction exists.</c>
-<c>* MaxMeanFraction : a component is only the gap if it is genuinely BLACK, not merely below Cut.</c>
-<c>*               Its mean grey must be at most this fraction of Cut. Together with MinArea this</c>
-<c>*               is what makes a frame with no rim in it fail rather than report bare chuck as a</c>
-<c>*               rim point - see step 4. These two are the parameters to reach for first if a</c>
-<c>*               live arc starts reporting points off the rim.</c>
+<c>* MinArea     : the gap spans the frame and runs to ~1.5M px. This is what stops a dark die</c>
+<c>*               structure on the wafer being mistaken for it - it is the parameter to reach for</c>
+<c>*               first if a live arc starts reporting points off the rim.</c>
 <c>* FrameMargin : the region's outline also runs along the image frame. Clipping to a rectangle</c>
 <c>*               inset by this much throws those runs away. A frame taken wholly OFF the wafer</c>
 <c>*               is all "off-wafer" and its only boundary is that one, so clipping is also what</c>
@@ -66,14 +61,13 @@
 <c>* WaferIsBrighter: 0 flips which end of the histogram gets re-split, if the lighting inverts.</c>
 <l>CleanRadius := 7</l>
 <l>CloseRadius := 21</l>
-<l>MinArea := 2e5</l>
-<l>MaxMeanFraction := 0.6</l>
+<l>MinArea := 5e4</l>
 <l>FrameMargin := 2</l>
 <l>WaferIsBrighter := 1</l>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
-<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260803_175836_162.bmp')</l>
-<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114724_720.bmp')</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260803_175836_162.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114724_720.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135114_498.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135135_136.bmp')</l>
 <l>get_image_size (Image, Width, Height)</l>
@@ -84,16 +78,13 @@
 <l>disp_message (WindowHandle, '0: input frame  ' + Width + 'x' + Height, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 <c>* 1. Single-channel byte image. The mono camera passes straight through; a colour frame</c>
-<c>*    yields its RED channel (the old colour-camera scenes were red-lit). The convert to 'byte'</c>
-<c>*    is a no-op on the 8-bit captures on file, but it is what WaferEdgeDetector.cs does and a</c>
-<c>*    deeper camera would otherwise put the two out of step - gray_histo bins differently.</c>
+<c>*    yields its RED channel (the old colour-camera scenes were red-lit).</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
-<l>    access_channel (Image, GrayRaw, 1)</l>
+<l>    access_channel (Image, Gray, 1)</l>
 <l>else</l>
-<l>    copy_image (Image, GrayRaw)</l>
+<l>    copy_image (Image, Gray)</l>
 <l>endif</l>
-<l>convert_image_type (GrayRaw, Gray, 'byte')</l>
 <l>dev_display (Gray)</l>
 <l>disp_message (WindowHandle, '1: grey (' + Channels + ' channel(s) in)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
@@ -179,60 +170,41 @@
 <l>dev_display (OffWaferRaw)</l>
 <l>disp_message (WindowHandle, '3: stage-2 Otsu over bins [' + Lo + ',' + Hi + '] = ' + Cut + ' - the off-wafer side (red), before cleanup. The bevel should NOT be red now.', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 4. Clean up: open away speckle, close bright specks inside the gap, then keep only the</c>
-<c>*    components that are BOTH big enough AND black enough to be the gap. NO fill_up - see the</c>
-<c>*    header.</c>
+<c>* 4. Clean up: open away speckle, close bright specks inside the gap, keep the components big</c>
+<c>*    enough to be the gap. NO fill_up - see the header.</c>
 <c>* </c>
-<c>*    BOTH tests are needed, and this is the step that decides whether a frame with no rim in it</c>
-<c>*    fails cleanly. Otsu always returns a cut, so a frame of nothing but bare chuck still</c>
-<c>*    segments into something. The chuck is machined, and under oblique light its shadow troughs</c>
-<c>*    come out as long dark-ish blobs of 0.7-1.5 Mpx - as large as a real gap, so AREA alone</c>
-<c>*    passes them straight through. What separates them is the grey: measured on the component</c>
-<c>*    that actually supplies the reported point, a real gap runs mean 10-34 and a texture trough</c>
-<c>*    47-63. Taken as a fraction of Cut that is 0.24-0.52 against 0.70-0.81, so</c>
-<c>*    MaxMeanFraction = 0.6 sits in clear air. It has to be a FRACTION, not an absolute level:</c>
-<c>*    Cut is relative by design and runs 37-96 across the captures on file, so any fixed limit</c>
-<c>*    fails at one end of that range or the other.</c>
+<c>*    The per-region listing below is the diagnostic to read when a frame misbehaves, and what</c>
+<c>*    matters in it is the COUNT, not the grey. A frame with a real gap past the rim segments</c>
+<c>*    into one to three components, one of them large and dark. A frame without one falls apart</c>
+<c>*    into a heap of mid-grey scraps: capture_20260804_114724_720.bmp gives 14, every one of them</c>
+<c>*    between mean 41 and 68, none of them the gap.</c>
 <c>* </c>
-<c>*    select_gray is a FILTER, not a verdict, and that ordering matters. In</c>
-<c>*    capture_20260804_135114_498.bmp the real gap IS present and IS kept, but a texture trough</c>
-<c>*    sits nearer the crosshair and would win step 6 outright; dropping the trough here lets the</c>
-<c>*    gap win instead of failing the frame. In capture_20260804_114724_720.bmp - bare chuck, no</c>
-<c>*    wafer anywhere in view - nothing survives, and the frame is rejected at step 4 as it should</c>
-<c>*    be. Before this filter that frame reported a texture trough as a rim point.</c>
+<c>*    Do NOT turn the mean into a pass/fail gate. It scales with Cut, which is relative by</c>
+<c>*    design - across the captures on disk Cut runs 37 to 96 - so the region mean of a GOOD frame</c>
+<c>*    ranges from 10 to 34 depending only on exposure. Against 41 for the bad frame that leaves a</c>
+<c>*    7-grey-level margin resting on a single counter-example, and normalising by Cut to remove</c>
+<c>*    the exposure dependence collapses it altogether: 34/65 = 0.52 for a good frame against</c>
+<c>*    41/78 = 0.53 for the bad one. Grey level does not separate these. Rejection that has to</c>
+<c>*    hold belongs in AcceptDetection() in FrmVisionProtocols.AutoWafer.cs, which gates on RADIUS</c>
+<c>*    - a prior strong enough to actually do the job.</c>
 <c>* </c>
 <c>*    Note the listing is built as a string TUPLE, one element per line: disp_message renders a</c>
 <c>*    tuple as consecutive lines, whereas 'text' + SomeTuple silently yields a tuple of strings</c>
-<c>*    where one string was meant. Comparisons collapse the other way - MeanGray &gt; X on a</c>
-<c>*    multi-region tuple returns ONE value, not a mask, so hand-rolling this test in tuple code</c>
-<c>*    would silently have gated on region 1 alone. Same family of trap as the == noted in step 2;</c>
-<c>*    select_gray sidesteps it by working on the region set directly.</c>
+<c>*    where one string was meant. Comparisons collapse the other way - MeanGray &gt; 32 on a</c>
+<c>*    multi-region tuple returns ONE value, not a mask, so it would silently test region 1 alone.</c>
+<c>*    Same family of trap as the == noted in step 2.</c>
 <l>opening_circle (OffWaferRaw, OffWaferOpened, CleanRadius)</l>
 <l>closing_circle (OffWaferOpened, OffWaferClosed, CloseRadius)</l>
 <l>connection (OffWaferClosed, OffWaferParts)</l>
 <l>count_obj (OffWaferParts, NumParts)</l>
-<l>select_shape (OffWaferParts, BigEnough, 'area', 'and', MinArea, 1e9)</l>
-<l>count_obj (BigEnough, NumBig)</l>
-<l>if (WaferIsBrighter)</l>
-<l>    MeanLoLimit := 0</l>
-<l>    MeanHiLimit := MaxMeanFraction * Cut</l>
-<l>else</l>
-<l>    MeanLoLimit := 255 - MaxMeanFraction * (255 - Cut)</l>
-<l>    MeanHiLimit := 255</l>
-<l>endif</l>
-<l>select_gray (BigEnough, Gray, OffWafer, 'mean', 'and', MeanLoLimit, MeanHiLimit)</l>
+<l>select_shape (OffWaferParts, OffWafer, 'area', 'and', MinArea, 1e9)</l>
 <l>count_obj (OffWafer, NumKept)</l>
-<l>Msg := '4: ' + NumParts + ' component(s), ' + NumBig + ' over ' + MinArea + ' px2, ' + NumKept + ' of those within mean [' + MeanLoLimit$'.0f' + ',' + MeanHiLimit$'.0f' + '] (green)'</l>
-<l>if (NumBig &gt;= 1)</l>
-<l>    area_center (BigEnough, KeptArea, KeptRow, KeptCol)</l>
-<l>    intensity (BigEnough, Gray, KeptMean, KeptDev)</l>
-<l>    for K := 0 to NumBig - 1 by 1</l>
-<l>        if (KeptMean[K] &gt;= MeanLoLimit and KeptMean[K] &lt;= MeanHiLimit)</l>
-<l>            Verdict := '  KEEP'</l>
-<l>        else</l>
-<l>            Verdict := '  drop'</l>
-<l>        endif</l>
-<l>        Msg := [Msg, '    ' + (K + 1) + ': area ' + KeptArea[K]$'10.0f' + '   mean ' + KeptMean[K]$'6.1f' + '   mean/Cut ' + (KeptMean[K] / Cut)$'5.2f' + Verdict]</l>
+<l>Msg := '4: ' + NumParts + ' component(s), ' + NumKept + ' larger than ' + MinArea + ' px2 (green)'</l>
+<l>if (NumKept &gt;= 1)</l>
+<l>    area_center (OffWafer, KeptArea, KeptRow, KeptCol)</l>
+<l>    intensity (OffWafer, Gray, KeptMean, KeptDev)</l>
+<l>    for K := 0 to NumKept - 1 by 1</l>
+<l>        Msg := [Msg, '    ' + (K + 1) + ': area ' + KeptArea[K]$'10.0f' + '   mean ' + KeptMean[K]$'6.1f' + '   dev ' + KeptDev[K]$'5.1f']</l>
 <l>    endfor</l>
 <l>endif</l>
 <l>dev_display (Gray)</l>
@@ -244,7 +216,7 @@
 <l>stop ()</l>
 <l>if (NumKept &lt; 1)</l>
 <l>    dev_display (Gray)</l>
-<l>    disp_message (WindowHandle, 'REJECTED: no component is both large enough and dark enough to be the gap. Usually right - either the wafer fills the view or there is no rim in this frame at all. If a frame that plainly HAS a rim lands here, read the mean/Cut column above: if the gap is listed but dropped, raise MaxMeanFraction; if it is not listed at all, the problem is upstream at step 3.', 'window', 12, 12, 'red', 'false')</l>
+<l>    disp_message (WindowHandle, 'REJECTED: nothing off-wafer is large enough. Either the wafer fills the view - in which case there IS no rim here and this is the right answer - or the gap past the rim is not dark in this frame. Check step 3.', 'window', 12, 12, 'red', 'false')</l>
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
