@@ -55,7 +55,7 @@ namespace NanotecController
         private const int WAFER_SEARCH_HOPS = 6;
         // Θ speed for the scan's rotations (drive units = steps/s). Θ tops out at 3200; a full
         // revolution is 359,859 ticks, so one scan spends ~2 minutes turning whatever N is.
-        private const int WAFER_THETA_SPEED = 3000;
+        private const int WAFER_THETA_SPEED = 5000;
         // Arrival tolerance for the station moves, as a fraction of one hop.
         private const double WAFER_ARRIVE_FRAC = 0.25;
         // The closure sample returns to θ₀; its radius must reproduce the first sample's to within

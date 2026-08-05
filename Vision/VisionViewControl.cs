@@ -48,7 +48,7 @@ namespace NanotecController
 
         // The UI picks a zoom factor; GrabLoop applies it between frames (the framegrabber must
         // be re-opened, and the grab thread owns the camera handle).
-        private volatile int _zoomWanted = 2;
+        private volatile int _zoomWanted = 1;
         private volatile bool _invertView = true;  // 180° flip; camera is mounted inverted
         private volatile bool _monoView;           // grey + full-range contrast stretch (display only)
         private bool _showCrosshair;
