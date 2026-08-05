@@ -13,7 +13,12 @@
 <c>*   cols 1690-2540   grey 255                              wafer, outside the bevel</c>
 <c>*   cols 2555-2890   grey 10-27                            the unlit gap past the rim, ~345 px</c>
 <c>*   cols 2900-4015   grey 60-115                           background texture</c>
-<c>* The edge wanted is the one at col ~2545: bright wafer against that dark gap.</c>
+<c>* The edge wanted is the one at col ~2545: bright wafer against that dark gap. The gap's OTHER</c>
+<c>* boundary, at col ~2890 against the texture, is the trap - it is a perfectly good edge of a</c>
+<c>* perfectly good region, ~345 px away on the wrong side, and picking it biases the fitted radius</c>
+<c>* by the gap's width on every sample. Taking whichever boundary point is nearest the crosshair</c>
+<c>* does NOT settle it: that just picks the side the crosshair happens to sit on, which on hardware</c>
+<c>* was the chuck side. Step 5 settles it by texture - see there.</c>
 <c>* </c>
 <c>* NOTE ON THE OLD BRIGHT-SIDE METHOD (removed): this script, and the C# detector with it, used</c>
 <c>* to threshold the BRIGHT side - binary_threshold('max_separability','light'), close and fill</c>
@@ -49,27 +54,48 @@
 <c>*               Note there is deliberately NO fill_up, unlike the chuck script: if the dark</c>
 <c>*               region ever enclosed the wafer, filling would swallow the wafer whole and the</c>
 <c>*               rim would vanish from the outline.</c>
-<c>* MinArea     : the gap spans the frame and runs to ~1.5M px. This is what stops a dark die</c>
-<c>*               structure on the wafer being mistaken for it - it is the parameter to reach for</c>
-<c>*               first if a live arc starts reporting points off the rim.</c>
+<c>* MinArea     : the gap spans the frame and runs to ~1.5M px. Drops dark die structures on the</c>
+<c>*               wafer and the smaller shadow troughs of the machined chuck. NOT sufficient on</c>
+<c>*               its own - the larger troughs reach 1.5 Mpx, which is why MaxMeanFraction exists.</c>
+<c>* MaxMeanFraction : a component is only the gap if it is genuinely BLACK, not merely below Cut.</c>
+<c>*               Its mean grey must be at most this fraction of Cut. Together with MinArea this</c>
+<c>*               is what makes a frame with no rim in it fail rather than report bare chuck as a</c>
+<c>*               rim point - see step 4. These two are the parameters to reach for first if a</c>
+<c>*               live arc starts reporting points off the rim.</c>
 <c>* FrameMargin : the region's outline also runs along the image frame. Clipping to a rectangle</c>
 <c>*               inset by this much throws those runs away. A frame taken wholly OFF the wafer</c>
 <c>*               is all "off-wafer" and its only boundary is that one, so clipping is also what</c>
 <c>*               makes such a frame fail rather than report the frame edge as a rim point.</c>
 <c>*               (WaferEdgeDetector.cs drops those points individually instead of clipping the</c>
 <c>*               contour; same effect on the nearest-point search.)</c>
+<c>* SideProbeRadius : width of the collar sampled either side of the gap to decide which side</c>
+<c>*               faces the WAFER. Wide enough to characterise the chuck's texture, narrow enough</c>
+<c>*               to stay inside the bevel on the wafer side - see step 5.</c>
+<c>* SideBrightFraction : a collar is the wafer side if its mean grey is at least this fraction</c>
+<c>*               of the brightest collar's mean. Relative, not absolute, because brightness scales</c>
+<c>*               with exposure.</c>
+<c>* MinCollarArea / SideGrowRadius : discretisation slivers are not a side of the gap; and the</c>
+<c>*               collar starts one pixel clear of the gap, so the chosen side is grown back just</c>
+<c>*               far enough to overlap the gap's own boundary ring. SideGrowRadius stays tiny on</c>
+<c>*               purpose - a large value reaches across a narrow gap and re-admits the far side.</c>
 <c>* WaferIsBrighter: 0 flips which end of the histogram gets re-split, if the lighting inverts.</c>
 <l>CleanRadius := 7</l>
 <l>CloseRadius := 21</l>
-<l>MinArea := 5e4</l>
+<l>MinArea := 2e5</l>
+<l>MaxMeanFraction := 0.6</l>
 <l>FrameMargin := 2</l>
+<l>SideProbeRadius := 50</l>
+<l>SideBrightFraction := 0.8</l>
+<l>MinCollarArea := 5000</l>
+<l>SideGrowRadius := 2</l>
 <l>WaferIsBrighter := 1</l>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
-<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260803_175836_162.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260803_175836_162.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114724_720.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135114_498.bmp')</l>
-<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135135_136.bmp')</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135135_136.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_171550_370.bmp')</l>
 <l>get_image_size (Image, Width, Height)</l>
 <l>dev_open_window (0, 0, 750, 500, 'black', WindowHandle)</l>
 <l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
@@ -78,13 +104,16 @@
 <l>disp_message (WindowHandle, '0: input frame  ' + Width + 'x' + Height, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 <c>* 1. Single-channel byte image. The mono camera passes straight through; a colour frame</c>
-<c>*    yields its RED channel (the old colour-camera scenes were red-lit).</c>
+<c>*    yields its RED channel (the old colour-camera scenes were red-lit). The convert to 'byte'</c>
+<c>*    is a no-op on the 8-bit captures on file, but it is what WaferEdgeDetector.cs does and a</c>
+<c>*    deeper camera would otherwise put the two out of step - gray_histo bins differently.</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
-<l>    access_channel (Image, Gray, 1)</l>
+<l>    access_channel (Image, GrayRaw, 1)</l>
 <l>else</l>
-<l>    copy_image (Image, Gray)</l>
+<l>    copy_image (Image, GrayRaw)</l>
 <l>endif</l>
+<l>convert_image_type (GrayRaw, Gray, 'byte')</l>
 <l>dev_display (Gray)</l>
 <l>disp_message (WindowHandle, '1: grey (' + Channels + ' channel(s) in)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
@@ -170,41 +199,60 @@
 <l>dev_display (OffWaferRaw)</l>
 <l>disp_message (WindowHandle, '3: stage-2 Otsu over bins [' + Lo + ',' + Hi + '] = ' + Cut + ' - the off-wafer side (red), before cleanup. The bevel should NOT be red now.', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 4. Clean up: open away speckle, close bright specks inside the gap, keep the components big</c>
-<c>*    enough to be the gap. NO fill_up - see the header.</c>
+<c>* 4. Clean up: open away speckle, close bright specks inside the gap, then keep only the</c>
+<c>*    components that are BOTH big enough AND black enough to be the gap. NO fill_up - see the</c>
+<c>*    header.</c>
 <c>* </c>
-<c>*    The per-region listing below is the diagnostic to read when a frame misbehaves, and what</c>
-<c>*    matters in it is the COUNT, not the grey. A frame with a real gap past the rim segments</c>
-<c>*    into one to three components, one of them large and dark. A frame without one falls apart</c>
-<c>*    into a heap of mid-grey scraps: capture_20260804_114724_720.bmp gives 14, every one of them</c>
-<c>*    between mean 41 and 68, none of them the gap.</c>
+<c>*    BOTH tests are needed, and this is the step that decides whether a frame with no rim in it</c>
+<c>*    fails cleanly. Otsu always returns a cut, so a frame of nothing but bare chuck still</c>
+<c>*    segments into something. The chuck is machined, and under oblique light its shadow troughs</c>
+<c>*    come out as long dark-ish blobs of 0.7-1.5 Mpx - as large as a real gap, so AREA alone</c>
+<c>*    passes them straight through. What separates them is the grey: measured on the component</c>
+<c>*    that actually supplies the reported point, a real gap runs mean 10-34 and a texture trough</c>
+<c>*    47-63. Taken as a fraction of Cut that is 0.24-0.52 against 0.70-0.81, so</c>
+<c>*    MaxMeanFraction = 0.6 sits in clear air. It has to be a FRACTION, not an absolute level:</c>
+<c>*    Cut is relative by design and runs 37-96 across the captures on file, so any fixed limit</c>
+<c>*    fails at one end of that range or the other.</c>
 <c>* </c>
-<c>*    Do NOT turn the mean into a pass/fail gate. It scales with Cut, which is relative by</c>
-<c>*    design - across the captures on disk Cut runs 37 to 96 - so the region mean of a GOOD frame</c>
-<c>*    ranges from 10 to 34 depending only on exposure. Against 41 for the bad frame that leaves a</c>
-<c>*    7-grey-level margin resting on a single counter-example, and normalising by Cut to remove</c>
-<c>*    the exposure dependence collapses it altogether: 34/65 = 0.52 for a good frame against</c>
-<c>*    41/78 = 0.53 for the bad one. Grey level does not separate these. Rejection that has to</c>
-<c>*    hold belongs in AcceptDetection() in FrmVisionProtocols.AutoWafer.cs, which gates on RADIUS</c>
-<c>*    - a prior strong enough to actually do the job.</c>
+<c>*    select_gray is a FILTER, not a verdict, and that ordering matters. In</c>
+<c>*    capture_20260804_135114_498.bmp the real gap IS present and IS kept, but a texture trough</c>
+<c>*    sits nearer the crosshair and would win step 6 outright; dropping the trough here lets the</c>
+<c>*    gap win instead of failing the frame. In capture_20260804_114724_720.bmp - bare chuck, no</c>
+<c>*    wafer anywhere in view - nothing survives, and the frame is rejected at step 4 as it should</c>
+<c>*    be. Before this filter that frame reported a texture trough as a rim point.</c>
 <c>* </c>
 <c>*    Note the listing is built as a string TUPLE, one element per line: disp_message renders a</c>
 <c>*    tuple as consecutive lines, whereas 'text' + SomeTuple silently yields a tuple of strings</c>
-<c>*    where one string was meant. Comparisons collapse the other way - MeanGray &gt; 32 on a</c>
-<c>*    multi-region tuple returns ONE value, not a mask, so it would silently test region 1 alone.</c>
-<c>*    Same family of trap as the == noted in step 2.</c>
+<c>*    where one string was meant. Comparisons collapse the other way - MeanGray &gt; X on a</c>
+<c>*    multi-region tuple returns ONE value, not a mask, so hand-rolling this test in tuple code</c>
+<c>*    would silently have gated on region 1 alone. Same family of trap as the == noted in step 2;</c>
+<c>*    select_gray sidesteps it by working on the region set directly.</c>
 <l>opening_circle (OffWaferRaw, OffWaferOpened, CleanRadius)</l>
 <l>closing_circle (OffWaferOpened, OffWaferClosed, CloseRadius)</l>
 <l>connection (OffWaferClosed, OffWaferParts)</l>
 <l>count_obj (OffWaferParts, NumParts)</l>
-<l>select_shape (OffWaferParts, OffWafer, 'area', 'and', MinArea, 1e9)</l>
+<l>select_shape (OffWaferParts, BigEnough, 'area', 'and', MinArea, 1e9)</l>
+<l>count_obj (BigEnough, NumBig)</l>
+<l>if (WaferIsBrighter)</l>
+<l>    MeanLoLimit := 0</l>
+<l>    MeanHiLimit := MaxMeanFraction * Cut</l>
+<l>else</l>
+<l>    MeanLoLimit := 255 - MaxMeanFraction * (255 - Cut)</l>
+<l>    MeanHiLimit := 255</l>
+<l>endif</l>
+<l>select_gray (BigEnough, Gray, OffWafer, 'mean', 'and', MeanLoLimit, MeanHiLimit)</l>
 <l>count_obj (OffWafer, NumKept)</l>
-<l>Msg := '4: ' + NumParts + ' component(s), ' + NumKept + ' larger than ' + MinArea + ' px2 (green)'</l>
-<l>if (NumKept &gt;= 1)</l>
-<l>    area_center (OffWafer, KeptArea, KeptRow, KeptCol)</l>
-<l>    intensity (OffWafer, Gray, KeptMean, KeptDev)</l>
-<l>    for K := 0 to NumKept - 1 by 1</l>
-<l>        Msg := [Msg, '    ' + (K + 1) + ': area ' + KeptArea[K]$'10.0f' + '   mean ' + KeptMean[K]$'6.1f' + '   dev ' + KeptDev[K]$'5.1f']</l>
+<l>Msg := '4: ' + NumParts + ' component(s), ' + NumBig + ' over ' + MinArea + ' px2, ' + NumKept + ' of those within mean [' + MeanLoLimit$'.0f' + ',' + MeanHiLimit$'.0f' + '] (green)'</l>
+<l>if (NumBig &gt;= 1)</l>
+<l>    area_center (BigEnough, KeptArea, KeptRow, KeptCol)</l>
+<l>    intensity (BigEnough, Gray, KeptMean, KeptDev)</l>
+<l>    for K := 0 to NumBig - 1 by 1</l>
+<l>        if (KeptMean[K] &gt;= MeanLoLimit and KeptMean[K] &lt;= MeanHiLimit)</l>
+<l>            Verdict := '  KEEP'</l>
+<l>        else</l>
+<l>            Verdict := '  drop'</l>
+<l>        endif</l>
+<l>        Msg := [Msg, '    ' + (K + 1) + ': area ' + KeptArea[K]$'10.0f' + '   mean ' + KeptMean[K]$'6.1f' + '   mean/Cut ' + (KeptMean[K] / Cut)$'5.2f' + Verdict]</l>
 <l>    endfor</l>
 <l>endif</l>
 <l>dev_display (Gray)</l>
@@ -216,41 +264,94 @@
 <l>stop ()</l>
 <l>if (NumKept &lt; 1)</l>
 <l>    dev_display (Gray)</l>
-<l>    disp_message (WindowHandle, 'REJECTED: nothing off-wafer is large enough. Either the wafer fills the view - in which case there IS no rim here and this is the right answer - or the gap past the rim is not dark in this frame. Check step 3.', 'window', 12, 12, 'red', 'false')</l>
+<l>    disp_message (WindowHandle, 'REJECTED: no component is both large enough and dark enough to be the gap. Usually right - either the wafer fills the view or there is no rim in this frame at all. If a frame that plainly HAS a rim lands here, read the mean/Cut column above: if the gap is listed but dropped, raise MaxMeanFraction; if it is not listed at all, the problem is upstream at step 3.', 'window', 12, 12, 'red', 'false')</l>
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 5. The rim = that region's outline, minus the stretches that merely run along the image</c>
-<c>*    frame. Note the outline has TWO sides: the clean straight run against the wafer, which is</c>
-<c>*    the rim, and a ragged one against the background texture. Step 6 separates them by</c>
-<c>*    distance to the crosshair, which works because the scan parks the rim near the crosshair.</c>
-<l>gen_contour_region_xld (OffWafer, RegionBorder, 'border')</l>
-<l>clip_contours_xld (RegionBorder, EdgeArcs, FrameMargin, FrameMargin, Height - 1 - FrameMargin, Width - 1 - FrameMargin)</l>
-<l>count_obj (EdgeArcs, NumArcs)</l>
-<l>dev_display (Gray)</l>
-<l>dev_set_color ('green')</l>
-<l>dev_set_line_width (3)</l>
-<l>dev_display (EdgeArcs)</l>
-<l>disp_message (WindowHandle, '5: outline clipped ' + FrameMargin + ' px inside the frame - ' + NumArcs + ' piece(s) (green)', 'window', 12, 12, 'yellow', 'false')</l>
-<l>stop ()</l>
-<l>if (NumArcs &lt; 1)</l>
+<c>* 5. WHICH SIDE of the gap is the wafer. The gap has TWO boundaries and only one is the rim:</c>
+<c>*    radially the scene runs wafer - bevel - gap - chuck. Nearest-to-the-crosshair alone picks</c>
+<c>*    whichever side the crosshair happens to sit on, which on hardware was the CHUCK side, and</c>
+<c>*    nothing downstream catches it: both boundaries are a couple of hundred px apart, well</c>
+<c>*    inside the scan's acceptance band, so the fit just comes out biased by the gap's width.</c>
+<c>* </c>
+<c>*    Brightness decides it. The bevel is a mid-grey gradient, while the chuck side carries near-white</c>
+<c>*    streaks but is overall darker. Take a collar either side and keep the BRIGHTEST one (wafer side).</c>
+<l>union1 (OffWafer, Gap)</l>
+<c>* 5a. Measure the band's true perpendicular width before evaluating sides.</c>
+<c>* A distance transform calculates the shortest distance from every pixel to the region boundary.</c>
+<l>distance_transform (Gap, DistanceImage, 'euclidean', 'true', Width, Height)</l>
+<l>min_max_gray (Gap, DistanceImage, 0, MinDist, MaxDist, Range)</l>
+<l>BandPerpendicularWidth := MaxDist * 2</l>
+<l>disp_message (WindowHandle, 'Band perpendicular width: ~' + BandPerpendicularWidth$'.1f' + ' px', 'window', 36, 12, 'cyan', 'false')</l>
+<l>dilation_circle (Gap, GapGrown, SideProbeRadius)</l>
+<l>difference (GapGrown, Gap, Collar)</l>
+<l>connection (Collar, CollarParts)</l>
+<l>select_shape (CollarParts, Sides, 'area', 'and', MinCollarArea, 1e9)</l>
+<l>count_obj (Sides, NumSides)</l>
+<l>if (NumSides &lt; 1)</l>
 <l>    dev_display (Gray)</l>
-<l>    disp_message (WindowHandle, 'FAILED: the whole outline was the image frame, so this frame is entirely off the wafer.', 'window', 12, 12, 'red', 'false')</l>
+<l>    disp_message (WindowHandle, 'FAILED: no collar either side of the gap - it fills the frame, or SideProbeRadius/MinCollarArea are wrong.', 'window', 12, 12, 'red', 'false')</l>
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 6. Edge point closest to the image centre - the crosshair. Gather every point from the</c>
-<c>*    surviving arc(s), then pick the one with the smallest distance to the centre.</c>
+<l>intensity (Sides, Gray, SideMean, SideDev)</l>
+<l>BrightestMean := max(SideMean)</l>
+<l>tuple_sort_index (SideMean, MeanIdx)</l>
+<c>*    MeanIdx[0] is the darkest (chuck), MeanIdx[|MeanIdx| - 1] is the brightest (wafer).</c>
+<l>Brightest := MeanIdx[|MeanIdx| - 1] + 1</l>
+<l>Darkest := MeanIdx[0] + 1</l>
+<l>Msg := '5: ' + NumSides + ' collar side(s) at radius ' + SideProbeRadius + '; brightest mean ' + BrightestMean$'.1f'</l>
+<l>KeepIdx := []</l>
+<l>for K := 0 to NumSides - 1 by 1</l>
+<c>    * Using a SideBrightFraction (e.g., 0.8) to keep the brighter wafer collar.</c>
+<c>    * If you commit to the chuck-side, you would flip this to keep the side &lt; SideBrightFraction.</c>
+<l>    if (NumSides &lt; 2 or SideMean[K] &gt;= SideBrightFraction * BrightestMean)</l>
+<l>        Verdict := '  KEEP (wafer side - brightest)'</l>
+<l>        KeepIdx := [KeepIdx, K + 1]</l>
+<l>    else</l>
+<l>        Verdict := '  drop (chuck side - darkest)'</l>
+<l>    endif</l>
+<l>    Msg := [Msg, '    ' + (K + 1) + ': mean ' + SideMean[K]$'6.1f' + '   deviation ' + SideDev[K]$'6.1f' + '   mean/brightest ' + (SideMean[K] / BrightestMean)$'5.2f' + Verdict]</l>
+<l>endfor</l>
+<c>*    Sides too alike to separate - fall back to the brightest rather than failing the frame.</c>
+<l>if (|KeepIdx| &lt; 1)</l>
+<l>    KeepIdx := Brightest</l>
+<l>    Msg := [Msg, '    none separated - falling back to the brightest, side ' + Brightest]</l>
+<l>endif</l>
+<l>select_obj (Sides, SelectedSides, KeepIdx)</l>
+<l>union1 (SelectedSides, WaferSideCollar)</l>
+<l>dilation_circle (WaferSideCollar, WaferSide, SideGrowRadius)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('fill')</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (WaferSideCollar)</l>
+<l>disp_message (WindowHandle, Msg, 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 6. The rim = the gap's own boundary ring, kept only where it faces that side, and minus the</c>
+<c>*    stretches that merely run along the image frame. A frame taken wholly OFF the wafer is all</c>
+<c>*    "off-wafer" and its only boundary is the frame, so dropping those runs is also what makes</c>
+<c>*    such a frame fail rather than report the frame edge as a rim point.</c>
+<l>boundary (Gap, GapBorder, 'inner')</l>
+<l>intersection (GapBorder, WaferSide, RimRing)</l>
+<l>gen_rectangle1 (Inner, FrameMargin, FrameMargin, Height - 1 - FrameMargin, Width - 1 - FrameMargin)</l>
+<l>intersection (RimRing, Inner, Rim)</l>
+<l>area_center (Rim, RimArea, RimRow, RimCol)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('fill')</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Rim)</l>
+<l>disp_message (WindowHandle, '6: rim ring on the wafer side, ' + FrameMargin + ' px inside the frame - ' + RimArea + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>if (RimArea &lt; 1)</l>
+<l>    dev_display (Gray)</l>
+<l>    disp_message (WindowHandle, 'FAILED: nothing left of the boundary once the frame runs and the selected side were dropped, so this frame is entirely off the wafer.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 7. Edge point closest to the image centre - the crosshair - over what survived.</c>
 <l>CenterRow := Height / 2.0</l>
 <l>CenterCol := Width / 2.0</l>
-<l>AllRow := []</l>
-<l>AllCol := []</l>
-<l>for K := 1 to NumArcs by 1</l>
-<l>    select_obj (EdgeArcs, OneContour, K)</l>
-<l>    get_contour_xld (OneContour, ContRow, ContCol)</l>
-<l>    AllRow := [AllRow, ContRow]</l>
-<l>    AllCol := [AllCol, ContCol]</l>
-<l>endfor</l>
+<l>get_region_points (Rim, AllRow, AllCol)</l>
 <l>Dist := sqrt((AllRow - CenterRow) * (AllRow - CenterRow) + (AllCol - CenterCol) * (AllCol - CenterCol))</l>
 <l>tuple_sort_index (Dist, SortIdx)</l>
 <l>Nearest := SortIdx[0]</l>
@@ -258,9 +359,11 @@
 <l>NearCol := AllCol[Nearest]</l>
 <l>NearDist := Dist[Nearest]</l>
 <l>dev_display (Image)</l>
+<l>dev_set_draw ('fill')</l>
 <l>dev_set_color ('green')</l>
+<l>dev_display (Rim)</l>
+<l>dev_set_draw ('margin')</l>
 <l>dev_set_line_width (2)</l>
-<l>dev_display (EdgeArcs)</l>
 <l>gen_cross_contour_xld (CenterCross, CenterRow, CenterCol, 60, 0.785)</l>
 <l>dev_set_color ('yellow')</l>
 <l>dev_display (CenterCross)</l>
@@ -268,7 +371,7 @@
 <l>dev_set_color ('red')</l>
 <l>dev_set_line_width (3)</l>
 <l>dev_display (NearCross)</l>
-<l>disp_message (WindowHandle, '6: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '7: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 </body>
 <docu id="main">

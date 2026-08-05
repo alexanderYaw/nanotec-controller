@@ -84,9 +84,11 @@ namespace NanotecController
 
         // One detection job's result, carried back off the grab thread. FrameW/FrameH are the LIVE
         // frame size (ZoomFactor is a centred-ROI crop, so this shrinks with zoom) and size the hop.
+        // Report is the wafer detector's per-region diagnostic (null for the chuck target), logged by
+        // the wafer scan so a point off the rim says which filter let the wrong region through.
         private readonly record struct AutoDetection(
             bool Found, double Row, double Column, double CrossRow, double CrossCol,
-            double FrameW, double FrameH);
+            double FrameW, double FrameH, string? Report = null);
 
         // --- Awaitable grab + detect ------------------------------------------------
 
@@ -109,12 +111,14 @@ namespace NanotecController
                     double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
                     bool found;
                     double edgeRow = 0, edgeCol = 0;
+                    string? report = null;
                     try
                     {
                         if (_autoTarget == AutoTarget.Wafer)
                         {
                             found = _waferDetector.TryDetect(frame, crossRow, crossCol, out WaferEdgeDetector.EdgePoint w);
                             edgeRow = w.Row; edgeCol = w.Column;
+                            report = _waferDetector.LastReport;
                         }
                         else
                         {
@@ -124,7 +128,7 @@ namespace NanotecController
                     }
                     catch (HOperatorException) { found = false; }
 
-                    var result = new AutoDetection(found, edgeRow, edgeCol, crossRow, crossCol, fw.D, fh.D);
+                    var result = new AutoDetection(found, edgeRow, edgeCol, crossRow, crossCol, fw.D, fh.D, report);
                     _view.PostFrameBitmap(frame, flip: false, raw =>
                     {
                         if (IsDisposed) { raw.Dispose(); tcs.TrySetResult(result); return; }

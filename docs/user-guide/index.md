@@ -347,10 +347,20 @@ reachable spot on the rim and the **chuck turns the wafer a full revolution unde
 re-measuring the rim at each angle. **Samples** is how many angles it visits (24 by default). Expect
 roughly three minutes, nearly all of it Θ turning.
 
-It needs the chuck centre (step 3) and steps/mm on X and Y first, and it refuses to start without
-them. The result panel reports the eccentricity in mm, the fitted radius against your nominal
-diameter, and the fit RMS — a radius well off the nominal usually means the chuck centre is off,
-not the wafer.
+What you will see it do: first it drives to the **corner of its travel** (X at its minimum, Y at its
+maximum) — that corner is the furthest point from the chuck's axis the table can reach, and the only
+place a 200 mm rim comes into view. Then it steps **down** in Y until the wafer edge appears, and
+from there it mostly just turns. X and Y move again only when the edge drifts out of view, which it
+does as the chuck turns if the wafer is off-centre; the run steps Y up and down a little to bring it
+back and carries on. Angles where it cannot find the edge are simply skipped. When the fit is saved
+it **drives to the wafer centre it just measured**, so the run ends looking at the middle of the
+wafer.
+
+It needs the chuck centre (step 3), steps/mm on X and Y, and both travel limits first, and it
+refuses to start without them. It also checks the diameter you typed up front: if that rim could
+never cross the corner line it says so immediately rather than searching for two minutes. The result
+panel reports the eccentricity in mm, the fitted radius against your nominal diameter, and the fit
+RMS — a radius well off the nominal usually means the chuck centre is off, not the wafer.
 
 > **The wafer is vacuum-held for a reason:** if it slips on the chuck mid-scan, every earlier
 > sample is wrong. The run re-measures its starting angle at the end as a closure check, and if

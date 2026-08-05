@@ -13,7 +13,13 @@
 <c>*   cols 1690-2540   grey 255                              wafer, outside the bevel</c>
 <c>*   cols 2555-2890   grey 10-27                            the unlit gap past the rim, ~345 px</c>
 <c>*   cols 2900-4015   grey 60-115                           background texture</c>
-<c>* The edge wanted is the one at col ~2545: bright wafer against that dark gap.</c>
+<c>* The edge wanted is the one at col ~2890: the dark gap against the CHUCK. The chuck surface is</c>
+<c>* in focus, so that boundary is the sharper and more repeatable of the two. The gap's OTHER</c>
+<c>* boundary, at col ~2545 against the bevel, is the trap - it is a perfectly good edge of a</c>
+<c>* perfectly good region, ~345 px away on the wrong side, and picking it biases the fitted radius</c>
+<c>* by the gap's width on every sample. Taking whichever boundary point is nearest the crosshair</c>
+<c>* does NOT settle it: that just picks the side the crosshair happens to sit on. Step 5 settles it</c>
+<c>* by brightness - see there.</c>
 <c>* </c>
 <c>* NOTE ON THE OLD BRIGHT-SIDE METHOD (removed): this script, and the C# detector with it, used</c>
 <c>* to threshold the BRIGHT side - binary_threshold('max_separability','light'), close and fill</c>
@@ -49,6 +55,20 @@
 <c>*               Note there is deliberately NO fill_up, unlike the chuck script: if the dark</c>
 <c>*               region ever enclosed the wafer, filling would swallow the wafer whole and the</c>
 <c>*               rim would vanish from the outline.</c>
+<c>* SeverRadius : opens AFTER the closing, to cut off dark structures narrower than 2x this. The</c>
+<c>*               chuck's machined GASHES read below Cut, and CloseRadius bridges the near ones</c>
+<c>*               into the band - growing dendritic tendrils that reach hundreds of px across the</c>
+<c>*               chuck and are, as far as everything downstream is concerned, the rim's own</c>
+<c>*               boundary. Step 7 then reports a point out on a tendril. On</c>
+<c>*               capture_20260805_111803_054.bmp that is exactly what happened: region area</c>
+<c>*               997,572 px against 798,899 with this step, and the reported point 375 px from</c>
+<c>*               the crosshair out in the chuck instead of 1,240 px away on the real band.</c>
+<c>*               The band is ~345 px wide and the tendrils a few tens, so 35 cuts between them;</c>
+<c>*               the region area plateaus from ~35 up (813k at 25, 799k at 35, 790k at 45,</c>
+<c>*               786k at 60) and the reported point stops moving there.</c>
+<c>*               It has to come AFTER the closing, not instead of a bigger CleanRadius: opening</c>
+<c>*               that wide first leaves dust specks too big for CloseRadius to fill, and it lets</c>
+<c>*               a bare-chuck frame (114724_720) segment into something that survives MinArea.</c>
 <c>* MinArea     : the gap spans the frame and runs to ~1.5M px. Drops dark die structures on the</c>
 <c>*               wafer and the smaller shadow troughs of the machined chuck. NOT sufficient on</c>
 <c>*               its own - the larger troughs reach 1.5 Mpx, which is why MaxMeanFraction exists.</c>
@@ -63,19 +83,44 @@
 <c>*               makes such a frame fail rather than report the frame edge as a rim point.</c>
 <c>*               (WaferEdgeDetector.cs drops those points individually instead of clipping the</c>
 <c>*               contour; same effect on the nearest-point search.)</c>
+<c>* SideProbeRadius : width of the collar sampled either side of the gap to decide which side</c>
+<c>*               faces the CHUCK. Wide enough to average over the chuck's texture, narrow enough</c>
+<c>*               that the wafer-side collar stays on the bevel glint rather than reaching the</c>
+<c>*               darker wafer surface beyond it - see step 5.</c>
+<c>* MaxSideContrast : a dark region is only the rim gap if its two FLANKS differ in brightness -</c>
+<c>*               darker flank mean over brighter must be at or below this. A trough in the</c>
+<c>*               machined chuck has chuck on both flanks and reads near 1.0. Measured: rim gaps</c>
+<c>*               0.46-0.73, troughs 0.89-0.99. This is the filter that keeps a frame whose</c>
+<c>*               crosshair sits over the CHUCK from reporting the nearest trough - see step 5.</c>
+<c>* MinCollarArea / SideGrowRadius : discretisation slivers are not a side of the gap; and the</c>
+<c>*               collar starts one pixel clear of the gap, so the chosen side is grown back just</c>
+<c>*               far enough to overlap the gap's own boundary ring. SideGrowRadius stays tiny on</c>
+<c>*               purpose - a large value reaches across a narrow gap and re-admits the far side.</c>
 <c>* WaferIsBrighter: 0 flips which end of the histogram gets re-split, if the lighting inverts.</c>
 <l>CleanRadius := 7</l>
 <l>CloseRadius := 21</l>
+<l>SeverRadius := 35</l>
 <l>MinArea := 2e5</l>
 <l>MaxMeanFraction := 0.6</l>
 <l>FrameMargin := 2</l>
+<l>SideProbeRadius := 50</l>
+<l>MaxSideContrast := 0.80</l>
+<l>MinCollarArea := 5000</l>
+<l>SideGrowRadius := 2</l>
 <l>WaferIsBrighter := 1</l>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260803_175836_162.bmp')</l>
-<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114724_720.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114724_720.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135114_498.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135135_136.bmp')</l>
+<c>* The frame to step through when checking step 5: its collar breaks into 6 pieces, so it is the</c>
+<c>* one where a threshold-against-the-brightest rule admits bevel-side slivers.</c>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114358_183.bmp')</l>
+<c>* The frame to step through when checking SeverRadius: the chuck's gashes are bridged into the</c>
+<c>* band and grow tendrils across the chuck. Compare step 4 with SeverRadius 0 and 35.</c>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260805_111803_054.bmp')</l>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260805_111803_054.bmp')</l>
 <l>get_image_size (Image, Width, Height)</l>
 <l>dev_open_window (0, 0, 750, 500, 'black', WindowHandle)</l>
 <l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
@@ -209,7 +254,8 @@
 <c>*    select_gray sidesteps it by working on the region set directly.</c>
 <l>opening_circle (OffWaferRaw, OffWaferOpened, CleanRadius)</l>
 <l>closing_circle (OffWaferOpened, OffWaferClosed, CloseRadius)</l>
-<l>connection (OffWaferClosed, OffWaferParts)</l>
+<l>opening_circle (OffWaferClosed, OffWaferSevered, SeverRadius)</l>
+<l>connection (OffWaferSevered, OffWaferParts)</l>
 <l>count_obj (OffWaferParts, NumParts)</l>
 <l>select_shape (OffWaferParts, BigEnough, 'area', 'and', MinArea, 1e9)</l>
 <l>count_obj (BigEnough, NumBig)</l>
@@ -248,37 +294,130 @@
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 5. The rim = that region's outline, minus the stretches that merely run along the image</c>
-<c>*    frame. Note the outline has TWO sides: the clean straight run against the wafer, which is</c>
-<c>*    the rim, and a ragged one against the background texture. Step 6 separates them by</c>
-<c>*    distance to the crosshair, which works because the scan parks the rim near the crosshair.</c>
-<l>gen_contour_region_xld (OffWafer, RegionBorder, 'border')</l>
-<l>clip_contours_xld (RegionBorder, EdgeArcs, FrameMargin, FrameMargin, Height - 1 - FrameMargin, Width - 1 - FrameMargin)</l>
-<l>count_obj (EdgeArcs, NumArcs)</l>
+<c>* 5. WHICH SIDE of the gap is the chuck. The gap has TWO boundaries and only one is wanted:</c>
+<c>*    radially the scene runs wafer - bevel - gap - chuck, and it is the gap-to-CHUCK boundary</c>
+<c>*    that is measured, the chuck being the in-focus surface. Nearest-to-the-crosshair alone picks</c>
+<c>*    whichever side the crosshair happens to sit on, and nothing downstream catches the mistake:</c>
+<c>*    the two boundaries are a couple of hundred px apart, well inside the scan's acceptance band,</c>
+<c>*    so the fit just comes out biased by the gap's width.</c>
+<c>* </c>
+<c>*    BRIGHTNESS decides it. The bevel is specular and throws a near-saturated glint that hugs the</c>
+<c>*    gap; the chuck is diffuse and mid-grey. Take a collar either side and keep the DARK one.</c>
+<c>*    Measured over the captures on file the chuck collar runs 0.4-0.8x the wafer collar's mean,</c>
+<c>*    at every collar width tried (30, 50, 60, 120 px).</c>
+<c>* </c>
+<c>*    Compare the TWO LARGEST pieces only, and COMPARE them rather than thresholding. A ragged gap</c>
+<c>*    outline breaks the collar into 6-13 fragments - see the listing below - and a bevel-side</c>
+<c>*    sliver reads darker than the bevel proper, so any cut-off against the brightest piece admits</c>
+<c>*    fragments from BOTH sides and the rim ring straddles the gap. Measured on</c>
+<c>*    capture_20260804_114358_183.bmp the old 0.85-of-brightest rule kept four of six pieces, three</c>
+<c>*    of them bevel-side slivers of 8-18 kpx against real sides of 233 and 344 kpx. Two candidates</c>
+<c>*    need no cut-off at all, which is why there is no longer a SideDarkFraction to tune.</c>
+<c>* </c>
+<c>*    Texture cannot decide it, counter-intuitive though that is: the glint is a saturated ridge</c>
+<c>*    speckled with dark pits, so the WAFER collar is the rougher of the two on both deviation</c>
+<c>*    (52-74 vs 41-49) and local gradient - the opposite of what the eye reports. That polarity</c>
+<c>*    also belongs to the current optics; captures from before the chuck was brought into focus</c>
+<c>*    show it reversed, which is reason enough not to build on it.</c>
+<c>* </c>
+<c>*    The two collars stay separate because the gap crosses the frame, so the collar cannot wrap</c>
+<c>*    round its ends - they ARE the image border. A gap that is a blob rather than a band gives</c>
+<c>*    one ring instead, and a gap running off one corner can leave the wafer side out of view</c>
+<c>*    entirely. Either way one flank means NO evidence about which boundary faces the chuck, so</c>
+<c>*    that region is dropped rather than guessed at: a dropped sample costs the scan a search hop,</c>
+<c>*    a boundary taken off the wrong side biases the fit by the gap's width and nothing downstream</c>
+<c>*    would catch it.</c>
+<c>* </c>
+<c>*    FLANK CONTRAST is the third filter, and the one that matters when the crosshair sits over the</c>
+<c>*    CHUCK rather than the wafer. A rim gap has the bevel's glint on one flank and the chuck on the</c>
+<c>*    other; a shadow trough in the machined chuck has chuck on BOTH, so its two flank means are</c>
+<c>*    nearly equal. Measured over the captures on file, darker/brighter runs 0.46-0.73 for rim gaps</c>
+<c>*    against 0.89-0.99 for troughs, so MaxSideContrast = 0.80 sits in clear air. Nothing else</c>
+<c>*    separates them once a trough is near the crosshair: step 7 reports the boundary point NEAREST</c>
+<c>*    the crosshair, so with the rim far away a trough wins outright, and the scan's radial band</c>
+<c>*    cannot object either - a trough beside the crosshair sits at very nearly the station's own</c>
+<c>*    radius. (Old-optics captures, chuck defocused, measure 0.84 on a REAL gap and are therefore</c>
+<c>*    refused by this gate. They are not a target; the current optics are.)</c>
+<c>* </c>
+<c>*    All of this runs PER REGION, and the rim ring is assembled from the regions that pass. Merging</c>
+<c>*    first and testing the merger would let one trough contribute boundary that then wins step 7.</c>
+<l>gen_empty_region (RimRing)</l>
+<l>Msg := '5: flanks per candidate region, collar radius ' + SideProbeRadius</l>
+<l>NumRim := 0</l>
+<l>for R := 1 to NumKept by 1</l>
+<l>    select_obj (OffWafer, OneGap, R)</l>
+<l>    dilation_circle (OneGap, GapGrown, SideProbeRadius)</l>
+<l>    difference (GapGrown, OneGap, Collar)</l>
+<l>    connection (Collar, CollarParts)</l>
+<l>    select_shape (CollarParts, Sides, 'area', 'and', MinCollarArea, 1e9)</l>
+<l>    count_obj (Sides, NumSides)</l>
+<l>    if (NumSides &lt; 2)</l>
+<l>        Msg := [Msg, '    r' + R + ': only ' + NumSides + ' flank - drop (wafer side out of view; nothing says which boundary faces the chuck)']</l>
+<l>        continue</l>
+<l>    endif</l>
+<c>*        The two largest pieces are the two flanks; the rest is fragmentation along a ragged</c>
+<c>*        outline. Sorted ascending, so the last two entries of the index tuple are the biggest.</c>
+<l>    area_center (Sides, SideArea, SideRow, SideCol)</l>
+<l>    intensity (Sides, Gray, SideMean, SideDev)</l>
+<l>    tuple_sort_index (SideArea, AreaIdx)</l>
+<l>    Biggest := AreaIdx[|AreaIdx| - 1] + 1</l>
+<l>    Next := AreaIdx[|AreaIdx| - 2] + 1</l>
+<l>    FlankLo := min([SideMean[Biggest - 1],SideMean[Next - 1]])</l>
+<l>    FlankHi := max([SideMean[Biggest - 1],SideMean[Next - 1]])</l>
+<l>    Contrast := FlankLo / FlankHi</l>
+<l>    Detail := ' (' + NumSides + ' piece(s), two largest ' + SideArea[Biggest - 1]$'.0f' + ' and ' + SideArea[Next - 1]$'.0f' + ' px2)'</l>
+<l>    if (Contrast &gt; MaxSideContrast)</l>
+<l>        Msg := [Msg, '    r' + R + ': flanks ' + FlankLo$'6.1f' + ' /' + FlankHi$'6.1f' + '   contrast ' + Contrast$'5.2f' + '  DROP - trough, chuck on both flanks' + Detail]</l>
+<l>        continue</l>
+<l>    endif</l>
+<l>    if (SideMean[Biggest - 1] &lt;= SideMean[Next - 1])</l>
+<l>        ChuckIdx := Biggest</l>
+<l>    else</l>
+<l>        ChuckIdx := Next</l>
+<l>    endif</l>
+<l>    select_obj (Sides, ChuckSideCollar, ChuckIdx)</l>
+<l>    dilation_circle (ChuckSideCollar, ChuckSide, SideGrowRadius)</l>
+<l>    boundary (OneGap, GapBorder, 'inner')</l>
+<l>    intersection (GapBorder, ChuckSide, RimPart)</l>
+<l>    union2 (RimRing, RimPart, RimGrown)</l>
+<l>    copy_obj (RimGrown, RimRing, 1, 1)</l>
+<l>    NumRim := NumRim + 1</l>
+<l>    Msg := [Msg, '    r' + R + ': flanks ' + FlankLo$'6.1f' + ' /' + FlankHi$'6.1f' + '   contrast ' + Contrast$'5.2f' + '  KEEP - rim gap, chuck side is flank ' + ChuckIdx + Detail]</l>
+<l>endfor</l>
 <l>dev_display (Gray)</l>
+<l>dev_set_draw ('fill')</l>
 <l>dev_set_color ('green')</l>
-<l>dev_set_line_width (3)</l>
-<l>dev_display (EdgeArcs)</l>
-<l>disp_message (WindowHandle, '5: outline clipped ' + FrameMargin + ' px inside the frame - ' + NumArcs + ' piece(s) (green)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>dev_display (RimRing)</l>
+<l>disp_message (WindowHandle, Msg, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<l>if (NumArcs &lt; 1)</l>
+<l>if (NumRim &lt; 1)</l>
 <l>    dev_display (Gray)</l>
-<l>    disp_message (WindowHandle, 'FAILED: the whole outline was the image frame, so this frame is entirely off the wafer.', 'window', 12, 12, 'red', 'false')</l>
+<l>    disp_message (WindowHandle, 'FAILED: no region looks like a rim gap - every candidate had chuck on both flanks, or only one flank in view. Usually right. If a frame that plainly HAS a rim lands here, read the contrast column: near 1.0 on the real gap means the wafer side is not being sampled, so check SideProbeRadius against the bevel width.', 'window', 12, 12, 'red', 'false')</l>
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 6. Edge point closest to the image centre - the crosshair. Gather every point from the</c>
-<c>*    surviving arc(s), then pick the one with the smallest distance to the centre.</c>
+<c>* 6. Drop the stretches of that ring which merely run along the image frame. A frame taken wholly</c>
+<c>*    OFF the wafer is all "off-wafer" and its only boundary is the frame, so dropping those runs is</c>
+<c>*    also what makes such a frame fail rather than report the frame edge as a rim point.</c>
+<l>gen_rectangle1 (Inner, FrameMargin, FrameMargin, Height - 1 - FrameMargin, Width - 1 - FrameMargin)</l>
+<l>intersection (RimRing, Inner, Rim)</l>
+<l>area_center (Rim, RimArea, RimRow, RimCol)</l>
+<l>dev_display (Gray)</l>
+<l>dev_set_draw ('fill')</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Rim)</l>
+<l>disp_message (WindowHandle, '6: rim ring on the chuck side, ' + FrameMargin + ' px inside the frame - ' + RimArea + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>if (RimArea &lt; 1)</l>
+<l>    dev_display (Gray)</l>
+<l>    disp_message (WindowHandle, 'FAILED: nothing left of the boundary once the frame runs and the bevel side were dropped, so this frame is entirely off the wafer.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 7. Edge point closest to the image centre - the crosshair - over what survived.</c>
 <l>CenterRow := Height / 2.0</l>
 <l>CenterCol := Width / 2.0</l>
-<l>AllRow := []</l>
-<l>AllCol := []</l>
-<l>for K := 1 to NumArcs by 1</l>
-<l>    select_obj (EdgeArcs, OneContour, K)</l>
-<l>    get_contour_xld (OneContour, ContRow, ContCol)</l>
-<l>    AllRow := [AllRow, ContRow]</l>
-<l>    AllCol := [AllCol, ContCol]</l>
-<l>endfor</l>
+<l>get_region_points (Rim, AllRow, AllCol)</l>
 <l>Dist := sqrt((AllRow - CenterRow) * (AllRow - CenterRow) + (AllCol - CenterCol) * (AllCol - CenterCol))</l>
 <l>tuple_sort_index (Dist, SortIdx)</l>
 <l>Nearest := SortIdx[0]</l>
@@ -286,9 +425,11 @@
 <l>NearCol := AllCol[Nearest]</l>
 <l>NearDist := Dist[Nearest]</l>
 <l>dev_display (Image)</l>
+<l>dev_set_draw ('fill')</l>
 <l>dev_set_color ('green')</l>
+<l>dev_display (Rim)</l>
+<l>dev_set_draw ('margin')</l>
 <l>dev_set_line_width (2)</l>
-<l>dev_display (EdgeArcs)</l>
 <l>gen_cross_contour_xld (CenterCross, CenterRow, CenterCol, 60, 0.785)</l>
 <l>dev_set_color ('yellow')</l>
 <l>dev_display (CenterCross)</l>
@@ -296,7 +437,7 @@
 <l>dev_set_color ('red')</l>
 <l>dev_set_line_width (3)</l>
 <l>dev_display (NearCross)</l>
-<l>disp_message (WindowHandle, '6: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, '7: nearest edge point to centre = (' + NearRow$'.1f' + ', ' + NearCol$'.1f' + '),  dist=' + NearDist$'.1f' + ' px', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 </body>
 <docu id="main">

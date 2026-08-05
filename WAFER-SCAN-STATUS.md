@@ -1,7 +1,94 @@
 # Wafer centre-find by Θ scan — status
 
-**As of 2026-08-04. Builds 0 warnings / 0 errors. Offline maths checks all pass. NOT yet run on
-hardware.** Branch `ui-rework`, nothing committed.
+**As of 2026-08-04. Builds 0 warnings / 0 errors. Offline maths checks all pass.** Branch
+`ui-rework`, nothing committed.
+
+**First hardware runs happened, and produced two changes (2026-08-04, later):**
+
+1. **Acquisition rewritten.** The cardinal-direction probe out from the chuck centre could not start
+   at all — the best cardinal reaches 88 mm and a 200 mm rim is at 100 mm. The run now parks at the
+   travel **corner** (X min, Y max), which stands ≈100.8 mm off the axis, and rasters **down** in Y
+   until the rim appears. A pre-flight check refuses up front if the nominal rim radius is outside
+   the 86.3–113.8 mm band the line X = X min sweeps. `TryPickStationDirection` and the wafer use of
+   `ProbeAsync` are gone; the run also now ends by driving to the measured wafer centre.
+2. **The detector now deliberately reports the gap↔CHUCK boundary** (2026-08-05). The chuck is the
+   in-focus surface, so that boundary is the sharper and more repeatable of the two; the bevel side
+   is a specular gradient that moves with the illumination. Either side is only a constant radial
+   offset from the true rim, so the recovered *centre* is unaffected and only the fitted *radius*
+   shifts — what matters is that the choice is consistent from sample to sample, which
+   nearest-to-the-crosshair was not.
+
+   The side is chosen on **brightness**: the bevel throws a near-saturated specular glint that hugs
+   the gap, the chuck is diffuse and mid-grey. Measured over the captures on file the chuck collar
+   runs 0.4–0.8× the wafer collar's mean at every collar width tried, with ~1 % saturated pixels
+   against 14–80 %. `SideProbeRadius` (50 px).
+
+   **The comparison is between the two LARGEST collar pieces, not a threshold** (fixed 2026-08-05,
+   after a live Θ scan reported noise and false edges that the tuning script did not reproduce).
+   `connection` shatters a ragged collar into 6–13 fragments, and a bevel-side sliver reads darker
+   than the bevel proper, so the old `SideDarkFraction ≤ 0.85 × brightest` rule admitted fragments
+   from *both* sides — four of six pieces on `capture_20260804_114358_183.bmp` — and the rim ring
+   straddled the gap. The gap has exactly two sides, so comparing only the two largest needs no
+   cut-off at all and `SideDarkFraction` is gone. Fewer than two sides in frame now **refuses** the
+   frame rather than falling back to the darkest: with the wafer out of view nothing says which
+   boundary faces the chuck, and on `..._160143_116` that fallback was keeping a mean-205 collar —
+   the bright side — and calling it the chuck.
+
+   Verified offline over every `.bmp` in `Desktop/images`: each current-optics rim frame now returns
+   a single-piece contour, with the reported point unchanged wherever it was already correct.
+   `..._143559_245` and `..._160143_116` (both 31 July, old optics, and the second is the *chuck*
+   detector's tuning capture) now return false — see above for why that is the wanted behaviour.
+
+   **Third filter: FLANK CONTRAST, `MaxSideContrast` = 0.80** (2026-08-05). Reported symptom: the
+   detector is accurate while the crosshair sits on the wafer, but "frequently picks random edges on
+   the chuck surface" once the crosshair is over the chuck. Mechanism: the reported point is the
+   boundary point *nearest the crosshair*, so with the rim far away any surviving trough near the
+   centre wins — and neither `MinArea` (troughs reach 1.5 Mpx) nor `AcceptDetection`'s radial band
+   (a trough by the crosshair sits at ~the station's own radius) objects. `MaxMeanFraction` catches
+   most troughs but is a fraction of `Cut`, and `Cut` drifts *up* in exactly the mostly-chuck framing
+   where this appears. A rim gap has the wafer on one flank; a trough has chuck on both — measured,
+   rim gaps 0.46–0.73 against troughs 0.89–0.99. Applied **per region**, before the merge; the rim
+   ring is assembled from the regions that pass.
+
+   The contrast filter rejects all 6 troughs and passes all 8 rim gaps on file. It was *not* what
+   caused the reported symptom, though — see the next item. The wafer scan log now carries the
+   detector's per-detection view (`cut=… parts=… big=… dark=… | r1 a=… m=… flanks=…/… c=… KEEP`).
+
+3. **`SeverRadius` = 35 — the actual cause of "it targets the gashes in the chuck"** (2026-08-05,
+   diagnosed on `capture_20260805_111803_054.bmp`, the frame the user supplied). The chuck's machined
+   gashes read below `Cut`, and `CloseRadius` bridges the near ones **into the black band**. That
+   makes one connected region whose chuck-side boundary grows dendritic tendrils reaching hundreds of
+   px across the chuck — and those tendrils are the rim boundary as far as everything downstream is
+   concerned, so the nearest-to-crosshair point lands on one. **Every existing filter passed it**: the
+   region is a genuine gap plus its tendrils, so area (997,572), mean (29.3) and flank contrast (0.53)
+   all read like a real rim. Neither the two-largest-flanks fix nor `MaxSideContrast` could have
+   caught this; it is a segmentation fault, not a selection one.
+
+   Fix: an opening of 35 px applied **after** the closing, severing anything narrower than 70 px. Band
+   ~345 px, tendrils a few tens. Region area 997,572 → 798,899; the reported point moves from 375 px
+   from the crosshair (out in the chuck) to 1,240 px (on the real band); contour length 26,754 →
+   6,420 px. Area plateaus from ~35 up (813 k @25, 799 k @35, 790 k @45, 786 k @60) and the point
+   stops moving there.
+
+   **It must come after the closing**, not as a larger `CleanRadius` — measured: opening that wide
+   first leaves dust specks too big for `CloseRadius` to fill, and it lets bare-chuck
+   `..._114724_720` segment into something surviving `MinArea` (detects at radius 25 and 35, saved
+   only by the flank gate). Applied after the closing, all three rejections and every rim detection
+   on file are preserved, and the flank count drops from 3–6 to 2 on most frames as a side effect of
+   the smoother outline.
+
+   **Texture does not work here**, despite the chuck being the surface that looks textured: the
+   glint is a saturated ridge speckled with dark pits, so the *wafer* collar measures rougher (dev
+   52–74 vs 41–49, local gradient 2–3× at a 30 px collar). Its polarity also flips between the
+   current optics and captures taken before the chuck was focused. An earlier revision of this file
+   claimed the opposite on both counts; it was measured on the old optics.
+
+Also: the mid-sweep re-acquire search is **bidirectional** in Y. Down-only was tried on hardware and
+sometimes drove the edge further out of view — necessarily, since the outward radial direction at
+the station is +Y and the eccentricity swings the rim both ways over a revolution.
+
+Still NOT verified: a full run on hardware end to end, and the detector fix against the captures on
+file.
 
 Full design record: `docs/developer-guide/WaferCentreByRotation.md`, plus §18 of the developer
 guide. This file is the working status — what is done, what is not, and what to do next.
@@ -197,10 +284,24 @@ above are stills, not a live arc.
 
 ## Next: hardware verification
 
+0. **The detector fix, offline first** — run `WaferEdgeDetector` over the `.bmp` captures in
+   `Desktop/images` and confirm the reported point sits on the **dark, in-focus chuck** side of the
+   black band, that the two collar means separate cleanly, and that the two correct rejections
+   (`..._175729_116`, die field; `..._114724_720`, bare chuck) still return false. Then the same
+   frames through `Halcon/wafer center.hdev` under HDevEngine — its step 5 prints each collar's
+   mean, deviation and mean/brightest with a KEEP/drop verdict, which is the column to read when a
+   frame misbehaves.
+
+   Also worth measuring while the harness is up, because it is the one thing this change depends on
+   that has not been checked: the black band's **perpendicular width around the wafer**. A constant
+   width makes the chuck-side boundary an exact concentric circle; a varying one distorts it, and
+   the distortion lands in the fit. Nothing in the captures on file contradicts a constant width,
+   but nothing on file establishes it either.
 1. **Preconditions** — camera-scale calibration done, chuck centre found, steps/mm set on X and Y,
    travel limits found. The run refuses without them and says which is missing.
-2. **Dry read of the log** — confirm the chosen station direction has the headroom it claims and
-   every commanded target passed `WithinTravel`.
+2. **Dry read of the log** — with the stored limits, expect the station line at `X = -108,939`, the
+   park at `Y = 65,395`, and the rim within 1-2 descent steps (the first crossing is ~1,990 steps
+   down). Every commanded target must have passed `WithinTravel`.
 3. **Full run** with a deliberately off-centre wafer. Expect a fitted radius within a few hundred
    steps of `Ø/2 × StepsPerMm`, an RMS comparable to the chuck fit's, and the closure sample
    matching the first.
@@ -219,6 +320,15 @@ above are stills, not a live arc.
 
 ### Things most likely to need tuning first
 
+* `SideProbeRadius` (50 px) — the collar width for the side choice. Must stay well under the bevel's
+  ~310 px, or the wafer-side collar reaches past the glint into the darker wafer surface and the
+  brightness contrast collapses. `MinCollarAreaPx` (5,000) alongside it, which decides what counts
+  as a side at all rather than a fragment.
+* **`MinArea` (2e5) is an absolute pixel count, so any Zoom above 1× breaks the wafer detector.**
+  The zoom is a centred camera-ROI crop; less gap is in view, the region falls under `MinArea`, and
+  the frame is rejected at step 4. Measured on `..._093524_418`: fine at 1×, rejected at 2× and
+  every step above. Run wafer scans at 1×, or make `MinArea` a fraction of the frame.
+* `WAFER_SEARCH_HOPS` (6) if the wafer turns out more eccentric than ~4.5 mm.
 * `WaferEdgeDetector`'s morphology radii / `MinArea` on the live arc — still the untuned levers.
   `MinArea` (5e4 px²) is what stops a dark die structure being mistaken for the gap beyond the rim.
 * `WAFER_BAND_LO/HI_FRAC` (0.70 / 1.30) if the eccentricity is larger than expected.
@@ -249,9 +359,17 @@ above are stills, not a live arc.
   X/Y and Θ fresh, for the same reason `TryReadUserXyNow` exists.
 * **Θ must be folded through `ChuckTicksPerRev` (359,859)**, never the motor's 40,000 — the ≈9:1
   reduction would wrap nine times per chuck revolution.
-* **Keeping the rim in frame needs no extra state**: the next station *is* the previous rim point,
-  since `E_k` is by definition the position that puts it on the crosshair. Consecutive samples then
-  differ by only `~e·sin(Δθ)`.
+* **Keeping the rim in frame** was originally done by moving the station onto each rim point `E_k`
+  (by definition the position that puts it on the crosshair). That is gone: the sweep is Θ-only and
+  the station moves only to re-acquire a lost rim, searching Y **both ways** — see the note above on
+  why down-only cannot work.
+* **The gap has TWO boundaries and only one is measured** — the chuck-side one. "Nearest the
+  crosshair" picks whichever side the crosshair sits on, so it wanders between the two. Nothing
+  downstream catches that: the boundaries are ~0.35 mm apart, well inside the `[0.70, 1.30] ×
+  nominal` band, so it passes every gate and biases the fit in a way the RMS cannot see. Hence the
+  brightness test. The standing diagnostic is the fitted radius, which should now sit *above*
+  `Ø/2 × StepsPerMm` by the gap's width and stay there — near or below it means the detector is
+  slipping onto the bevel side.
 
 ---
 
