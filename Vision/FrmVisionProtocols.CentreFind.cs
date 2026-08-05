@@ -100,12 +100,13 @@ namespace NanotecController
             return true;
         }
 
-        // Shared "Go to centre": confirm, then issue the absolute X/Y move (Z unchanged) via FrmMain.
-        private async Task GoToCentreAsync(string label, (long X, long Y)? centre)
+        // Shared "Go to centre": issues the absolute X/Y move (Z unchanged) via FrmMain, asking
+        // first only when the caller wants it.
+        private async Task GoToCentreAsync(string label, (long X, long Y)? centre, bool confirm)
         {
             if (centre == null) return;
             long cx = centre.Value.X, cy = centre.Value.Y;
-            if (MessageBox.Show(this,
+            if (confirm && MessageBox.Show(this,
                     $"Move the {label} centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
                     $"Go to {label} centre", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
@@ -131,7 +132,7 @@ namespace NanotecController
                 _status.Text = "Go to wafer centre: run the Θ scan first (it also needs a chuck centre and X/Y steps-per-mm).";
                 return;
             }
-            await GoToCentreAsync($"wafer (Θ={deg:F1}°)", target);
+            await GoToCentreAsync($"wafer (Θ={deg:F1}°)", target, confirm: false);
         }
 
         // Adds a rim point WITHOUT running the detector: the operator has jogged the chuck edge onto
@@ -225,6 +226,6 @@ namespace NanotecController
             _centreResult.Text = text;
         }
 
-        private Task GoToCentreAsync() => GoToCentreAsync("chuck", _chuckCentre);
+        private Task GoToCentreAsync() => GoToCentreAsync("chuck", _chuckCentre, confirm: true);
     }
 }

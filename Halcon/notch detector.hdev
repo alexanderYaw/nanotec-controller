@@ -1,0 +1,625 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hdevelop file_version="1.2" halcon_version="26.05.0.0">
+<procedure name="main">
+<interface/>
+<body>
+<c>* Wafer-NOTCH detector - HDevelop tuning script. Step with Run (F5); it pauses at each stop().</c>
+<c>* </c>
+<c>* Decides whether the notch is in the frame, and where its apex is. It does NOT find the notch</c>
+<c>* angular position: that needs the wafer centre, which lives in the host (calibration.json), not</c>
+<c>* here. What this returns is an apex in IMAGE coordinates; the host converts.</c>
+<c>* </c>
+<c>* The rim segmentation is not repeated here. Step 1 calls wafer_edge_contour(), which is steps</c>
+<c>* 1-6 of "wafer edge gpt.hdev" lifted verbatim - two-stage Otsu, the area/mean guards, the</c>
+<c>* brightest-collar side test, the frame-margin clip. Retune THAT script if the rim itself comes</c>
+<c>* out wrong; this one only reads the rim's shape. The guards are load-bearing here for a reason</c>
+<c>* peculiar to notch detection - see "the false positive" below.</c>
+<c>* </c>
+<c>* SCALE. 1.2397 um/px, from calibration.json: PixelStep gives 1.5608 steps per pixel column and</c>
+<c>* Axes.X.StepsPerMm is 1261.5. Cross-checked against the scene itself: on a plain rim frame the</c>
+<c>* edge departs from a straight line by 15-31 px, and the sagitta of a 100 mm radius across this</c>
+<c>* frame's chord is ~17 px. So the frame is 4.98 x 3.75 mm and a 200 mm wafer's 1 mm notch is</c>
+<c>* ~800 px deep - a fifth of the frame width. The whole notch fits, but only just: on</c>
+<c>* capture_20260804_114358_183.bmp there is 0.33 mm of plain rim on one side of it and 0.38 mm</c>
+<c>* on the other.</c>
+<c>* </c>
+<c>* WHY A CHORD THROUGH THE ENDS, AND NOT A FITTED LINE. The obvious method - fit a robust line</c>
+<c>* (or circle) to the whole rim and call the outliers the notch - fails on this magnification.</c>
+<c>* In the notch frame the rim contour is ~4500 px long and roughly 3900 px of that IS the notch:</c>
+<c>* the notch is the MAJORITY of the data, so a robust fit converges happily onto a notch flank</c>
+<c>* and reports the true rim as the outlier. What is reliable instead is the prior that the rim is</c>
+<c>* straight at this field of view (17 px of sagitta, above), so the two ENDS of the contour, where</c>
+<c>* it leaves the frame, pin the baseline. Everything downstream is a residual from that chord.</c>
+<c>*   Cost of this choice: if the notch runs OUT of the frame the near end is no longer plain rim,</c>
+<c>* the chord tilts, and the depth is understated. Step 3 catches the tilt (MaxChordFitMm) and</c>
+<c>* step 5 catches the run-out (the deep run must not touch either contour end); a frame failing</c>
+<c>* either is reported as "partially in view", not silently mismeasured.</c>
+<c>* </c>
+<c>* MEASURED, running this script headless through HDevEngine over the twelve captures on file:</c>
+<c>*   4 frames hold no rim at all (wafer surface, or bare chuck) and are rejected at step 1</c>
+<c>*   3 more segment to a rim contour of 280-1121 points and are rejected at step 2 as too short</c>
+<c>*   4 plain-rim frames reach a verdict: chord residual 5.0-25.6 px, depth 0.006-0.032 mm, NO</c>
+<c>*   the notch frame reaches a verdict: chord residual 37.7 px, depth 1.002 mm, width 2.55 mm,</c>
+<c>*     one contiguous run, fully enclosed, YES</c>
+<c>* So the depth test is separating 0.032 mm from 1.002 mm and MinNotchDepthMm sits in wide clear</c>
+<c>* air. That the depth lands on 1.002 mm against the SEMI nominal of 1.00 mm is the strongest</c>
+<c>* evidence available that the chain from PixelStep through to this measurement is right end to</c>
+<c>* end - nothing in this script was fitted to that number.</c>
+<c>* </c>
+<c>* THE FALSE POSITIVE, and which guard actually catches it. Run the notch geometry alone on</c>
+<c>* capture_20260804_135135_136.bmp - bare machined chuck, no wafer anywhere in view - and it</c>
+<c>* reports a 1.06 mm deep, 2.2 mm wide, contiguous, fully-enclosed "notch". The shadow troughs of</c>
+<c>* the machined surface are the right size AND the right shape, and nothing in steps 3-6 can tell</c>
+<c>* them apart. Note what does NOT save it: the front end passes that frame and returns 'ok'. What</c>
+<c>* rejects it is MinContourPts at step 2 - a trough's boundary comes out 280 points long against</c>
+<c>* 3000-4200 for a real rim. Two more texture frames go the same way at 700 and 1121 points, and</c>
+<c>* the one that survives to step 3 (capture_20260805_111803_054, 1596 points) is then caught on</c>
+<c>* depth at 0.009 mm. The defence is layered, and MinContourPts is the load-bearing part of it.</c>
+<c>* Do not lower it to rescue a frame whose rim is genuinely short - shorten EndSpanPoints, or</c>
+<c>* accept the rejection.</c>
+<c>* </c>
+<c>* EndSpanPoints  : how much of each contour END anchors the chord, in POINTS not pixels - a</c>
+<c>*                  skeleton contour steps 1 to 1.41 px per point, so 300 points is 300-420 px.</c>
+<c>*                  It only has to be long enough to average out the ring's raggedness and short</c>
+<c>*                  enough to stay clear of the notch: there is 0.33 mm (~270 px) of plain rim on</c>
+<c>*                  the tighter side of the worst frame on file, so this is close to its ceiling.</c>
+<c>*                  Lower it before anything else if the chord starts tilting.</c>
+<c>* MaxChordFitMm  : the ends must actually BE straight rim. Rejects a frame whose ends are notch</c>
+<c>*                  flank or chuck texture rather than rim - the case where a depth would still be</c>
+<c>*                  produced but would mean nothing. NOTE no frame on file fails this, so it is</c>
+<c>*                  the one threshold here with no negative example behind it; 0.08 mm is simply</c>
+<c>*                  ~1.7x the worst observed, which is the notch frame's own 37.7 px. The notch</c>
+<c>*                  frame being the worst is expected - it is the frame with the least plain rim</c>
+<c>*                  left to anchor on.</c>
+<c>* MinNotchDepthMm: verdict threshold. 0.25 mm is 200 px, an order of magnitude above the 22-23 px</c>
+<c>*                  a plain rim shows and well below the 800 px of a real notch. Nothing in the</c>
+<c>*                  data sits between, so the exact value is not delicate.</c>
+<c>* Min/MaxNotchWidthMm : a SEMI 200 mm notch measures 2.9 mm across at the rim. The band is wide</c>
+<c>*                  because the measured width depends on DeepFraction (2.93 mm at 10% of depth,</c>
+<c>*                  2.57 mm at 25%) - it is here to reject a chip or a dust clump, which is deep</c>
+<c>*                  but narrow, not to gauge the notch.</c>
+<c>* DeepFraction   : what counts as "in the notch" when measuring width and picking the flanks.</c>
+<c>* Flank Lo/Hi Fraction : the band of the flank used for the line fits that refine the apex. Stays</c>
+<c>*                  clear of the rounded apex above and of the shoulders below.</c>
+<c>* BridgeGapPx    : dust sitting on the rim breaks the ring; this rejoins the pieces. Keep it well</c>
+<c>*                  under the notch width or it will bridge ACROSS the notch mouth and erase it.</c>
+<c>* MinContourPts  : a contour shorter than this cannot carry two end spans plus a notch. Also the</c>
+<c>*                  main defence against chuck texture - see "the false positive" above.</c>
+<c>* MinFlankPoints : below this the flank fit is noise, and step 6 falls back to the raw apex.</c>
+<c>* WaferIsBrighter: 0 flips which end of the histogram gets re-split, if the lighting inverts.</c>
+<c>*                  Passed straight through to wafer_edge_contour().</c>
+<l>UmPerPixel := 1.2397</l>
+<l>EndSpanPoints := 300</l>
+<l>MaxChordFitMm := 0.08</l>
+<l>MinNotchDepthMm := 0.25</l>
+<l>MinNotchWidthMm := 1.5</l>
+<l>MaxNotchWidthMm := 4.0</l>
+<l>DeepFraction := 0.25</l>
+<l>FlankLoFraction := 0.25</l>
+<l>FlankHiFraction := 0.85</l>
+<l>BridgeGapPx := 30</l>
+<l>MinContourPts := 1500</l>
+<l>MinFlankPoints := 40</l>
+<l>WaferIsBrighter := 1</l>
+<l>dev_update_off ()</l>
+<l>dev_close_window ()</l>
+<c>* The notch frame. The others are here to be stepped through as negatives - the first three are</c>
+<c>* plain rim and must report NO NOTCH; the last is bare chuck and must be rejected at step 1.</c>
+<l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114358_183.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260803_175836_162.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_164705_738.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_171550_370.bmp')</l>
+<l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135135_136.bmp')</l>
+<l>get_image_size (Image, Width, Height)</l>
+<l>dev_open_window (0, 0, 750, 500, 'black', WindowHandle)</l>
+<l>set_display_font (WindowHandle, 14, 'mono', 'true', 'false')</l>
+<l>dev_set_part (0, 0, Height - 1, Width - 1)</l>
+<l>dev_display (Image)</l>
+<l>disp_message (WindowHandle, '0: input frame  ' + Width + 'x' + Height + '   (' + (Width * UmPerPixel / 1000)$'.2f' + ' x ' + (Height * UmPerPixel / 1000)$'.2f' + ' mm)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 1. The rim ring, from the proven front end. Everything about WHICH boundary this is, and why</c>
+<c>*    a frame with no rim in it fails here rather than downstream, is documented in</c>
+<c>*    "wafer edge gpt.hdev". Step into the call if a frame is rejected and it is not obvious why.</c>
+<l>wafer_edge_contour (Image, Rim, WaferSide, WaferIsBrighter, Cut, EdgeStatus)</l>
+<l>dev_display (Image)</l>
+<l>dev_set_draw ('fill')</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Rim)</l>
+<l>disp_message (WindowHandle, '1: rim ring from wafer_edge_contour - ' + EdgeStatus + '  (stage-2 cut ' + Cut + ')', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>if (EdgeStatus != 'ok')</l>
+<l>    dev_display (Image)</l>
+<l>    disp_message (WindowHandle, 'REJECTED at the rim stage: ' + EdgeStatus + '.  No notch verdict is possible without a rim. Tune this in "wafer edge gpt.hdev", not here.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 2. The ring is a region, and the notch is a question about the ORDER of its points, so it has</c>
+<c>*    to become a contour. Not gen_contour_region_xld: that traces the border OF the ring, down</c>
+<c>*    one side and back the other, giving every rim point twice. skeleton() collapses the ring to</c>
+<c>*    one pixel wide and gen_contours_skeleton_xld walks it in order.</c>
+<c>*    Dust on the rim breaks the ring into pieces, hence the rejoin; then the longest survivor is</c>
+<c>*    the rim and the rest are stubs.</c>
+<l>skeleton (Rim, Skel)</l>
+<l>gen_contours_skeleton_xld (Skel, Pieces, 1, 'filter')</l>
+<l>count_obj (Pieces, NumPieces)</l>
+<l>if (NumPieces &lt; 1)</l>
+<l>    dev_display (Image)</l>
+<l>    disp_message (WindowHandle, 'FAILED: the rim ring produced no contour at all.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>union_adjacent_contours_xld (Pieces, Joined, BridgeGapPx, 1, 'attr_keep')</l>
+<l>length_xld (Joined, PieceLengths)</l>
+<l>tuple_sort_index (PieceLengths, LenIdx)</l>
+<l>select_obj (Joined, Contour, LenIdx[|LenIdx| - 1] + 1)</l>
+<l>get_contour_xld (Contour, Row, Col)</l>
+<l>NumPts := |Row|</l>
+<l>dev_display (Image)</l>
+<l>dev_set_draw ('margin')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Contour)</l>
+<l>disp_message (WindowHandle, '2: ' + NumPieces + ' skeleton piece(s), rejoined at ' + BridgeGapPx + ' px; longest kept = ' + NumPts + ' points (' + (max(PieceLengths) * UmPerPixel / 1000)$'.2f' + ' mm of rim)', 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>if (NumPts &lt; MinContourPts or NumPts &lt; 4 * EndSpanPoints)</l>
+<l>    dev_display (Image)</l>
+<l>    disp_message (WindowHandle, 'FAILED: rim contour is only ' + NumPts + ' points - too short to carry two ' + EndSpanPoints + '-point end spans and a notch between them. Either the rim barely clips this frame, or dust has broken the ring into pieces further apart than BridgeGapPx.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 3. The baseline chord, from the two ends of the contour ONLY - see the header for why not a</c>
+<c>*    fit over the whole thing.</c>
+<c>*    The two end spans are handed to fit_line_contour_xld as ONE polygon. The long jump between</c>
+<c>*    them is harmless: the fit is over the POINTS, and it never treats them as a path.</c>
+<l>RowEnds := [Row[0:EndSpanPoints - 1],Row[NumPts - EndSpanPoints:NumPts - 1]]</l>
+<l>ColEnds := [Col[0:EndSpanPoints - 1],Col[NumPts - EndSpanPoints:NumPts - 1]]</l>
+<l>gen_contour_polygon_xld (EndsContour, RowEnds, ColEnds)</l>
+<l>fit_line_contour_xld (EndsContour, 'regression', -1, 0, 5, 2, RowBegin, ColBegin, RowEnd, ColEnd, Nr, Nc, Dist)</l>
+<c>*    Nr/Nc/Dist are deliberately unused. Their sign and offset convention is easy to get subtly</c>
+<c>*    wrong, and getting it wrong would flip which side of the chord counts as "into the wafer"</c>
+<c>*    while still producing plausible numbers. The returned segment endpoints are unambiguous,</c>
+<c>*    so the unit tangent and normal are built from those instead.</c>
+<l>Dr := RowEnd - RowBegin</l>
+<l>Dc := ColEnd - ColBegin</l>
+<l>ChordLen := sqrt(Dr * Dr + Dc * Dc)</l>
+<l>Tr := Dr / ChordLen</l>
+<l>Tc := Dc / ChordLen</l>
+<l>PerpR := -Tc</l>
+<l>PerpC := Tr</l>
+<c>*    Signed offset from the chord, and position along it, for every rim point at once.</c>
+<l>Offset := PerpR * (Row - RowBegin) + PerpC * (Col - ColBegin)</l>
+<l>Along := Tr * (Row - RowBegin) + Tc * (Col - ColBegin)</l>
+<l>EndOffset := PerpR * (RowEnds - RowBegin) + PerpC * (ColEnds - ColBegin)</l>
+<l>ChordFitPx := max(abs(EndOffset))</l>
+<l>ChordFitMm := ChordFitPx * UmPerPixel / 1000</l>
+<c>*    Which side is INTO the wafer. The notch removes material, so its apex lies on the wafer</c>
+<c>*    side of the chord; a bulge the other way is debris on the rim, not a notch. The wafer side</c>
+<c>*    is already known - it is the collar the front end kept.</c>
+<l>area_center (WaferSide, WSArea, WSRow, WSCol)</l>
+<l>WaferOffset := PerpR * (WSRow - RowBegin) + PerpC * (WSCol - ColBegin)</l>
+<l>if (WaferOffset &lt; 0)</l>
+<l>    WaferSign := -1</l>
+<l>else</l>
+<l>    WaferSign := 1</l>
+<l>endif</l>
+<l>Inward := WaferSign * Offset</l>
+<l>gen_contour_polygon_xld (Chord, [RowBegin - 3000 * Tr,RowEnd + 3000 * Tr], [ColBegin - 3000 * Tc,ColEnd + 3000 * Tc])</l>
+<l>dev_display (Image)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_display (Contour)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_display (Chord)</l>
+<l>dev_set_color ('red')</l>
+<l>dev_set_line_width (5)</l>
+<l>dev_display (EndsContour)</l>
+<l>disp_message (WindowHandle, ['3: chord (cyan) through the two ' + EndSpanPoints + '-point end spans (red)','   end-span residual ' + ChordFitPx$'.1f' + ' px = ' + ChordFitMm$'.3f' + ' mm   (limit ' + MaxChordFitMm$'.3f' + ' mm)','   wafer lies on the ' + WaferSign + ' side'], 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<l>if (ChordFitMm &gt; MaxChordFitMm)</l>
+<l>    dev_display (Image)</l>
+<l>    disp_message (WindowHandle, 'REJECTED: the contour ends are not straight rim (' + ChordFitMm$'.3f' + ' mm off a line, limit ' + MaxChordFitMm$'.3f' + '). Any depth measured from this chord would be meaningless. Usually means the notch runs out of the frame at one end, or the ring picked up chuck texture - re-check step 1.', 'window', 12, 12, 'red', 'false')</l>
+<l>    stop ()</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 4. Depth. The deepest point INTO the wafer is the raw apex; the contiguous run of points more</c>
+<c>*    than DeepFraction of the way down is the notch mouth, and its extent along the chord is the</c>
+<c>*    width. One pass does all of it.</c>
+<l>tuple_sort_index (Inward, InIdx)</l>
+<l>ApexIdx := InIdx[|InIdx| - 1]</l>
+<l>DepthPx := Inward[ApexIdx]</l>
+<l>DepthMm := DepthPx * UmPerPixel / 1000</l>
+<l>DeepCut := DeepFraction * DepthPx</l>
+<l>FirstDeep := -1</l>
+<l>LastDeep := -1</l>
+<l>DeepCount := 0</l>
+<l>AlongLo := 0.0</l>
+<l>AlongHi := 0.0</l>
+<l>for K := 0 to NumPts - 1 by 1</l>
+<l>    if (Inward[K] &gt;= DeepCut)</l>
+<l>        if (FirstDeep &lt; 0)</l>
+<l>            FirstDeep := K</l>
+<l>            AlongLo := Along[K]</l>
+<l>            AlongHi := Along[K]</l>
+<l>        endif</l>
+<l>        LastDeep := K</l>
+<l>        DeepCount := DeepCount + 1</l>
+<l>        if (Along[K] &lt; AlongLo)</l>
+<l>            AlongLo := Along[K]</l>
+<l>        endif</l>
+<l>        if (Along[K] &gt; AlongHi)</l>
+<l>            AlongHi := Along[K]</l>
+<l>        endif</l>
+<l>    endif</l>
+<l>endfor</l>
+<l>WidthMm := (AlongHi - AlongLo) * UmPerPixel / 1000</l>
+<c>*    Contiguous: one excursion, not a scatter of dust hits that happen to share a depth.</c>
+<c>*    Enclosed: the excursion ends before the contour does, so the whole notch is in view and the</c>
+<c>*    depth is the real depth rather than a lower bound.</c>
+<l>Contiguous := LastDeep - FirstDeep + 1 == DeepCount</l>
+<l>Enclosed := FirstDeep &gt; 0 and LastDeep &lt; NumPts - 1</l>
+<l>FootRow := Row[ApexIdx] - DepthPx * WaferSign * PerpR</l>
+<l>FootCol := Col[ApexIdx] - DepthPx * WaferSign * PerpC</l>
+<l>gen_contour_polygon_xld (DepthLine, [Row[ApexIdx],FootRow], [Col[ApexIdx],FootCol])</l>
+<l>dev_display (Image)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_display (Contour)</l>
+<l>dev_set_color ('cyan')</l>
+<l>dev_set_line_width (2)</l>
+<l>dev_display (Chord)</l>
+<l>dev_set_color ('blue')</l>
+<l>dev_set_line_width (4)</l>
+<l>dev_display (DepthLine)</l>
+<l>gen_cross_contour_xld (RawApexCross, Row[ApexIdx], Col[ApexIdx], 80, 0.785)</l>
+<l>dev_set_color ('yellow')</l>
+<l>dev_display (RawApexCross)</l>
+<l>disp_message (WindowHandle, ['4: deepest point into the wafer = (' + Row[ApexIdx]$'.1f' + ', ' + Col[ApexIdx]$'.1f' + ')','   depth ' + DepthPx$'.1f' + ' px = ' + DepthMm$'.3f' + ' mm','   mouth ' + DeepCount + ' points, index ' + FirstDeep + '-' + LastDeep + ' of ' + (NumPts - 1) + ', width ' + WidthMm$'.3f' + ' mm'], 'window', 12, 12, 'yellow', 'false')</l>
+<l>stop ()</l>
+<c>* 5. Verdict. Four independent tests; the listing shows each one's number so a marginal frame</c>
+<c>*    says WHICH test it failed rather than just "no".</c>
+<l>DeepEnough := DepthMm &gt;= MinNotchDepthMm</l>
+<l>WidthOK := WidthMm &gt;= MinNotchWidthMm and WidthMm &lt;= MaxNotchWidthMm</l>
+<l>NotchPresent := DeepEnough and WidthOK and Contiguous and Enclosed</l>
+<l>if (DeepEnough)</l>
+<l>    V1 := 'PASS'</l>
+<l>else</l>
+<l>    V1 := 'FAIL'</l>
+<l>endif</l>
+<l>if (WidthOK)</l>
+<l>    V2 := 'PASS'</l>
+<l>else</l>
+<l>    V2 := 'FAIL'</l>
+<l>endif</l>
+<l>if (Contiguous)</l>
+<l>    V3 := 'PASS'</l>
+<l>else</l>
+<l>    V3 := 'FAIL - the deep points are scattered, so this is debris or a broken ring, not one notch'</l>
+<l>endif</l>
+<l>if (Enclosed)</l>
+<l>    V4 := 'PASS'</l>
+<l>else</l>
+<l>    V4 := 'FAIL - the excursion reaches a contour end, so the notch runs out of the frame and this depth is a LOWER BOUND'</l>
+<l>endif</l>
+<l>Msg := ['5: depth  ' + DepthMm$'6.3f' + ' mm  (min ' + MinNotchDepthMm$'.2f' + ')   ' + V1]</l>
+<l>Msg := [Msg,'   width  ' + WidthMm$'6.3f' + ' mm  (' + MinNotchWidthMm$'.1f' + '-' + MaxNotchWidthMm$'.1f' + ')   ' + V2]</l>
+<l>Msg := [Msg,'   one run                        ' + V3]</l>
+<l>Msg := [Msg,'   fully in view                  ' + V4]</l>
+<l>if (NotchPresent)</l>
+<l>    Msg := [Msg,'   ==> NOTCH PRESENT']</l>
+<l>    Colour := 'green'</l>
+<l>else</l>
+<l>    Msg := [Msg,'   ==> NO NOTCH IN THIS FRAME']</l>
+<l>    Colour := 'orange'</l>
+<l>endif</l>
+<l>dev_display (Image)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_display (Contour)</l>
+<l>disp_message (WindowHandle, Msg, 'window', 12, 12, Colour, 'false')</l>
+<l>stop ()</l>
+<l>if (not NotchPresent)</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* 6. A steadier apex, for the ANGLE only - not for the depth; step 7 says why they differ. What</c>
+<c>*    is being traced is the boundary of the unlit gap, and near the apex that boundary is rounded</c>
+<c>*    by the bevel and by defocus, so the single deepest pixel rests on one noisy sample. The two</c>
+<c>*    flanks are long and straight and average hundreds of points each, so their intersection</c>
+<c>*    should hold still better. The rounded apex itself is excluded (FlankHiFraction) along with</c>
+<c>*    the shoulders (FlankLoFraction).</c>
+<c>*    The flanks are contiguous index ranges either side of the apex, so they can be sliced out</c>
+<c>*    directly - no per-point tuple appends.</c>
+<l>FlankLoPx := FlankLoFraction * DepthPx</l>
+<l>FlankHiPx := FlankHiFraction * DepthPx</l>
+<l>A1 := -1</l>
+<l>A2 := -1</l>
+<l>for K := FirstDeep to ApexIdx by 1</l>
+<l>    if (A1 &lt; 0 and Inward[K] &gt;= FlankLoPx)</l>
+<l>        A1 := K</l>
+<l>    endif</l>
+<l>    if (A2 &lt; 0 and Inward[K] &gt;= FlankHiPx)</l>
+<l>        A2 := K</l>
+<l>    endif</l>
+<l>endfor</l>
+<l>B1 := -1</l>
+<l>B2 := -1</l>
+<l>for K := LastDeep to ApexIdx by -1</l>
+<l>    if (B1 &lt; 0 and Inward[K] &gt;= FlankLoPx)</l>
+<l>        B1 := K</l>
+<l>    endif</l>
+<l>    if (B2 &lt; 0 and Inward[K] &gt;= FlankHiPx)</l>
+<l>        B2 := K</l>
+<l>    endif</l>
+<l>endfor</l>
+<l>FlanksUsable := A1 &gt;= 0 and A2 &gt; A1 + MinFlankPoints and B1 &gt;= 0 and B1 &gt; B2 + MinFlankPoints</l>
+<l>if (not FlanksUsable)</l>
+<l>    ApexRow := Row[ApexIdx]</l>
+<l>    ApexCol := Col[ApexIdx]</l>
+<l>    IncludedDeg := -1</l>
+<l>    dev_display (Image)</l>
+<l>    dev_set_color ('green')</l>
+<l>    dev_display (Contour)</l>
+<l>    gen_cross_contour_xld (ApexCross, ApexRow, ApexCol, 80, 0.785)</l>
+<l>    dev_set_color ('yellow')</l>
+<l>    dev_set_line_width (3)</l>
+<l>    dev_display (ApexCross)</l>
+<l>    disp_message (WindowHandle, '6: flanks too short to fit (' + (A2 - A1) + ' and ' + (B1 - B2) + ' points, need ' + MinFlankPoints + ') - falling back to the deepest contour point. Expect the apex to wander a few px frame to frame.', 'window', 12, 12, 'orange', 'false')</l>
+<l>    stop ()</l>
+<l>else</l>
+<l>    gen_contour_polygon_xld (FlankA, Row[A1:A2], Col[A1:A2])</l>
+<l>    gen_contour_polygon_xld (FlankB, Row[B2:B1], Col[B2:B1])</l>
+<l>    fit_line_contour_xld (FlankA, 'tukey', -1, 0, 5, 2, ARowB, AColB, ARowE, AColE, ANr, ANc, ADist)</l>
+<l>    fit_line_contour_xld (FlankB, 'tukey', -1, 0, 5, 2, BRowB, BColB, BRowE, BColE, BNr, BNc, BDist)</l>
+<l>    intersection_lines (ARowB, AColB, ARowE, AColE, BRowB, BColB, BRowE, BColE, ApexRow, ApexCol, IsParallel)</l>
+<l>    if (IsParallel)</l>
+<l>        ApexRow := Row[ApexIdx]</l>
+<l>        ApexCol := Col[ApexIdx]</l>
+<l>        IncludedDeg := -1</l>
+<l>    else</l>
+<c>        *    Included angle, unambiguously: point BOTH flank directions away from the apex first.</c>
+<c>        *    angle_ll alone cannot do this - its answer depends on which way round each fitted</c>
+<c>        *    segment happens to run, and the two flanks are traversed in opposite senses.</c>
+<l>        ADr := ARowE - ARowB</l>
+<l>        ADc := AColE - AColB</l>
+<l>        ALen := sqrt(ADr * ADr + ADc * ADc)</l>
+<l>        ADr := ADr / ALen</l>
+<l>        ADc := ADc / ALen</l>
+<l>        if (ADr * (ARowB - ApexRow) + ADc * (AColB - ApexCol) &lt; 0)</l>
+<l>            ADr := -ADr</l>
+<l>            ADc := -ADc</l>
+<l>        endif</l>
+<l>        BDr := BRowE - BRowB</l>
+<l>        BDc := BColE - BColB</l>
+<l>        BLen := sqrt(BDr * BDr + BDc * BDc)</l>
+<l>        BDr := BDr / BLen</l>
+<l>        BDc := BDc / BLen</l>
+<l>        if (BDr * (BRowB - ApexRow) + BDc * (BColB - ApexCol) &lt; 0)</l>
+<l>            BDr := -BDr</l>
+<l>            BDc := -BDc</l>
+<l>        endif</l>
+<l>        CosAng := ADr * BDr + ADc * BDc</l>
+<l>        tuple_max2 (CosAng, -1.0, CosAng)</l>
+<l>        tuple_min2 (CosAng, 1.0, CosAng)</l>
+<l>        IncludedDeg := deg(acos(CosAng))</l>
+<l>    endif</l>
+<l>    dev_display (Image)</l>
+<l>    dev_set_color ('green')</l>
+<l>    dev_set_line_width (3)</l>
+<l>    dev_display (Contour)</l>
+<l>    dev_set_color ('magenta')</l>
+<l>    dev_set_line_width (5)</l>
+<l>    dev_display (FlankA)</l>
+<l>    dev_display (FlankB)</l>
+<l>    dev_set_color ('cyan')</l>
+<l>    dev_set_line_width (2)</l>
+<l>    dev_display (Chord)</l>
+<l>    gen_cross_contour_xld (RawCross, Row[ApexIdx], Col[ApexIdx], 80, 0.785)</l>
+<l>    dev_set_color ('yellow')</l>
+<l>    dev_display (RawCross)</l>
+<l>    gen_cross_contour_xld (ApexCross, ApexRow, ApexCol, 120, 0.785)</l>
+<l>    dev_set_color ('red')</l>
+<l>    dev_set_line_width (3)</l>
+<l>    dev_display (ApexCross)</l>
+<l>    disp_message (WindowHandle, ['6: flanks fitted over ' + (A2 - A1) + ' and ' + (B1 - B2) + ' points (magenta)','   refined apex (red) = (' + ApexRow$'.1f' + ', ' + ApexCol$'.1f' + ')','   deepest contour point (yellow) = (' + Row[ApexIdx]$'.1f' + ', ' + Col[ApexIdx]$'.1f' + '),  ' + sqrt((ApexRow - Row[ApexIdx]) * (ApexRow - Row[ApexIdx]) + (ApexCol - Col[ApexIdx]) * (ApexCol - Col[ApexIdx]))$'.1f' + ' px apart','   included angle ' + IncludedDeg$'.1f' + ' deg  (SEMI nominal 90)'], 'window', 12, 12, 'yellow', 'false')</l>
+<l>    stop ()</l>
+<l>endif</l>
+<c>* 7. What the host would take away. The apex row/col goes through the pixel-to-step affine in</c>
+<c>*    calibration.json, and the notch angle is then atan2 of the apex against the wafer centre -</c>
+<c>*    both of which live in the host, not here.</c>
+<c>* </c>
+<c>*    THE TWO APEX NUMBERS ARE NOT INTERCHANGEABLE. Report the DEPTH from the deepest contour</c>
+<c>*    point - 1.002 mm on the frame on file, against the SEMI nominal of 1.00. The flank</c>
+<c>*    intersection is NOT a depth and must not be quoted as one: it overshoots, by 0.37 mm here.</c>
+<c>*    That is not an error, it is geometry - the silhouette's apex is genuinely rounded (fit a</c>
+<c>*    circle to it and the radius comes out ~1.1 mm, because the traced boundary is the outer edge</c>
+<c>*    of the unlit gap rather than the silicon vertex, and defocused besides), and extrapolating</c>
+<c>*    two straight flanks past a rounded tip necessarily lands beyond it. VertexOffsetMm is</c>
+<c>*    reported so the overshoot stays visible instead of quietly inflating a depth.</c>
+<c>*    What the intersection IS for is a repeatable reference point for the Theta angle. With one</c>
+<c>*    notch capture on file that is reasoning, not a measurement: check it on hardware over a few</c>
+<c>*    Theta steps before relying on it, and if it does not hold still, fall back to the deepest</c>
+<c>*    point, which is at least unambiguous.</c>
+<c>*    IncludedDeg reads 98 deg against the SEMI nominal of 90 for the same reason - these are the</c>
+<c>*    shadow's flanks, not the silicon's. It is a sanity check, not a measurement of the wafer.</c>
+<l>VertexOffsetMm := WaferSign * (PerpR * (ApexRow - RowBegin) + PerpC * (ApexCol - ColBegin)) * UmPerPixel / 1000</l>
+<l>dev_display (Image)</l>
+<l>dev_set_color ('green')</l>
+<l>dev_set_line_width (3)</l>
+<l>dev_display (Contour)</l>
+<l>gen_cross_contour_xld (FinalCross, ApexRow, ApexCol, 120, 0.785)</l>
+<l>dev_set_color ('red')</l>
+<l>dev_display (FinalCross)</l>
+<l>disp_message (WindowHandle, ['7: RESULT','   notch present : yes','   depth         : ' + DepthMm$'.3f' + ' mm   (report THIS as the depth)','   width         : ' + WidthMm$'.3f' + ' mm','   Theta apex    : row ' + ApexRow$'.1f' + '  col ' + ApexCol$'.1f' + '   (flank intersection)','   deepest point : row ' + Row[ApexIdx]$'.1f' + '  col ' + Col[ApexIdx]$'.1f','   vertex offset : ' + VertexOffsetMm$'.3f' + ' mm - NOT a depth, it overshoots the rounded apex','   included angle: ' + IncludedDeg$'.1f' + ' deg  (shadow flanks; SEMI nominal 90)'], 'window', 12, 12, 'green', 'false')</l>
+<l>stop ()</l>
+</body>
+<docu id="main">
+<parameters/>
+</docu>
+</procedure>
+<procedure name="wafer_edge_contour">
+<interface>
+<io>
+<par name="Image" base_type="iconic" dimension="0"/>
+</io>
+<oo>
+<par name="Rim" base_type="iconic" dimension="0"/>
+<par name="WaferSide" base_type="iconic" dimension="0"/>
+</oo>
+<ic>
+<par name="WaferIsBrighter" base_type="ctrl" dimension="0"/>
+</ic>
+<oc>
+<par name="Cut" base_type="ctrl" dimension="0"/>
+<par name="Status" base_type="ctrl" dimension="0"/>
+</oc>
+</interface>
+<body>
+<c>* Steps 1-6 of "wafer edge gpt.hdev", with the display stripped out and the failure paths turned</c>
+<c>* into a Status string. Returns the rim ring - the wafer-side boundary of the unlit gap past the</c>
+<c>* rim, clipped clear of the image frame - and the wafer-side collar that identified it.</c>
+<c>* </c>
+<c>* Every constant below is explained at length in that script. Retune it THERE, on the frames it</c>
+<c>* documents, and copy the result across; do not diverge the two. The one thing not copied is its</c>
+<c>* step 7, the nearest-point-to-the-crosshair search - the notch script wants the whole ring.</c>
+<l>CleanRadius := 7</l>
+<l>CloseRadius := 21</l>
+<l>MinArea := 2e5</l>
+<l>MaxMeanFraction := 0.6</l>
+<l>FrameMargin := 2</l>
+<l>SideProbeRadius := 50</l>
+<l>SideBrightFraction := 0.8</l>
+<l>MinCollarArea := 5000</l>
+<l>SideGrowRadius := 2</l>
+<c>* Both outputs must exist on every path out of here, including the failures.</c>
+<l>gen_empty_obj (Rim)</l>
+<l>gen_empty_obj (WaferSide)</l>
+<l>Cut := -1</l>
+<l>get_image_size (Image, Width, Height)</l>
+<l>count_channels (Image, Channels)</l>
+<l>if (Channels &gt;= 3)</l>
+<l>    access_channel (Image, GrayRaw, 1)</l>
+<l>else</l>
+<l>    copy_image (Image, GrayRaw)</l>
+<l>endif</l>
+<l>convert_image_type (GrayRaw, Gray, 'byte')</l>
+<c>* Stage-1 Otsu over the whole histogram - the cut that is NOT wanted, computed only to bound</c>
+<c>* stage 2. The 1.0 * is load-bearing: gray_histo returns INTEGER counts and HALCON's / truncates</c>
+<c>* on integer tuples, which would floor the class means and drift the threshold.</c>
+<l>get_domain (Gray, Domain)</l>
+<l>gray_histo (Domain, Gray, Histo, HistoRelative)</l>
+<l>Lo := 0</l>
+<l>Hi := 255</l>
+<l>Bins := 1.0 * [Lo:Hi]</l>
+<l>Sub := 1.0 * Histo[Lo:Hi]</l>
+<l>Total := sum(Sub)</l>
+<l>Moment := sum(Bins * Sub)</l>
+<l>tuple_cumul (Sub, WeightLow)</l>
+<l>tuple_cumul (Bins * Sub, MomentLow)</l>
+<l>WeightHigh := Total - WeightLow</l>
+<l>tuple_max2 (WeightLow, 1, WeightLowSafe)</l>
+<l>tuple_max2 (WeightHigh, 1, WeightHighSafe)</l>
+<l>MeanLow := MomentLow / WeightLowSafe</l>
+<l>MeanHigh := (Moment - MomentLow) / WeightHighSafe</l>
+<l>Between := (WeightLow / Total) * (WeightHigh / Total) * (MeanLow - MeanHigh) * (MeanLow - MeanHigh)</l>
+<l>tuple_sort_index (Between, BetweenIdx)</l>
+<l>Split := Lo + BetweenIdx[|BetweenIdx| - 1]</l>
+<c>* Stage-2 Otsu over that darker population alone. THIS is the cut that matters.</c>
+<l>if (WaferIsBrighter)</l>
+<l>    Lo := 0</l>
+<l>    Hi := Split</l>
+<l>else</l>
+<l>    Lo := Split</l>
+<l>    Hi := 255</l>
+<l>endif</l>
+<l>Bins := 1.0 * [Lo:Hi]</l>
+<l>Sub := 1.0 * Histo[Lo:Hi]</l>
+<l>Total := sum(Sub)</l>
+<l>Moment := sum(Bins * Sub)</l>
+<l>tuple_cumul (Sub, WeightLow)</l>
+<l>tuple_cumul (Bins * Sub, MomentLow)</l>
+<l>WeightHigh := Total - WeightLow</l>
+<l>tuple_max2 (WeightLow, 1, WeightLowSafe)</l>
+<l>tuple_max2 (WeightHigh, 1, WeightHighSafe)</l>
+<l>MeanLow := MomentLow / WeightLowSafe</l>
+<l>MeanHigh := (Moment - MomentLow) / WeightHighSafe</l>
+<l>Between := (WeightLow / Total) * (WeightHigh / Total) * (MeanLow - MeanHigh) * (MeanLow - MeanHigh)</l>
+<l>tuple_sort_index (Between, BetweenIdx)</l>
+<l>Cut := Lo + BetweenIdx[|BetweenIdx| - 1]</l>
+<l>if (WaferIsBrighter)</l>
+<l>    threshold (Gray, OffWaferRaw, 0, Cut)</l>
+<l>else</l>
+<l>    threshold (Gray, OffWaferRaw, Cut, 255)</l>
+<l>endif</l>
+<c>* Big enough AND black enough to be the gap. Both tests are needed - the machined chuck's shadow</c>
+<c>* troughs are as large as a real gap and only the grey separates them. No fill_up: if the dark</c>
+<c>* region ever enclosed the wafer, filling would swallow the wafer and the rim would vanish.</c>
+<l>opening_circle (OffWaferRaw, OffWaferOpened, CleanRadius)</l>
+<l>closing_circle (OffWaferOpened, OffWaferClosed, CloseRadius)</l>
+<l>connection (OffWaferClosed, OffWaferParts)</l>
+<l>select_shape (OffWaferParts, BigEnough, 'area', 'and', MinArea, 1e9)</l>
+<l>if (WaferIsBrighter)</l>
+<l>    MeanLoLimit := 0</l>
+<l>    MeanHiLimit := MaxMeanFraction * Cut</l>
+<l>else</l>
+<l>    MeanLoLimit := 255 - MaxMeanFraction * (255 - Cut)</l>
+<l>    MeanHiLimit := 255</l>
+<l>endif</l>
+<l>select_gray (BigEnough, Gray, OffWafer, 'mean', 'and', MeanLoLimit, MeanHiLimit)</l>
+<l>count_obj (OffWafer, NumKept)</l>
+<l>if (NumKept &lt; 1)</l>
+<l>    Status := 'no component is both large enough and dark enough to be the gap past the rim - either the wafer fills the view, or there is no rim in this frame'</l>
+<l>    return ()</l>
+<l>endif</l>
+<c>* Which side of the gap faces the wafer. Radially the scene runs wafer - bevel - gap - chuck, and</c>
+<c>* nearest-to-anything cannot settle it; brightness can. Keep the brightest collar.</c>
+<l>union1 (OffWafer, Gap)</l>
+<l>dilation_circle (Gap, GapGrown, SideProbeRadius)</l>
+<l>difference (GapGrown, Gap, Collar)</l>
+<l>connection (Collar, CollarParts)</l>
+<l>select_shape (CollarParts, Sides, 'area', 'and', MinCollarArea, 1e9)</l>
+<l>count_obj (Sides, NumSides)</l>
+<l>if (NumSides &lt; 1)</l>
+<l>    Status := 'no collar either side of the gap - it fills the frame, or SideProbeRadius/MinCollarArea are wrong'</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>intensity (Sides, Gray, SideMean, SideDev)</l>
+<l>BrightestMean := max(SideMean)</l>
+<l>tuple_sort_index (SideMean, MeanIdx)</l>
+<l>KeepIdx := []</l>
+<l>for K := 0 to NumSides - 1 by 1</l>
+<l>    if (NumSides &lt; 2 or SideMean[K] &gt;= SideBrightFraction * BrightestMean)</l>
+<l>        KeepIdx := [KeepIdx,K + 1]</l>
+<l>    endif</l>
+<l>endfor</l>
+<c>* Sides too alike to separate - fall back to the brightest rather than failing the frame.</c>
+<l>if (|KeepIdx| &lt; 1)</l>
+<l>    KeepIdx := MeanIdx[|MeanIdx| - 1] + 1</l>
+<l>endif</l>
+<l>select_obj (Sides, SelectedSides, KeepIdx)</l>
+<l>union1 (SelectedSides, WaferSideCollar)</l>
+<l>dilation_circle (WaferSideCollar, WaferSide, SideGrowRadius)</l>
+<c>* The rim = the gap's own boundary ring, kept only where it faces the wafer side, minus the</c>
+<c>* stretches that merely run along the image frame.</c>
+<l>boundary (Gap, GapBorder, 'inner')</l>
+<l>intersection (GapBorder, WaferSide, RimRing)</l>
+<l>gen_rectangle1 (Inner, FrameMargin, FrameMargin, Height - 1 - FrameMargin, Width - 1 - FrameMargin)</l>
+<l>intersection (RimRing, Inner, Rim)</l>
+<l>area_center (Rim, RimArea, RimRow, RimCol)</l>
+<l>if (RimArea &lt; 1)</l>
+<l>    Status := 'nothing left of the gap boundary once the frame runs and the chuck side were dropped - this frame is entirely off the wafer'</l>
+<l>    return ()</l>
+<l>endif</l>
+<l>Status := 'ok'</l>
+<l>return ()</l>
+</body>
+<docu id="wafer_edge_contour">
+<parameters>
+<parameter id="Cut"/>
+<parameter id="Image"/>
+<parameter id="Rim"/>
+<parameter id="Status"/>
+<parameter id="WaferIsBrighter"/>
+<parameter id="WaferSide"/>
+</parameters>
+</docu>
+</procedure>
+</hdevelop>

@@ -204,7 +204,7 @@ namespace NanotecController
                           "(it also needs a chuck centre and steps-per-mm on X and Y).");
                 return;
             }
-            await GoToStoredCentreAsync($"wafer (Θ={deg:F1}°)", target.X, target.Y, confirm: true);
+            await GoToStoredCentreAsync($"wafer (Θ={deg:F1}°)", target.X, target.Y, confirm: false);
         }
 
         // Drives X/Y to a stored USER-frame centre (chuck/wafer) via MoveToAsync, asking first

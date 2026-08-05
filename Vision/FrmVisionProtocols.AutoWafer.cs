@@ -96,21 +96,16 @@ namespace NanotecController
             double nominalR = (double)_waferDia.Value / 2.0 * ((kX + kY) / 2.0);
             if (nominalR < 1) { _status.Text = "Wafer Θ scan: the wafer diameter gives a degenerate radius."; return; }
 
-            if (MessageBox.Show(this,
-                    "Automatic wafer centre-find (Θ scan).\r\n\r\nThe stage will:\r\n" +
-                    $"  1. move to the corner of its travel (X at its minimum, Y at its maximum)\r\n" +
-                    $"  2. step down in Y until the wafer edge comes into view\r\n" +
-                    $"  3. take {n} samples there, turning Θ by {360.0 / n:F1}° between each and moving\r\n" +
-                    $"     X/Y only if the edge leaves view — one full revolution, about two minutes\r\n" +
-                    $"  4. re-sample the starting angle as a closure check\r\n" +
-                    $"  5. move to the wafer centre it just measured\r\n\r\n" +
-                    "Confirm before running:\r\n" +
-                    "  - the wafer is held (vacuum on) — it must not move on the chuck\r\n" +
-                    "  - Z / focus is set so the wafer edge is sharp\r\n" +
-                    "  - the path to the corner of travel, and a full 360° turn, are clear\r\n\r\n" +
-                    "Z is never moved.\r\n\r\nProceed?",
+            // A blurred rim is the one pre-condition the run cannot detect or recover from, so it is
+            // the only thing asked. Answering No stops the run and says what to fix.
+            if (MessageBox.Show(this, "Is the wafer in focus?",
                     "Wafer Θ scan", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                MessageBox.Show(this, "Ensure the wafer is in focus before proceeding.",
+                    "Wafer Θ scan", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _status.Text = "Wafer Θ scan: cancelled — focus the wafer first.";
                 return;
+            }
 
             _waferCancel = false;
             _waferRunning = true;
