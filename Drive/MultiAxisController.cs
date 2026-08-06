@@ -229,7 +229,7 @@ namespace NanotecController
         }
 
         /// <summary>CiA 402 state-only read (one SDO transaction) — the poller's slow lane.</summary>
-        public (string State, bool HasFault) GetState(AxisId id)
+        public (string State, bool HasFault, bool QuickStopped) GetState(AxisId id)
         {
             lock (_channel) return Axis(id).GetState();
         }

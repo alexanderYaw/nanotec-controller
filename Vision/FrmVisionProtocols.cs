@@ -1,7 +1,6 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using HalconDotNet;
 
 namespace NanotecController
 {
@@ -47,16 +46,28 @@ namespace NanotecController
         private readonly TextBox _sampleList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
         private readonly Label _calibResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
 
-        // --- Wafer centre-find: capture >=3 wafer-rim points (step space), circle-fit, go to centre.
-        // Same flow as the chuck centre-find but with WaferEdgeDetector and a separate stored centre.
+        // --- Auto wafer centre-find (Θ scan). The wafer rim is far larger than the X/Y travel, so it
+        // cannot be circled with the stage the way the chuck rim is: the stage parks on one reachable
+        // spot on the rim and Θ turns the wafer underneath the camera instead. Wafer Ø sizes the
+        // approach jump and sanity-checks the fitted radius; Samples is how many angles are visited
+        // over one revolution. Logic lives in FrmVisionProtocols.AutoWafer.cs.
         private readonly WaferEdgeDetector _waferDetector = new();
-        private readonly CentreFinder _waferFinder = new();   // accumulates wafer rim points (user-frame steps)
-        private readonly Button _waferEdgeBtn = new() { Text = "Add Wafer Edge", Enabled = false };
-        private readonly Button _waferClearBtn = new() { Text = "Clear", Enabled = false };
-        private readonly Button _waferCentreBtn = new() { Text = "Compute Centre", Enabled = false };
+        private readonly NumericUpDown _waferDia = new() { Minimum = 10, Maximum = 600, Value = 200, DecimalPlaces = 1, Increment = 10 };
+        private readonly NumericUpDown _waferSamples = new() { Minimum = 3, Maximum = 72, Value = 24, Increment = 1 };
+        private readonly Button _waferRunBtn = new() { Text = "Auto Wafer Centre (Θ)", Enabled = false };
+        private readonly Button _waferCancelBtn = new() { Text = "Cancel", Enabled = false };
         private readonly Button _waferGoBtn = new() { Text = "Go to Centre", Enabled = false };
         private readonly Label _waferResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
-        private (long X, long Y)? _waferCentre;
+        private readonly TextBox _waferLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
+
+        // Notch find (FrmVisionProtocols.NotchFind.cs)
+        private readonly Button _notchRunBtn = new() { Text = "Find Notch (Θ sweep)", Enabled = false };
+        private readonly Button _notchCancelBtn = new() { Text = "Cancel", Enabled = false };
+        private readonly NumericUpDown _notchDatum = new() { Minimum = 0, Maximum = 360, Value = 0, DecimalPlaces = 1, Increment = 5 };
+        private readonly NumericUpDown _notchThreshold = new() { Minimum = 0.05M, Maximum = 1.00M, Value = 0.30M, DecimalPlaces = 2, Increment = 0.05M };
+        private readonly Button _notchGoBtn = new() { Text = "Rotate to datum", Enabled = false };
+        private readonly Button _notchCheckBtn = new() { Text = "Check notch angle", Enabled = false };
+        private readonly TextBox _notchLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
 
         // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
         private readonly ChuckEdgeDetector _edgeDetector = new();
@@ -114,8 +125,10 @@ namespace NanotecController
             Text = "Vision - calibration & centre-find";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
-            ClientSize = new Size(1490, 680);
-            MinimumSize = new Size(1200, 720);
+            // Height carries the notch-find row under the wafer group (y 664..750); the bottom strip
+            // is anchored to the bottom, so everything above it keeps its place.
+            ClientSize = new Size(1490, 762);
+            MinimumSize = new Size(1200, 802);
 
             // ---- Live view (mirror) + captured pane (top row) --------------------
             // Left: a live MIRROR of the main-screen camera (crosshair toggle + shared zoom) so the
@@ -156,59 +169,102 @@ namespace NanotecController
             _status.Location = new Point(500, 484);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            // ---- Wafer centre-find (bottom strip) --------------------------------
-            // Jog so the wafer EDGE crosses the crosshair (main window, VISION mode), Add Wafer Edge at
-            // several spots around the rim (detects via WaferEdgeDetector, converts to step space), then
-            // Compute Centre circle-fits them. Mirrors the chuck centre-find; result overlays on the pane.
-            var waferLabel = new Label { Text = "Wafer centre-find", Location = new Point(12, 528), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            // ---- Auto wafer centre-find, Θ scan (bottom strip) -------------------
+            // Fully automatic: the stage finds one reachable spot on the rim, then Θ turns the wafer a
+            // full revolution underneath the camera while the rim point is re-measured at each angle.
+            // The log pane is the run's transcript — which angles found an edge, and where.
+            var waferLabel = new Label { Text = "Auto wafer centre-find (Θ scan)", Location = new Point(12, 506), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
-            _waferEdgeBtn.Location = new Point(12, 550);
-            _waferEdgeBtn.Size = new Size(128, 30);
-            _waferEdgeBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _waferEdgeBtn.Click += (s, e) =>
-            {
-                if (!_view.IsCameraOpen) return;
-                _view.RequestFrame(frame =>
-                {
-                    HOperatorSet.GetImageSize(frame, out HTuple fw, out HTuple fh);
-                    double crossRow = fh.D / 2.0, crossCol = fw.D / 2.0;
-                    bool found;
-                    WaferEdgeDetector.EdgePoint edge;
-                    double[] cRows = [], cCols = [];
-                    try
-                    {
-                        found = _waferDetector.TryDetect(frame, crossRow, crossCol, out edge, out HObject? contour);
-                        if (found && contour != null)
-                        {
-                            try { HOperatorSet.GetContourXld(contour, out HTuple rows, out HTuple cols); cRows = rows.ToDArr(); cCols = cols.ToDArr(); }
-                            catch (HOperatorException) { /* keep the point even if the contour read fails */ }
-                        }
-                        contour?.Dispose();
-                    }
-                    catch (HOperatorException) { found = false; edge = default; }
-                    _view.PostFrameBitmap(frame, flip: false, raw => OnWaferGrabbed(found, edge, cRows, cCols, crossRow, crossCol, raw));
-                });
-                _status.Text = "Detecting wafer edge...";
-            };
+            // These labels are AutoSize, so their width is whatever the text measures under the current
+            // font/DPI. Placing the spinners from the measured width keeps them clear of the text; a
+            // fixed offset only holds for the exact metrics it was tuned against.
+            int After(Label l, int gap = 8) => l.Left + TextRenderer.MeasureText(l.Text, l.Font).Width + gap;
 
-            _waferClearBtn.Location = new Point(146, 550);
-            _waferClearBtn.Size = new Size(56, 30);
-            _waferClearBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _waferClearBtn.Click += (s, e) => ClearWaferPoints();
+            var waferDiaLabel = new Label { Text = "Wafer Ø (mm):", Location = new Point(12, 535), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            _waferDia.Size = new Size(74, 22);
+            _waferDia.Location = new Point(After(waferDiaLabel), 532);
+            _waferDia.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            _waferCentreBtn.Location = new Point(208, 550);
-            _waferCentreBtn.Size = new Size(128, 30);
-            _waferCentreBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _waferCentreBtn.Click += (s, e) => ComputeWaferCentre();
+            var waferSamplesLabel = new Label { Text = "Samples:", Location = new Point(_waferDia.Right + 18, 535), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            _waferSamples.Size = new Size(56, 22);
+            _waferSamples.Location = new Point(After(waferSamplesLabel), 532);
+            _waferSamples.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            _waferGoBtn.Location = new Point(342, 550);
-            _waferGoBtn.Size = new Size(108, 30);
+            // Button widths are sized to the caption for the same reason as the labels above — the
+            // previous fixed widths were narrower than the text and clipped it to an ellipsis.
+            _waferRunBtn.Size = new Size(172, 28);
+            _waferRunBtn.Location = new Point(12, 560);
+            _waferRunBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _waferRunBtn.Click += async (s, e) => await RunWaferScanAsync();
+
+            _waferCancelBtn.Size = new Size(76, 28);
+            _waferCancelBtn.Location = new Point(_waferRunBtn.Right + 8, 560);
+            _waferCancelBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _waferCancelBtn.Click += (s, e) => CancelWaferScan();
+
+            _waferGoBtn.Size = new Size(104, 28);
+            _waferGoBtn.Location = new Point(_waferCancelBtn.Right + 8, 560);
             _waferGoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _waferGoBtn.Click += async (s, e) => await GoToWaferCentreAsync();
 
-            _waferResult.Location = new Point(458, 528);
-            _waferResult.Size = new Size(232, 52);
+            _waferLog.Location = new Point(12, 594);
+            _waferLog.Size = new Size(340, 62);
+            _waferLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            // Starts clear of the widened button row; the right edge (690) still stops short of the
+            // auto-chuck column at 700.
+            _waferResult.Location = new Point(_waferGoBtn.Right + 12, 532);
+            _waferResult.Size = new Size(298, 124);
             _waferResult.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            // ---- Notch find (bottom strip, below the wafer group) -----------------
+            // Needs the wafer centre-find first: the sweep follows the rim using the stored offset.
+            // Θ turns continuously for up to a revolution (~112 s — Θ's speed cap is the floor) while
+            // frames stream past a coarse detector; on a hit it stops and re-measures a stationary
+            // frame. "Rotate to datum" is separate on purpose, so a search never turns the wafer.
+            var notchLabel = new Label { Text = "Notch find (Θ sweep)", Location = new Point(12, 664), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+
+            // Exposed because the right value depends on how much the continuous sweep blurs the rim,
+            // which cannot be known off-hardware. Higher = fussier. Plain rim measures 0.01-0.05 mm
+            // and the notch 0.54 mm, so there is a lot of room between them.
+            var notchThreshLabel = new Label { Text = "Trigger (mm):", Location = new Point(After(notchLabel, 16), 667), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            _notchThreshold.Size = new Size(64, 22);
+            _notchThreshold.Location = new Point(After(notchThreshLabel), 664);
+            _notchThreshold.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            // Right of the trigger spinner and clear of the log pane. Measures the stored angle
+            // against the wafer instead of against the eye: it turns the notch to the camera and
+            // re-measures it there, so a datum that looks wrong can be judged as a number.
+            _notchCheckBtn.Location = new Point(_notchThreshold.Right + 8, 662);
+            _notchCheckBtn.Size = new Size(150, 26);
+            _notchCheckBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchCheckBtn.Click += async (s, e) => await RunNotchCheckAsync();
+
+            _notchRunBtn.Size = new Size(164, 28);
+            _notchRunBtn.Location = new Point(12, 690);
+            _notchRunBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchRunBtn.Click += async (s, e) => await RunNotchFindAsync();
+
+            _notchCancelBtn.Size = new Size(76, 28);
+            _notchCancelBtn.Location = new Point(_notchRunBtn.Right + 8, 690);
+            _notchCancelBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchCancelBtn.Click += (s, e) => CancelNotchFind();
+
+            var notchDatumLabel = new Label { Text = "Datum°:", Location = new Point(_notchCancelBtn.Right + 10, 695), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            _notchDatum.Size = new Size(64, 22);
+            _notchDatum.Location = new Point(After(notchDatumLabel), 692);
+            _notchDatum.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            _notchGoBtn.Size = new Size(128, 28);
+            _notchGoBtn.Location = new Point(_notchDatum.Right + 8, 690);
+            _notchGoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchGoBtn.Click += async (s, e) => await RotateNotchToDatumAsync();
+
+            // Starts clear of the widest row above it (the datum row); the right edge (992) still lines
+            // up with the auto-chuck log.
+            _notchLog.Location = new Point(_notchGoBtn.Right + 11, 664);
+            _notchLog.Size = new Size(440, 86);
+            _notchLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Auto chuck centre-find (bottom strip, right of the wafer group) --
             // Rough-centre the chuck by hand, enter the nominal radius, and the stage probes outward in
@@ -217,10 +273,8 @@ namespace NanotecController
             var autoLabel = new Label { Text = "Auto chuck centre-find", Location = new Point(700, 506), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             var autoRadiusLabel = new Label { Text = "Max R (steps):", Location = new Point(700, 532), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
-            // x=806: the AutoSize label above measures 100 px wide (700..800), so anything
-            // earlier than 800 is overlapped by it.
-            _autoRadius.Location = new Point(806, 529);
             _autoRadius.Size = new Size(110, 22);
+            _autoRadius.Location = new Point(After(autoRadiusLabel), 529);
             _autoRadius.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             _autoRunBtn.Location = new Point(700, 558);
@@ -408,11 +462,25 @@ namespace NanotecController
             Controls.Add(_computeBtn);
             Controls.Add(_calibResult);
             Controls.Add(waferLabel);
-            Controls.Add(_waferEdgeBtn);
-            Controls.Add(_waferClearBtn);
-            Controls.Add(_waferCentreBtn);
+            Controls.Add(waferDiaLabel);
+            Controls.Add(_waferDia);
+            Controls.Add(waferSamplesLabel);
+            Controls.Add(_waferSamples);
+            Controls.Add(_waferRunBtn);
+            Controls.Add(_waferCancelBtn);
             Controls.Add(_waferGoBtn);
+            Controls.Add(_waferLog);
             Controls.Add(_waferResult);
+            Controls.Add(notchLabel);
+            Controls.Add(notchThreshLabel);
+            Controls.Add(_notchThreshold);
+            Controls.Add(_notchRunBtn);
+            Controls.Add(_notchCancelBtn);
+            Controls.Add(notchDatumLabel);
+            Controls.Add(_notchDatum);
+            Controls.Add(_notchGoBtn);
+            Controls.Add(_notchCheckBtn);
+            Controls.Add(_notchLog);
             Controls.Add(autoLabel);
             Controls.Add(autoRadiusLabel);
             Controls.Add(_autoRadius);
@@ -454,13 +522,11 @@ namespace NanotecController
                 _goCentreBtn.Enabled = true;
                 _centreResult.Text = $"Saved centre:\r\nX={cxLoaded}  Y={cyLoaded}";
             }
-            // Likewise the saved wafer centre.
-            if (_owner.Calibration.WaferCenterX is long wxLoaded && _owner.Calibration.WaferCenterY is long wyLoaded)
-            {
-                _waferCentre = (wxLoaded, wyLoaded);
-                _waferGoBtn.Enabled = true;
-                _waferResult.Text = $"Saved wafer centre:\r\nX={wxLoaded}  Y={wyLoaded}";
-            }
+            // Likewise a saved wafer scan. The offset — not the snapshot centre — is what makes
+            // "Go to Centre" usable, since the target is recomputed for the current Θ.
+            if (_owner.Calibration.WaferOffsetX is long woxLoaded && _owner.Calibration.WaferOffsetY is long woyLoaded)
+                _waferResult.Text = $"Saved wafer scan:\r\noffset X={woxLoaded}  Y={woyLoaded}\r\n" +
+                                    $"R={_owner.Calibration.WaferRadius?.ToString() ?? "?"} steps";
 
             // The camera is already streaming on the main screen; gate on its live state and
             // follow open/close (e.g. a Retry on the main toolbar) while this window is open.
@@ -481,11 +547,12 @@ namespace NanotecController
             if (IsDisposed) return;
             bool open = _view.IsCameraOpen;
             _sampleBtn.Enabled = open;
-            _waferEdgeBtn.Enabled = open;
             // The chuck buttons (_edgeBtn, _edgeAtCrossBtn, _centreBtn, …) are gated in RefreshEdgeUi
             // instead, which also has to honour an auto centre-find in progress. RefreshAutoUi routes
             // through it, so both conditions are applied in one place.
             RefreshAutoUi();
+            RefreshWaferUi();
+            RefreshNotchUi();
             _rotBy.Enabled = _rotByBtn.Enabled = open;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;
 
@@ -506,7 +573,9 @@ namespace NanotecController
         }
 
         // Camera-scale calibration → FrmVisionProtocols.Calibration.cs
-        // Chuck + wafer centre-find → FrmVisionProtocols.CentreFind.cs
+        // Chuck centre-find (manual) → FrmVisionProtocols.CentreFind.cs
+        // Chuck centre-find (automatic) → FrmVisionProtocols.AutoCentre.cs
+        // Wafer centre-find (Θ scan) → FrmVisionProtocols.AutoWafer.cs
         // Rotate-about-crosshair UI (sign label + sign test) → FrmVisionProtocols.Rotation.cs
 
         private void Teardown()

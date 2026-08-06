@@ -73,11 +73,12 @@ namespace NanotecController
             }
 
             // Go-to-stored-centre shortcuts (chuck / wafer). These drive X/Y to the persisted
-            // user-frame centre; confirm first, since it's an unbounded table traverse.
+            // user-frame centre. Chuck centre goes on the click (it's the routine move between
+            // operations); wafer still confirms, since it's the less-travelled of the two.
             _chuckCentreBtn = new Button { Text = "Move to chuck centre", Location = new Point(14, 168), Size = new Size(206, 32), Enabled = false };
-            _chuckCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("chuck", _calib.ChuckCenterX, _calib.ChuckCenterY);
+            _chuckCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("chuck", _calib.ChuckCenterX, _calib.ChuckCenterY, confirm: false);
             _waferCentreBtn = new Button { Text = "Move to wafer centre", Location = new Point(230, 168), Size = new Size(206, 32), Enabled = false };
-            _waferCentreBtn.Click += async (s, e) => await GoToStoredCentreAsync("wafer", _calib.WaferCenterX, _calib.WaferCenterY);
+            _waferCentreBtn.Click += async (s, e) => await GoToWaferCentreNowAsync();
             group.Controls.Add(_chuckCentreBtn);
             group.Controls.Add(_waferCentreBtn);
 
@@ -110,7 +111,8 @@ namespace NanotecController
             }
 
             _chuckCentreBtn.Enabled = canMove && _calib.ChuckCenterX.HasValue && _calib.ChuckCenterY.HasValue;
-            _waferCentreBtn.Enabled = canMove && _calib.WaferCenterX.HasValue && _calib.WaferCenterY.HasValue;
+            // Gated on the OFFSET, not the snapshot centre: the target is recomputed per Θ.
+            _waferCentreBtn.Enabled = canMove && _calib.WaferOffsetX.HasValue && _calib.WaferOffsetY.HasValue;
         }
 
         // A Go was pressed: dispatch by axis + current jog mode. Returns a Task (awaited by the
@@ -186,12 +188,32 @@ namespace NanotecController
             AppendLog(ok ? $"Rotate Θ complete ({start:N0} → {end:N0})." : "Rotate Θ FAILED — see error above.");
         }
 
-        // Confirm, then drive X/Y to a stored USER-frame centre (chuck/wafer) via MoveToAsync.
-        private async Task GoToStoredCentreAsync(string which, long? xUser, long? yUser)
+        // The wafer sits eccentric on the chuck, so its centre ORBITS the rotation axis as Θ turns —
+        // there is no single stored motor position that is right at every angle. The Θ scan stores the
+        // offset in the chuck's own frame instead, and the target is rotated back out for whatever
+        // angle Θ is standing at right now.
+        private async Task GoToWaferCentreNowAsync()
+        {
+            if (!CanMoveCalibration) { AppendLog("Move to wafer centre: enable the drives first."); return; }
+            if (!TryReadThetaNow(out long ticks)) { AppendLog("Move to wafer centre: Θ position unavailable."); return; }
+
+            double deg = CrosshairRotation.ChuckTicksToDegrees(ticks, CrosshairRotation.ChuckTicksPerRev);
+            if (_calib.WaferCentreAt(deg) is not { } target)
+            {
+                AppendLog("No wafer scan stored — run the wafer Θ scan first " +
+                          "(it also needs a chuck centre and steps-per-mm on X and Y).");
+                return;
+            }
+            await GoToStoredCentreAsync($"wafer (Θ={deg:F1}°)", target.X, target.Y, confirm: false);
+        }
+
+        // Drives X/Y to a stored USER-frame centre (chuck/wafer) via MoveToAsync, asking first
+        // only when the caller wants it.
+        private async Task GoToStoredCentreAsync(string which, long? xUser, long? yUser, bool confirm)
         {
             if (!CanMoveCalibration) { AppendLog("Move to centre: enable the drives first."); return; }
             if (xUser is not long x || yUser is not long y) { AppendLog($"No {which} centre stored — run the {which} centre-find first."); return; }
-            if (MessageBox.Show(this,
+            if (confirm && MessageBox.Show(this,
                     $"Move the table to the {which} centre?\r\n\r\nX = {x:N0}\r\nY = {y:N0}",
                     $"Move to {which} centre", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
                 return;

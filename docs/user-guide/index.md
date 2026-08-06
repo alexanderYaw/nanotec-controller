@@ -288,6 +288,12 @@ Toolbar:
 **Invert, Mono and Zoom are display settings — the detectors always run on the raw
 full-resolution frame.**
 
+> **The camera is mounted about 4.6° rotated**, so everything on screen leans by that much. It is
+> measured by the camera-scale calibration and divided out of every angle the machine reports, so
+> the numbers are unaffected — only the picture leans. The view is deliberately **not** rotated to
+> hide it: turning the picture would leave black wedges in the corners and would have to be undone
+> again for vision jogging, and it would not straighten the notch anyway (see §10, step 5).
+
 ### The protocols window
 Open it with **Calibration… → Vision — camera scale & centres**. It owns no camera of its own:
 it mirrors the main view on the left, shows each detection's overlay on the right, and drives
@@ -340,10 +346,165 @@ confirmation before it moves. Pressing **STOP** during the limit-find cancels th
 > probe may travel and how far out a detection is still believed, so type it carefully. **Z is
 > never moved.**
 
-**4. Wafer centre-find.** The same flow as the chuck (**Add Wafer Edge** → **Compute Centre** →
-**Go to Centre**) but detecting the wafer rim, kept as a separate stored centre.
+**4. Auto wafer centre-find (Θ scan).** Fully automatic — type the **Wafer Ø (mm)** and press
+**Auto Wafer Centre (Θ)**. There is no point-by-point wafer flow, because the wafer rim is bigger
+than the table's travel: you cannot drive all the way round it. Instead the stage finds one
+reachable spot on the rim and the **chuck turns the wafer a full revolution underneath the camera**,
+re-measuring the rim at each angle. **Samples** is how many angles it visits (24 by default). Expect
+roughly three minutes, nearly all of it Θ turning.
 
-**5. Rotate about the crosshair.** Needs the camera scale **and** a chuck centre. Run the
+What you will see it do: first it drives to the **corner of its travel** (X at its minimum, Y at its
+maximum) — that corner is the furthest point from the chuck's axis the table can reach, and the only
+place a 200 mm rim comes into view. Then it steps **down** in Y until the wafer edge appears, and
+from there it mostly just turns. X and Y move again only when the edge drifts out of view, which it
+does as the chuck turns if the wafer is off-centre; the run steps Y up and down a little to bring it
+back and carries on. Angles where it cannot find the edge are simply skipped. When the fit is saved
+it **drives to the wafer centre it just measured**, so the run ends looking at the middle of the
+wafer.
+
+**Angles where the edge is not a smooth edge are dropped rather than measured.** Every frame is
+checked with the same test the notch search uses, at the same **Trigger (mm)** setting, so a sample
+that lands on the notch, on a chip, or on a speck of dust is thrown away instead of being fitted as
+if it were a good rim point. The log names each one. A handful of drops in a run is normal; a run
+where nearly every angle is dropped means the edge is reading badly or the trigger is set too low,
+and the log says so rather than leaving you to work it out.
+
+**It may find the notch for you.** If one of those dropped angles turns out to be the notch — with
+the whole notch in view, which happens on a minority of runs — the scan measures it there and then
+and saves it with the fit. The log says **NOTCH … saved with the fit**, the result panel shows the
+angle, and **Rotate to datum** (step 5) is ready to use without running the notch search at all.
+Nothing is lost when it does not happen: the sample was correctly dropped either way.
+
+It needs the chuck centre (step 3), steps/mm on X and Y, and both travel limits first, and it
+refuses to start without them. It also checks the diameter you typed up front: if that rim could
+never cross the corner line it says so immediately rather than searching for two minutes. The result
+panel reports the eccentricity in mm, the fitted radius against your nominal diameter, and the fit
+RMS — a radius well off the nominal usually means the chuck centre is off, not the wafer.
+
+> **The wafer is vacuum-held for a reason:** if it slips on the chuck mid-scan, every earlier
+> sample is wrong. The run re-measures its starting angle at the end as a closure check, and if
+> that disagrees it reports the failure and **saves nothing**. Confirm the vacuum is on before
+> starting. **Z is never moved.**
+
+Because the wafer sits slightly off-centre on the chuck, **its centre moves as Θ turns** — up to
+twice the eccentricity between opposite angles. So the scan does not store a single position; it
+stores the offset and works out the right target for whatever angle the chuck is standing at. **Go
+to Centre** is therefore correct at any Θ, with no need to re-scan after rotating.
+
+**5. Notch find (Θ sweep).** Finds the wafer's notch and remembers where it is, so the wafer can be
+turned to a known orientation. Press **Find Notch (Θ sweep)** and leave it alone.
+
+It needs the **auto wafer centre-find (step 4) to have run on this wafer first** — the sweep uses
+that measurement to keep the rim in view — and it refuses to start without it. Check that run's log
+before you start: if it already caught the notch (step 4) the angle is saved and this search is a
+minute you do not need to spend.
+
+**Trigger (mm)** is how big a departure from a smooth rim is worth stopping for. The default of
+**0.30** is well clear of both ends: a clean rim reads 0.01–0.05 mm and the notch reads 0.54 mm.
+Dust is not just rejected on size — the run also requires the departure to persist along the edge,
+and a notch is nearly 3 mm of rim while a speck is a pinprick, so specks are ignored however dark
+they are. Raise it if the run keeps stopping on things that turn out not to be notches; lower it
+only if a wafer you know has a notch is being swept straight past.
+
+The chuck turns **continuously** while the camera watches the rim go past, stopping the moment it
+sees something that is not a smooth edge, then backing up to measure it properly. Expect **about a
+minute**, and up to two if the notch happens to sit just behind the starting point. That time is set
+by how fast Θ is allowed to turn, not by the camera — a full revolution simply takes 112 seconds.
+The log panel reports each step. The result is the notch's angle, its depth (a 200 mm wafer's notch
+measures very close to **1.00 mm**) and its width.
+
+Two things it refuses outright, so they cannot end up saved as a notch angle: anything **deeper than
+1.5 mm**, and anything whose tip does not sit **on the wafer edge** where a notch's tip has to be.
+The second one matters more than it sounds. The chuck has features of its own — a vacuum port a few
+millimetres outside the rim — and when the dark edge of one merges with the dark band around the
+wafer, the shape that comes out looks like a notch on every measure of shape. Being in the wrong
+*place* is what gives it away, and the log says so in millimetres when it happens, then carries on
+sweeping for the real one.
+
+Finding the notch does **not** turn the wafer to it. To do that, type the angle you want the notch
+at into **Datum°** and press **Rotate to datum**. That is deliberately a separate button, so a
+search never moves the wafer as a side effect.
+
+**What Datum° means.** It is the **direction you want the notch to point, as you see it on the
+camera view** — measured from the wafer's centre, with **0° along the screen's horizontal** and
+increasing the way angles increase on screen (90° up the view, 180° back along it, 270° down). It is
+*not* a Θ reading, and it is not relative to where the notch is now: whatever Θ currently reads, the
+wafer turns until the notch points that way.
+
+**The camera is the reference, not the stage.** The camera is mounted about 4.6° off the machine's
+axes, and the datum now allows for that: the chuck is turned the extra 4.6° so the wafer ends up
+square to *the picture*. The log prints both numbers on every move — "the 0.0° datum is 4.59° in the
+machine frame" — so the machine-frame bearing is always visible if a downstream process needs it.
+The angle comes from the camera-scale calibration, so a new camera at a new angle just needs that
+calibration re-run.
+
+> **Setting the datum to 0 squares the wafer up on screen.** The die streets then run horizontally
+> and vertically in the view to within a twentieth of a degree, because the wafer's grid is square to
+> its own notch to about that. 90, 180 and 270 do the same thing a quarter-turn apart.
+
+The useful value for *looking at the notch* is about **206°**, which is where the camera sits as seen
+from the wafer centre — so a datum of 206 parks the notch under the crosshair. It drifts by a degree
+or so as the eccentric wafer centre orbits, so treat it as a "bring it into view" figure rather than
+a precise landing; **Check notch angle**, below, works the number out exactly and prints it in both
+frames.
+
+**The notch itself still looks slanted, and that is correct.** It sits at about **25° off horizontal**
+in the view whatever datum you ask for, because a notch points outwards from the wafer centre and the
+camera watches a piece of rim that lies 30° round the wafer. Changing the datum turns the wafer, so it
+changes *which* piece of rim you are looking at; it cannot change the angle the rim crosses the frame
+at. It is the **die pattern**, not the notch, that squares up.
+
+**The alignment itself has been measured, and it is good to about four arcminutes.** The wafer's die
+grid is square to its own notch to within **0.06°**, so once the notch is on a datum the silicon is
+too. What the datum change does is decide *which* set of axes it ends up square to — the camera's,
+now, rather than the machine's.
+
+> **One consequence worth knowing.** With the wafer square to the camera, it is 4.6° off the
+> machine's axes, so a relative move in **RAW** mode no longer runs along a die street — it will drift
+> across one by about 0.4 mm per 5 mm travelled. Use **VISION** mode for that: there, a relative mm
+> move goes along the screen's axes (§11), which is now the same thing as along the streets.
+
+You do not have to take that on trust. **Check notch angle** draws the answer in the **Captured
+(detection overlay)** pane: a yellow ring on the tip of the notch and a cyan line along the direction
+the notch must point, worked out from the calibration and not from the picture. If the notch sits
+symmetrically along the cyan line, the machine and the camera agree and the slant is just where the
+camera stands. The log prints the same angle in degrees.
+
+> **The two picture panes are not the same way up.** The live view is turned 180°, because the camera
+> is mounted upside down; the Captured pane shows the frame exactly as the camera sees it. The same
+> notch therefore points one way in one pane and the opposite way in the other. Compare like with
+> like — the cyan overlay belongs to the Captured pane.
+
+**Check notch angle** answers "is the notch really where the machine thinks it is?" with a number
+instead of an opinion. It turns the wafer until the notch comes round to the camera, re-measures it
+there, and reports how far the stored angle is out — in degrees **and in mm of rim**, because a
+degree is only 1.75 mm and the camera sees about 4.9 mm at a time. It changes nothing; it only
+measures. Use it whenever the notch looks like it is pointing the wrong way:
+
+* **Under about 0.5 mm of rim.** The stored angle and the machine agree with each other. If the
+  notch still looks wrong to you, the disagreement is with whatever you are judging it against —
+  a bearing eyeballed off a wafer is easily several degrees out, and the camera itself is mounted a
+  few degrees tilted (that tilt is measured and allowed for, which is why the notch can look
+  slanted on screen while the numbers are right).
+* **More than that.** Turn Θ well away and press it again. The same error twice, with the same
+  sign, means the stored angle itself is biased — re-run the notch find. An error that changes when
+  Θ arrives from the other direction is mechanical slack between the motor and the chuck, and no
+  stored number can correct it.
+
+It needs the camera streaming and a stored notch angle, and it moves the stage to the rim station
+to look — so it is deliberately a separate button from **Rotate to datum**, which only ever turns Θ.
+
+> **The notch angle belongs to the wafer, not to the machine.** Lift or re-place the wafer and it is
+> void — re-run the wafer centre-find and then the notch find. As with the Θ scan, confirm the
+> **vacuum is on** first: if the wafer slips mid-sweep the answer is meaningless, and the run tells
+> you so by re-checking the rim at the end rather than silently reporting a wrong angle.
+
+If it sweeps a whole revolution and finds nothing, the usual causes are the rim drifting out of view
+(the stored wafer measurement is stale — re-run step 4) or the lighting having changed enough that
+the edge no longer reads clearly. Both are reported in the log rather than guessed at. **Z is never
+moved.**
+
+**6. Rotate about the crosshair.** Needs the camera scale **and** a chuck centre. Run the
 one-time **Sign test** first — it establishes which way a positive Θ move appears on screen and
 is saved permanently. Then **Rotate by°** / **Rotate to°** turn the chuck while X/Y keep the
 point under the crosshair pinned. The rotation *speed* is the Θ slider on the main window in
@@ -364,8 +525,9 @@ Each **Go** stays greyed until the calibration its move needs exists: **steps/mm
 axis (§8), plus the camera scale for VISION X/Y, plus a chuck centre for VISION Θ. Targets go
 through the same range check as everything else.
 
-**Move to chuck centre** / **Move to wafer centre** drive X/Y straight to the stored centre from
-§10. Both ask for confirmation first — they are unbounded table traverses.
+**Move to chuck centre** / **Move to wafer centre** drive X/Y to the centres found in §10. The
+wafer one recomputes its target for the chuck's current Θ, so it stays correct after a rotation.
+Both ask for confirmation first — they are unbounded table traverses.
 
 ---
 

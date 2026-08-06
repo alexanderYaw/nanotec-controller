@@ -30,7 +30,7 @@ namespace NanotecController
         /// The frame centre stays the same physical point and the pixel size is unchanged, so
         /// the crosshair, pixel→step calibration, and edge detection remain valid at any zoom.
         /// </summary>
-        public int Zoom { get; private set; } = 2;
+        public int Zoom { get; private set; } = 1;
 
         /// <summary>
         /// Changes the zoom by re-opening the framegrabber (ROI size can't change while the

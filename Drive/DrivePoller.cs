@@ -17,8 +17,8 @@ namespace NanotecController
         /// <summary>This sample carries a fresh position/state read attempt (see <see cref="Error"/>).</summary>
         public bool Fresh { get; init; }
         public IReadOnlyDictionary<AxisId, long> Positions { get; init; } = new Dictionary<AxisId, long>();
-        public IReadOnlyDictionary<AxisId, (string State, bool HasFault)> States { get; init; }
-            = new Dictionary<AxisId, (string, bool)>();
+        public IReadOnlyDictionary<AxisId, (string State, bool HasFault, bool QuickStopped)> States { get; init; }
+            = new Dictionary<AxisId, (string, bool, bool)>();
         /// <summary>Why the position/state read failed, or null. Only meaningful when <see cref="Fresh"/>.</summary>
         public string? Error { get; init; }
         /// <summary>Analogue input 1 keyed by the DRIVE it was read from, or null when not polled.</summary>
@@ -50,7 +50,7 @@ namespace NanotecController
 
         // Poller-thread only; every published sample is a copy.
         private readonly Dictionary<AxisId, long> _positions = new();
-        private readonly Dictionary<AxisId, (string State, bool HasFault)> _states = new();
+        private readonly Dictionary<AxisId, (string State, bool HasFault, bool QuickStopped)> _states = new();
 
         private Task? _task;
         private CancellationTokenSource? _cts;
@@ -164,7 +164,7 @@ namespace NanotecController
             {
                 Fresh = doPos,
                 Positions = new Dictionary<AxisId, long>(_positions),
-                States = new Dictionary<AxisId, (string, bool)>(_states),
+                States = new Dictionary<AxisId, (string, bool, bool)>(_states),
                 Error = error,
                 Analog = analog,
                 AnalogError = analogError,

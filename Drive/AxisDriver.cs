@@ -446,11 +446,14 @@ namespace NanotecController
         /// <summary>State-only read (the other half of <see cref="GetStatus"/>, one SDO
         /// transaction). The decoded state is display-only and changes far more slowly than the
         /// position, so <see cref="DrivePoller"/> refreshes it at a fraction of the position rate
-        /// instead of paying for both objects on every poll.</summary>
-        public (string State, bool HasFault) GetState()
+        /// instead of paying for both objects on every poll. <c>QuickStopped</c> is the same
+        /// statusword decoded as <see cref="IsQuickStopped"/> does, so a poll-driven auto-recovery
+        /// needs no extra SDO read to notice a limit-switch quick stop.</summary>
+        public (string State, bool HasFault, bool QuickStopped) GetState()
         {
             long sw = Read(OD_Statusword, "statusword");
-            return (DecodeState(sw), (sw & SW_FAULT) != 0);
+            return (DecodeState(sw), (sw & SW_FAULT) != 0,
+                    (sw & SW_STATE_MASK) == SW_STATE_QUICK_STOP_ACTIVE);
         }
 
         /// <summary>Reads angle + decoded CiA 402 state in one go, for live display.</summary>

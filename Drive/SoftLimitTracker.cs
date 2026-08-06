@@ -33,8 +33,33 @@ namespace NanotecController
         public bool IsBlocked(AxisId id, int dir)
             => dir != 0 && _blockedDir.TryGetValue(id, out int b) && b == dir;
 
-        /// <summary>Records the direction currently commanded for an axis (0 = stopped).</summary>
-        public void RecordCommand(AxisId id, int dir) => _cmdDir[id] = dir;
+        /// <summary>
+        /// Records the direction currently commanded for an axis (0 = stopped). Commanding the
+        /// OPPOSITE of a refused direction clears the refusal: the axis is being driven back into
+        /// range, which is always allowed. (<see cref="Evaluate"/> also clears it once the axis is
+        /// inside its stored limits — but <see cref="BlockCommandedDirection"/> can latch a refusal
+        /// on an axis that has no stored limits at all, and that one has nothing else to clear it.)
+        /// </summary>
+        public void RecordCommand(AxisId id, int dir)
+        {
+            _cmdDir[id] = dir;
+            if (dir != 0 && _blockedDir.TryGetValue(id, out int b) && b == -dir) _blockedDir[id] = 0;
+        }
+
+        /// <summary>
+        /// Latches the direction currently commanded as refused, for when the DRIVE stopped the
+        /// axis rather than this guard — a hardware limit switch quick stop. The switch may sit
+        /// anywhere relative to the stored limits (Y's do; X/Z have none the drive acts on), so the
+        /// direction can't be inferred from position here; it comes from what was being commanded.
+        /// No-op when nothing was commanded. Returns true if a direction was latched.
+        /// </summary>
+        public bool BlockCommandedDirection(AxisId id)
+        {
+            if (!_cmdDir.TryGetValue(id, out int d) || d == 0) return false;
+            _blockedDir[id] = d;
+            _cmdDir[id] = 0;
+            return true;
+        }
 
         /// <summary>
         /// Updates tracking from a fresh position sample and decides whether the axis is jogging

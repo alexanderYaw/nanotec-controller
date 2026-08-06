@@ -30,3 +30,6 @@ calibration, centre-finding, and crosshair-pinned rotation.
 * **[Automated Chuck Centre-Finding](developer-guide/ChuckCenterFindingAutomation/)** —
   why the automatic rim-point collection is shaped the way it is: step-and-settle probes,
   bisect-then-diagonals, and the safety guards that stand in for the missing limit switches.
+* **[Wafer Centre-Finding by Rotation](developer-guide/WaferCentreByRotation/)** —
+  why the wafer rim cannot be circled with the stage at all, and how turning Θ instead
+  recovers a full 360° of rim from one reachable spot.

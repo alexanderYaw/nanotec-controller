@@ -21,6 +21,9 @@ namespace NanotecController
         bool CanMoveCalibration { get; }
         bool TryCurrentUser(AxisId id, out long user);
         bool TryReadUserXyNow(out long x, out long y);
+        /// <summary>Fresh (uncached) Θ read, in raw drive ticks. Same rationale as
+        /// <see cref="TryReadUserXyNow"/>: the cache is stale for a poll period after every move.</summary>
+        bool TryReadThetaNow(out long ticks);
         (long min, long max)? UserLimits(AxisId id);
         long? HomeTargetFor(AxisId id);
         Task MoveToAsync(string xText, string yText, string zText);
@@ -54,8 +57,28 @@ namespace NanotecController
         void SetRotationSign(int sign);
         Task RotateToAngleAsync(double targetDegrees);
         Task RotateAboutCrosshairAsync(double deltaDegrees);
+        /// <summary>Turns Θ alone, with no X/Y compensation — the wafer Θ scan needs the stage to
+        /// stay put so the rim sweeps past the camera. False if the move did not complete.</summary>
+        Task<bool> RotateThetaOnlyAsync(double deltaDegrees, int speed);
         Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null);
         void StopHoldRotate();
+
+        // --- Continuous rim sweep, for the notch search (FrmMain.RimSweep.cs) ---
+        /// <summary>Turns Θ continuously while Y follows <paramref name="stationYAt"/> (a USER-frame Y
+        /// for a CHUCK angle in degrees), until <paramref name="stopWhen"/> fires or
+        /// <paramref name="maxDegrees"/> are swept. <paramref name="stopWhen"/> is polled on the drive
+        /// thread — keep it to reading a flag.</summary>
+        Task<FrmMain.RimSweepResult> SweepRimAsync(
+            Func<double, double?> stationYAt, Func<bool> stopWhen, int thetaDir, double maxDegrees,
+            int thetaSpeed);
+        /// <summary>Θ as of the sweep loop's last tick. Read THIS during a sweep, never
+        /// <see cref="TryReadThetaNow"/>: NanoLib access is serialized on one channel and the sweep
+        /// owns it for the whole revolution.</summary>
+        long SweepThetaTicks { get; }
+        /// <summary>Θ's velocity cap. This is what floors the search time — a revolution is
+        /// <see cref="CrosshairRotation.ChuckTicksPerRev"/> ticks, so at 3200 steps/s no sweep can
+        /// take less than ~112 s.</summary>
+        int ThetaSpeedMax { get; }
 
         // --- Drift-corrected vision jog (FrmMain.Vision.cs) ---
         void VisionJogUser(int vxUser, int vyUser);

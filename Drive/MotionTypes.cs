@@ -68,6 +68,15 @@ namespace NanotecController
             new AxisConfig { Id = AxisId.Theta, Name = "Theta", BusPosition = 3, JogVelocityDefault = 400,  JogVelocityMax = 3200},
         ];
 
+        /// <summary>Config for an axis, or null if it is not in the layout. Avoids indexing
+        /// <see cref="Default"/> by the enum value, which only works while bus order happens to
+        /// match declaration order.</summary>
+        public static AxisConfig? For(AxisId id)
+        {
+            foreach (AxisConfig c in Default) if (c.Id == id) return c;
+            return null;
+        }
+
         /// <summary>Axis label for a bus position (for logs / readouts). "?" if out of range.</summary>
         public static string NameForBusPosition(int busPosition)
             => busPosition >= 0 && busPosition < Default.Count ? Default[busPosition].Name : "?";

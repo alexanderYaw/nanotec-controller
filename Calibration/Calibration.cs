@@ -68,16 +68,72 @@ namespace NanotecController
         /// its travel guard and its approach jump. Persisted so the guard survives a restart.</summary>
         public long? ChuckRadius { get; set; }
 
-        /// <summary>Wafer centre in motor steps (USER frame), or null until found — same meaning as
-        /// the chuck centre but circle-fit from WAFER rim points. Kept separate from the chuck centre.</summary>
+        /// <summary>Wafer centre in motor steps (USER frame) at the Θ angle the scan ended on — a
+        /// SNAPSHOT, not an invariant. The wafer sits eccentric on the chuck, so its centre orbits the
+        /// rotation axis as Θ turns; use <see cref="WaferCentreAt"/> for the centre at any other angle.
+        /// Kept so a plain "go to the wafer centre" has something to read without a Θ query.</summary>
         public long? WaferCenterX { get; set; }
         public long? WaferCenterY { get; set; }
+
+        /// <summary>Wafer centre relative to the chuck centre, in motor steps, expressed in the CHUCK's
+        /// rotating frame (de-rotated to θ = 0). This is the invariant the Θ scan measures: unlike
+        /// <see cref="WaferCenterX"/> it does not go stale when Θ moves. Null until a scan has run.</summary>
+        public long? WaferOffsetX { get; set; }
+        public long? WaferOffsetY { get; set; }
+
+        /// <summary>Wafer radius in motor steps from the scan's circle fit. Compared against the
+        /// operator's nominal diameter as the scan's main sanity check.</summary>
+        public long? WaferRadius { get; set; }
+
+        /// <summary>De-rotation handedness the Θ scan settled on (±1). Needed to turn
+        /// <see cref="WaferOffsetX"/> back into a motor position at a given Θ.</summary>
+        public int? WaferFitSign { get; set; }
+
+        /// <summary>Θ-scan fit quality, for the same reason PixelStepAffine carries its own: a stored
+        /// centre with no record of how well it fitted cannot be judged later.</summary>
+        public double? WaferFitRms { get; set; }
+        public int? WaferFitN { get; set; }
+        public string? WaferFitTimestamp { get; set; }
+
+        /// <summary>Bearing of the notch from the wafer centre, in the CHUCK's rotating frame — so
+        /// like <see cref="WaferOffsetX"/> it does not go stale when Θ moves, and turning the notch to
+        /// a datum is just a Θ move of (datum − this). Null until a notch search has run. Belongs to
+        /// the WAFER, not the machine: it is void the moment the wafer is lifted or re-placed.</summary>
+        public double? NotchAngleDeg { get; set; }
+        /// <summary>Depth the notch measured, kept for the same reason the wafer fit keeps its RMS —
+        /// a stored angle with no record of how good the measurement was cannot be judged later.
+        /// A SEMI 200 mm notch is 1.00 mm; a value far off that means the search latched onto
+        /// something else and the angle should not be trusted.</summary>
+        public double? NotchDepthMm { get; set; }
+        public string? NotchTimestamp { get; set; }
 
         /// <summary>Image handedness of a positive Θ move: +1 or -1, or null until the
         /// crosshair-rotation sign test fixes it. Not derivable from the translation-only
         /// <see cref="PixelStep"/> affine — it depends on Θ's mounting and camera orientation,
         /// so it is found empirically and persisted here.</summary>
         public int? RotationSign { get; set; }
+
+        /// <summary>
+        /// The motor position that puts the WAFER centre under the crosshair when the chuck stands at
+        /// <paramref name="chuckAngleDeg"/> (as <see cref="CrosshairRotation.ChuckTicksToDegrees"/>
+        /// reports it). The stored offset lives in the chuck's rotating frame, so it is rotated back
+        /// out to the lab frame here. Null unless a Θ scan has run, a chuck centre exists, and X and Y
+        /// both have StepsPerMm — the rotation is only a rotation in mm.
+        /// </summary>
+        public (long X, long Y)? WaferCentreAt(double chuckAngleDeg)
+        {
+            if (ChuckCenterX is not long cx || ChuckCenterY is not long cy) return null;
+            if (WaferOffsetX is not long ox || WaferOffsetY is not long oy) return null;
+            if (WaferFitSign is not int sign) return null;
+            if (!Axes.TryGetValue(AxisId.X, out AxisCalibration? ax) || ax.StepsPerMm is not double kX || kX <= 0) return null;
+            if (!Axes.TryGetValue(AxisId.Y, out AxisCalibration? ay) || ay.StepsPerMm is not double kY || kY <= 0) return null;
+
+            double wx = ox / kX, wy = oy / kY;
+            double rad = sign * chuckAngleDeg * Math.PI / 180.0;
+            double c = Math.Cos(rad), s = Math.Sin(rad);
+            return ((long)Math.Round(cx + (c * wx - s * wy) * kX),
+                    (long)Math.Round(cy + (s * wx + c * wy) * kY));
+        }
 
         /// <summary>Gets (creating if absent) the calibration record for an axis.</summary>
         public AxisCalibration For(AxisId id)

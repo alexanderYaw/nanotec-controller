@@ -58,86 +58,30 @@ namespace NanotecController
 
             var (ex, ey) = _chuckFinder.Add(edge.Row, edge.Column, crossRow, crossCol, a, mx, my);
 
-            raw = DrawEdgeOverlay(raw, edge, crossRow, crossCol);   // may return a widened copy
+            raw = DrawEdgeOverlay(raw, edge.Row, edge.Column, crossRow, crossCol);   // may return a widened copy
             ShowCaptured(raw);
             RefreshEdgeUi();
             _status.Text = $"Edge {_chuckFinder.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
         }
 
-        // Draws the frame-centre crosshair (green) and the detected edge point (yellow circle).
-        // RETURNS the bitmap drawn on — a mono frame is indexed and gets replaced by a drawable
-        // copy, so the caller must keep the returned reference (the original is disposed).
-        private static Bitmap DrawEdgeOverlay(Bitmap bmp, ChuckEdgeDetector.EdgePoint edge, double crossRow, double crossCol)
+        // Draws the frame-centre crosshair (green) and the detected edge point (yellow circle). Takes
+        // the point as plain row/col so the chuck and wafer detectors — whose EdgePoint types are
+        // distinct — can share it. RETURNS the bitmap drawn on: a mono frame is indexed and gets
+        // replaced by a drawable copy, so the caller must keep the returned reference (the original
+        // is disposed).
+        private static Bitmap DrawEdgeOverlay(Bitmap bmp, double edgeRow, double edgeCol, double crossRow, double crossCol)
         {
             bmp = VisionOverlay.EnsureDrawable(bmp);
             using var g = Graphics.FromImage(bmp);
             float w = VisionOverlay.PenWidth(bmp.Width), rad = bmp.Width / 60f;
             VisionOverlay.DrawCrosshair(g, bmp.Width, crossRow, crossCol, Color.Lime);
-            VisionOverlay.DrawPoint(g, edge.Row, edge.Column, rad, Color.Yellow, w);
+            VisionOverlay.DrawPoint(g, edgeRow, edgeCol, rad, Color.Yellow, w);
             return bmp;
         }
 
-        // UI thread: a wafer-rim point was (or wasn't) found. On success convert it to step space
-        // (E = M + A·(p_cross − p_edge), the motor position that brings this rim point to the
-        // crosshair — same maths as the chuck edge), add it to the wafer set, and overlay the
-        // detected boundary (cyan) + the rim point (yellow) on the captured pane. (cRows/cCols px.)
-        private void OnWaferGrabbed(bool found, WaferEdgeDetector.EdgePoint edge,
-                                    double[] cRows, double[] cCols, double crossRow, double crossCol, Bitmap raw)
-        {
-            if (IsDisposed) { raw.Dispose(); return; }
-            if (!found)
-            {
-                ShowCaptured(raw);
-                _status.Text = "Wafer edge NOT found — adjust lighting or tune WaferEdgeDetector (WaferIsBrighter / radii).";
-                return;
-            }
-            PixelStepAffine? a = _owner.Calibration.PixelStep;
-            if (a == null)
-            {
-                ShowCaptured(raw);
-                _status.Text = "Wafer edge: needs the camera-scale calibration first.";
-                return;
-            }
-            if (!_owner.TryCurrentUser(AxisId.X, out long mx) || !_owner.TryCurrentUser(AxisId.Y, out long my))
-            {
-                ShowCaptured(raw);
-                _status.Text = "Wafer edge: motor position unavailable — connect & enable.";
-                return;
-            }
-
-            var (ex, ey) = _waferFinder.Add(edge.Row, edge.Column, crossRow, crossCol, a, mx, my);
-
-            raw = VisionOverlay.EnsureDrawable(raw);
-            using (var g = Graphics.FromImage(raw))
-            {
-                float w = VisionOverlay.PenWidth(raw.Width), rad = raw.Width / 60f;
-                VisionOverlay.DrawCrosshair(g, raw.Width, crossRow, crossCol, Color.Lime);
-                VisionOverlay.DrawContour(g, cRows, cCols, Color.Cyan, w);
-                VisionOverlay.DrawPoint(g, edge.Row, edge.Column, rad, Color.Yellow, w * 1.5f);
-            }
-
-            ShowCaptured(raw);
-            RefreshWaferUi();
-            _status.Text = $"Wafer edge {_waferFinder.Count}: px=(r {edge.Row:F0}, c {edge.Column:F0}) → step=({ex:F0}, {ey:F0})";
-        }
-
-        private void ClearWaferPoints()
-        {
-            _waferFinder.Clear();
-            RefreshWaferUi();
-            _status.Text = "Wafer edge points cleared.";
-        }
-
-        private void RefreshWaferUi()
-        {
-            _waferCentreBtn.Enabled = _waferFinder.Count >= 3;
-            _waferClearBtn.Enabled = _waferFinder.Count > 0;
-        }
-
-        // Shared chuck/wafer compute+persist: circle-fits the finder's points, stores the centre via
-        // the per-feature setter, and persists. Returns false (with display text) on a fit/save failure;
-        // on success, text is the result readout and centre is set. The grab callbacks differ per
-        // detector (overlay + type), but the compute and go-to halves are identical modulo label/field.
+        // Compute+persist for the chuck: circle-fits the finder's points, stores the centre via the
+        // setter, and persists. Returns false (with display text) on a fit/save failure; on success,
+        // text is the result readout and centre is set.
         private bool TryComputeAndSaveCentre(CentreFinder finder, string label,
                                              Action<long, long, CircleFit.Result> store,
                                              out (long X, long Y)? centre, out string text)
@@ -156,12 +100,13 @@ namespace NanotecController
             return true;
         }
 
-        // Shared "Go to centre": confirm, then issue the absolute X/Y move (Z unchanged) via FrmMain.
-        private async Task GoToCentreAsync(string label, (long X, long Y)? centre)
+        // Shared "Go to centre": issues the absolute X/Y move (Z unchanged) via FrmMain, asking
+        // first only when the caller wants it.
+        private async Task GoToCentreAsync(string label, (long X, long Y)? centre, bool confirm)
         {
             if (centre == null) return;
             long cx = centre.Value.X, cy = centre.Value.Y;
-            if (MessageBox.Show(this,
+            if (confirm && MessageBox.Show(this,
                     $"Move the {label} centre to the view centre?\r\nTarget: X={cx}, Y={cy}  (Z unchanged).",
                     $"Go to {label} centre", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
@@ -170,22 +115,25 @@ namespace NanotecController
             _status.Text = $"Go to {label} centre: move issued (see main-window log).";
         }
 
-        // Circle-fits the wafer rim points (step space) and persists the centre (separate from chuck).
-        private void ComputeWaferCentre()
+        // "Go to wafer centre". Unlike the chuck's, this target is COMPUTED rather than read: the wafer
+        // sits eccentric on the chuck, so its centre orbits the rotation axis as Θ turns and the stored
+        // snapshot is only valid at the angle the scan ended on. The invariant offset is rotated out to
+        // whatever Θ the chuck is standing at now.
+        private async Task GoToWaferCentreAsync()
         {
-            bool ok = TryComputeAndSaveCentre(_waferFinder, "Wafer",
-                (x, y, fit) => { _owner.Calibration.WaferCenterX = x; _owner.Calibration.WaferCenterY = y; },
-                out (long X, long Y)? centre, out string text);
-            if (ok)
+            if (!_owner.TryCurrentUser(AxisId.Theta, out long theta))
             {
-                _waferCentre = centre;
-                _waferGoBtn.Enabled = true;
-                _status.Text = "Wafer centre computed and saved.";
+                _status.Text = "Go to wafer centre: Θ position unavailable — connect & enable.";
+                return;
             }
-            _waferResult.Text = text;
+            double deg = CrosshairRotation.ChuckTicksToDegrees(theta, CrosshairRotation.ChuckTicksPerRev);
+            if (_owner.Calibration.WaferCentreAt(deg) is not { } target)
+            {
+                _status.Text = "Go to wafer centre: run the Θ scan first (it also needs a chuck centre and X/Y steps-per-mm).";
+                return;
+            }
+            await GoToCentreAsync($"wafer (Θ={deg:F1}°)", target, confirm: false);
         }
-
-        private Task GoToWaferCentreAsync() => GoToCentreAsync("wafer", _waferCentre);
 
         // Adds a rim point WITHOUT running the detector: the operator has jogged the chuck edge onto
         // the crosshair by eye, so the current motor position IS the point (p_edge = p_cross ⇒ E = M).
@@ -246,9 +194,9 @@ namespace NanotecController
                 _edgeList.Items.Add($"{i++,2}: X={p.X,9:F0} Y={p.Y,9:F0}");
             _edgeList.EndUpdate();
             if (sel >= 0 && sel < _edgeList.Items.Count) _edgeList.SelectedIndex = sel;
-            // Everything that edits the point set is locked out while the auto centre-find is
-            // collecting into it (RefreshAutoUi routes through here, so this is the single gate).
-            bool manual = !_autoRunning;
+            // Everything that edits the point set is locked out while either automatic run is live
+            // (RefreshAutoUi routes through here, so this is the single gate).
+            bool manual = !_autoRunning && !_waferRunning;
             _edgeBtn.Enabled = manual && _view.IsCameraOpen;
             _edgeAtCrossBtn.Enabled = manual && _view.IsCameraOpen;
             _centreBtn.Enabled = manual && _chuckFinder.Count >= 3;
@@ -278,6 +226,6 @@ namespace NanotecController
             _centreResult.Text = text;
         }
 
-        private Task GoToCentreAsync() => GoToCentreAsync("chuck", _chuckCentre);
+        private Task GoToCentreAsync() => GoToCentreAsync("chuck", _chuckCentre, confirm: true);
     }
 }
