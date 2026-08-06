@@ -58,19 +58,26 @@
 <c>* Do not lower it to rescue a frame whose rim is genuinely short - shorten EndSpanPoints, or</c>
 <c>* accept the rejection.</c>
 <c>* </c>
-<c>* EndSpanPoints  : how much of each contour END anchors the chord, in POINTS not pixels - a</c>
-<c>*                  skeleton contour steps 1 to 1.41 px per point, so 300 points is 300-420 px.</c>
-<c>*                  It only has to be long enough to average out the ring's raggedness and short</c>
-<c>*                  enough to stay clear of the notch: there is 0.33 mm (~270 px) of plain rim on</c>
-<c>*                  the tighter side of the worst frame on file, so this is close to its ceiling.</c>
-<c>*                  Lower it before anything else if the chord starts tilting.</c>
-<c>* MaxChordFitMm  : the ends must actually BE straight rim. Rejects a frame whose ends are notch</c>
-<c>*                  flank or chuck texture rather than rim - the case where a depth would still be</c>
-<c>*                  produced but would mean nothing. NOTE no frame on file fails this, so it is</c>
-<c>*                  the one threshold here with no negative example behind it; 0.08 mm is simply</c>
-<c>*                  ~1.7x the worst observed, which is the notch frame's own 37.7 px. The notch</c>
-<c>*                  frame being the worst is expected - it is the frame with the least plain rim</c>
-<c>*                  left to anchor on.</c>
+<c>* EndSpanPoints  : how much of each contour END anchors the chord, in POINTS not pixels.</c>
+<c>*                  This is the parameter that decides how hard the notch is to CATCH, and too</c>
+<c>*                  LARGE is the dangerous direction. The rim contour runs 3000-4200 points and</c>
+<c>*                  the notch is 2.9 mm ~= 2340 of them, so on a 3138-point contour only ~800</c>
+<c>*                  points of clean rim exist; two 300-point anchors ate 600 of them and left the</c>
+<c>*                  notch both enclosed AND clear of both anchors over just 0.14 deg of Theta.</c>
+<c>*                  A search stepping 1 deg walked straight over that window on hardware and</c>
+<c>*                  reported "ends are not plain rim" on the very frames holding the notch.</c>
+<c>*                  At 120 the window is 0.32-1.16 deg over the same frames. Two 120-point anchors</c>
+<c>*                  1.6 mm apart are still an ample line fit - and the depth on the frame on file</c>
+<c>*                  IMPROVED from 0.989 to 1.000 mm against the SEMI nominal of 1.00, because</c>
+<c>*                  shorter anchors sit on cleaner rim further from the notch's influence.</c>
+<c>* MaxChordFitMm  : how far the end spans may depart from straight before the frame is refused.</c>
+<c>*                  This guards the DEPTH, not the angle. A tilted baseline biases depth and width</c>
+<c>*                  directly, but the apex comes from two straight-line fits to raw contour points</c>
+<c>*                  and the baseline only decides which points fall in the flank band - shifting</c>
+<c>*                  that band along a straight flank returns the same line. So a modest tilt costs</c>
+<c>*                  a little depth accuracy and almost no apex accuracy. At 0.08 it was refusing</c>
+<c>*                  usable frames on hardware (0.101 and 0.151 mm, with the notch plainly in view);</c>
+<c>*                  its real job is to catch ends that are not rim AT ALL, and 0.25 still does.</c>
 <c>* MinNotchDepthMm: verdict threshold. 0.25 mm is 200 px, an order of magnitude above the 22-23 px</c>
 <c>*                  a plain rim shows and well below the 800 px of a real notch. Nothing in the</c>
 <c>*                  data sits between, so the exact value is not delicate.</c>
@@ -89,8 +96,8 @@
 <c>* WaferIsBrighter: 0 flips which end of the histogram gets re-split, if the lighting inverts.</c>
 <c>*                  Passed straight through to wafer_edge_contour().</c>
 <l>UmPerPixel := 1.2397</l>
-<l>EndSpanPoints := 300</l>
-<l>MaxChordFitMm := 0.08</l>
+<l>EndSpanPoints := 120</l>
+<l>MaxChordFitMm := 0.25</l>
 <l>MinNotchDepthMm := 0.25</l>
 <l>MinNotchWidthMm := 1.5</l>
 <l>MaxNotchWidthMm := 4.0</l>
@@ -98,6 +105,8 @@
 <l>FlankLoFraction := 0.25</l>
 <l>FlankHiFraction := 0.85</l>
 <l>BridgeGapPx := 30</l>
+<l>CoarseThresholdMm := 0.30</l>
+<l>CoarseMinRunPoints := 200</l>
 <l>MinContourPts := 1500</l>
 <l>MinFlankPoints := 40</l>
 <l>WaferIsBrighter := 1</l>
@@ -203,6 +212,63 @@
 <l>    WaferSign := 1</l>
 <l>endif</l>
 <l>Inward := WaferSign * Offset</l>
+<c>* 3b. The COARSE metric, which is what the Θ SWEEP uses - not the chord above.</c>
+<c>*     Same contour, but a plain regression line over ALL of it rather than a baseline anchored on</c>
+<c>*     the ends. As a measurement it is the weaker of the two: with the notch filling most of the</c>
+<c>*     frame the line tilts into a flank and the residual understates the depth. But it asks for no</c>
+<c>*     plain rim ANYWHERE, so it still fires when the notch is only half in view - and a frame with</c>
+<c>*     the notch half in view is exactly what a sweep meets first, while the chord method rejects</c>
+<c>*     that frame outright at step 3. Hence the division of labour: the sweep hunts on this number,</c>
+<c>*     stops, re-centres the notch, and only then do steps 4-7 measure it.</c>
+<c>*     Measured here over the twelve captures: plain rim 0.012-0.046 mm, notch frame 0.548 mm.</c>
+<c>* </c>
+<c>*     TWO TESTS, NOT ONE. The peak alone cannot tell a notch from debris: it asks how FAR the</c>
+<c>*     contour departs, never how LONG it departs for, and a dust speck, a skeleton spur, or a ring</c>
+<c>*     bridged across a break is a narrow spike that can reach any height. So the sweep also</c>
+<c>*     requires the departure to PERSIST - measured in the C# detector at 0.30 mm over 200</c>
+<c>*     contiguous contour points. The notch runs 1143 points at that cut and plain rim runs ZERO,</c>
+<c>*     which is a far cleaner separation than either test gives alone. CoarseRunPoints below is the</c>
+<c>*     same number, so this script and NotchDetector.cs can be compared directly.</c>
+<c>*     Raising the threshold alone would have been the wrong fix: it rejects debris only by also</c>
+<c>*     blinding the sweep to a notch seen at an unlucky angle.</c>
+<c>* </c>
+<c>*     DO NOT DOWNSCALE THIS TO SAVE TIME. It is the obvious optimisation and it does not work.</c>
+<c>*     Measured at 1/4 (1004x756), with CleanRadius/CloseRadius/MinArea/SideProbeRadius/</c>
+<c>*     MinCollarArea all rescaled with the image: the notch reads 0.275 mm and PLAIN RIM reads</c>
+<c>*     0.217 mm - a 30x separation collapsed to 1.27x, useless. The opening/closing radii fall to</c>
+<c>*     2 and 5 px, too small to hold the gap's outline together, so the ring goes ragged and the</c>
+<c>*     residual is measuring raggedness rather than shape. Several frames stop segmenting at all.</c>
+<c>*     There is no need for it anyway: measured through HDevEngine on this machine, steps 1-3b</c>
+<c>*     cost 230 ms per frame at FULL 4016x3024 (the whole script, steps 1-7, costs 387 ms). A 4 mm</c>
+<c>*     sweep pitch at Θ's top speed allows 710 ms per frame, so full resolution has 3x headroom.</c>
+<c>*     That headroom is what would be spent first if Θ is ever allowed to run faster: at 2x Θ the</c>
+<c>*     budget is 355 ms and this still fits; at 4x it is 178 ms and it does not.</c>
+<l>fit_line_contour_xld (Contour, 'regression', -1, 0, 5, 2, CoarseRowB, CoarseColB, CoarseRowE, CoarseColE, CoarseNr, CoarseNc, CoarseDist)</l>
+<l>CoarseDr := CoarseRowE - CoarseRowB</l>
+<l>CoarseDc := CoarseColE - CoarseColB</l>
+<l>CoarseLen := sqrt(CoarseDr * CoarseDr + CoarseDc * CoarseDc)</l>
+<l>CoarsePerpR := -CoarseDc / CoarseLen</l>
+<l>CoarsePerpC := CoarseDr / CoarseLen</l>
+<l>CoarseOffset := CoarsePerpR * (Row - CoarseRowB) + CoarsePerpC * (Col - CoarseColB)</l>
+<l>CoarseResidualMm := max(abs(CoarseOffset)) * UmPerPixel / 1000</l>
+<c>*     ...and the longest CONTIGUOUS stretch over the cut. Contiguity is in CONTOUR ORDER, which is</c>
+<c>*     why step 2 walks the ring as an ordered skeleton instead of sampling it as a point set.</c>
+<l>CoarseCutPx := CoarseThresholdMm * 1000 / UmPerPixel</l>
+<l>CoarseAbs := abs(CoarseOffset)</l>
+<l>CoarseRunPoints := 0</l>
+<l>CoarseRun := 0</l>
+<l>for K := 0 to |CoarseAbs| - 1 by 1</l>
+<l>    if (CoarseAbs[K] &gt; CoarseCutPx)</l>
+<l>        CoarseRun := CoarseRun + 1</l>
+<l>        if (CoarseRun &gt; CoarseRunPoints)</l>
+<l>            CoarseRunPoints := CoarseRun</l>
+<l>        endif</l>
+<l>    else</l>
+<l>        CoarseRun := 0</l>
+<l>    endif</l>
+<l>endfor</l>
+<l>CoarseWouldStop := CoarseResidualMm &gt; CoarseThresholdMm and CoarseRunPoints &gt;= CoarseMinRunPoints</l>
+<l>gen_contour_polygon_xld (CoarseLine, [CoarseRowB - 3000 * CoarseDr / CoarseLen,CoarseRowE + 3000 * CoarseDr / CoarseLen], [CoarseColB - 3000 * CoarseDc / CoarseLen,CoarseColE + 3000 * CoarseDc / CoarseLen])</l>
 <l>gen_contour_polygon_xld (Chord, [RowBegin - 3000 * Tr,RowEnd + 3000 * Tr], [ColBegin - 3000 * Tc,ColEnd + 3000 * Tc])</l>
 <l>dev_display (Image)</l>
 <l>dev_set_color ('green')</l>
@@ -210,10 +276,12 @@
 <l>dev_set_color ('cyan')</l>
 <l>dev_set_line_width (2)</l>
 <l>dev_display (Chord)</l>
+<l>dev_set_color ('orange')</l>
+<l>dev_display (CoarseLine)</l>
 <l>dev_set_color ('red')</l>
 <l>dev_set_line_width (5)</l>
 <l>dev_display (EndsContour)</l>
-<l>disp_message (WindowHandle, ['3: chord (cyan) through the two ' + EndSpanPoints + '-point end spans (red)','   end-span residual ' + ChordFitPx$'.1f' + ' px = ' + ChordFitMm$'.3f' + ' mm   (limit ' + MaxChordFitMm$'.3f' + ' mm)','   wafer lies on the ' + WaferSign + ' side'], 'window', 12, 12, 'yellow', 'false')</l>
+<l>disp_message (WindowHandle, ['3: chord (cyan) through the two ' + EndSpanPoints + '-point end spans (red)','   end-span residual ' + ChordFitPx$'.1f' + ' px = ' + ChordFitMm$'.3f' + ' mm   (limit ' + MaxChordFitMm$'.3f' + ' mm)','   wafer lies on the ' + WaferSign + ' side','3b: coarse metric, regression line over the WHOLE contour (orange) - what the SWEEP hunts on','   peak ' + CoarseResidualMm$'.3f' + ' mm (needs &gt; ' + CoarseThresholdMm$'.2f' + '), longest run ' + CoarseRunPoints + ' pts (needs >= ' + CoarseMinRunPoints + ')','   the sweep would ' + ['NOT stop','STOP'][CoarseWouldStop] + ' on this frame'], 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 <l>if (ChordFitMm &gt; MaxChordFitMm)</l>
 <l>    dev_display (Image)</l>

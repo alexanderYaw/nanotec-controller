@@ -63,6 +63,23 @@ namespace NanotecController
         Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null);
         void StopHoldRotate();
 
+        // --- Continuous rim sweep, for the notch search (FrmMain.RimSweep.cs) ---
+        /// <summary>Turns Θ continuously while Y follows <paramref name="stationYAt"/> (a USER-frame Y
+        /// for a CHUCK angle in degrees), until <paramref name="stopWhen"/> fires or
+        /// <paramref name="maxDegrees"/> are swept. <paramref name="stopWhen"/> is polled on the drive
+        /// thread — keep it to reading a flag.</summary>
+        Task<FrmMain.RimSweepResult> SweepRimAsync(
+            Func<double, double?> stationYAt, Func<bool> stopWhen, int thetaDir, double maxDegrees,
+            int thetaSpeed);
+        /// <summary>Θ as of the sweep loop's last tick. Read THIS during a sweep, never
+        /// <see cref="TryReadThetaNow"/>: NanoLib access is serialized on one channel and the sweep
+        /// owns it for the whole revolution.</summary>
+        long SweepThetaTicks { get; }
+        /// <summary>Θ's velocity cap. This is what floors the search time — a revolution is
+        /// <see cref="CrosshairRotation.ChuckTicksPerRev"/> ticks, so at 3200 steps/s no sweep can
+        /// take less than ~112 s.</summary>
+        int ThetaSpeedMax { get; }
+
         // --- Drift-corrected vision jog (FrmMain.Vision.cs) ---
         void VisionJogUser(int vxUser, int vyUser);
         void VisionStop();

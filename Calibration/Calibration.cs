@@ -95,6 +95,18 @@ namespace NanotecController
         public int? WaferFitN { get; set; }
         public string? WaferFitTimestamp { get; set; }
 
+        /// <summary>Bearing of the notch from the wafer centre, in the CHUCK's rotating frame — so
+        /// like <see cref="WaferOffsetX"/> it does not go stale when Θ moves, and turning the notch to
+        /// a datum is just a Θ move of (datum − this). Null until a notch search has run. Belongs to
+        /// the WAFER, not the machine: it is void the moment the wafer is lifted or re-placed.</summary>
+        public double? NotchAngleDeg { get; set; }
+        /// <summary>Depth the notch measured, kept for the same reason the wafer fit keeps its RMS —
+        /// a stored angle with no record of how good the measurement was cannot be judged later.
+        /// A SEMI 200 mm notch is 1.00 mm; a value far off that means the search latched onto
+        /// something else and the angle should not be trusted.</summary>
+        public double? NotchDepthMm { get; set; }
+        public string? NotchTimestamp { get; set; }
+
         /// <summary>Image handedness of a positive Θ move: +1 or -1, or null until the
         /// crosshair-rotation sign test fixes it. Not derivable from the translation-only
         /// <see cref="PixelStep"/> affine — it depends on Θ's mounting and camera orientation,

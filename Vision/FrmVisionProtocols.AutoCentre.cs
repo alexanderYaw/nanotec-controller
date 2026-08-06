@@ -86,16 +86,24 @@ namespace NanotecController
         // frame size (ZoomFactor is a centred-ROI crop, so this shrinks with zoom) and size the hop.
         // Report is the wafer detector's per-region diagnostic (null for the chuck target), logged by
         // the wafer scan so a point off the rim says which filter let the wrong region through.
+        // Anomalous is the coarse notch test's verdict on the SAME frame, filled in only when the
+        // caller asks for the screen (the wafer Θ scan does); AnomalyMm/AnomalyRun are its numbers.
         private readonly record struct AutoDetection(
             bool Found, double Row, double Column, double CrossRow, double CrossCol,
-            double FrameW, double FrameH, string? Report = null);
+            double FrameW, double FrameH, string? Report = null,
+            bool Anomalous = false, double AnomalyMm = 0, int AnomalyRun = 0);
 
         // --- Awaitable grab + detect ------------------------------------------------
 
         // The same detector call as RequestEdge, but awaitable, with the result handed back instead of
         // stored. The overlay still lands on the captured pane so the operator can watch each hop.
         // Returns a default (FrameW = 0) if the camera is closed or the job never comes back.
-        private async Task<AutoDetection> DetectEdgeAsync()
+        //
+        // screenUmPerPixel > 0 additionally runs the COARSE notch test on the same frame, so a rim
+        // carrying the notch — or debris, or a chip — is recognised as such instead of being measured
+        // as if it were plain rim. It is the same frame deliberately: a verdict from a second grab
+        // would not belong to the point being judged.
+        private async Task<AutoDetection> DetectEdgeAsync(double screenUmPerPixel = 0)
         {
             if (!_view.IsCameraOpen) return default;
 
@@ -128,7 +136,23 @@ namespace NanotecController
                     }
                     catch (HOperatorException) { found = false; }
 
-                    var result = new AutoDetection(found, edgeRow, edgeCol, crossRow, crossCol, fw.D, fh.D, report);
+                    // Only worth asking of a frame that HAS a rim in it: on an empty frame the coarse
+                    // test fails on contour length anyway, and it costs ~230 ms to say so.
+                    bool anomalous = false;
+                    double anomalyMm = 0;
+                    int anomalyRun = 0;
+                    if (found && screenUmPerPixel > 0)
+                    {
+                        try
+                        {
+                            if (_notchDetector.TryCoarse(frame, screenUmPerPixel, out anomalyMm, out anomalyRun))
+                                anomalous = _notchDetector.IsAnomalous(anomalyMm, anomalyRun);
+                        }
+                        catch (HOperatorException) { }
+                    }
+
+                    var result = new AutoDetection(found, edgeRow, edgeCol, crossRow, crossCol, fw.D, fh.D,
+                                                   report, anomalous, anomalyMm, anomalyRun);
                     _view.PostFrameBitmap(frame, flip: false, raw =>
                     {
                         if (IsDisposed) { raw.Dispose(); tcs.TrySetResult(result); return; }
@@ -578,8 +602,8 @@ namespace NanotecController
         // so a stray click cannot inject a point into the set being collected.
         private void RefreshAutoUi()
         {
-            _autoRunBtn.Enabled = _view.IsCameraOpen && !_autoRunning && !_waferRunning;
-            _autoRadius.Enabled = !_autoRunning && !_waferRunning;
+            _autoRunBtn.Enabled = _view.IsCameraOpen && !_autoRunning && !_waferRunning && !_notchRunning;
+            _autoRadius.Enabled = !_autoRunning && !_waferRunning && !_notchRunning;
             _autoCancelBtn.Enabled = _autoRunning;
             RefreshEdgeUi();
         }

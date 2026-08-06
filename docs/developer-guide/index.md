@@ -1254,9 +1254,9 @@ thing holding the result up.
 |---|---|
 | A | Station direction = the cardinal from `C` with the most travel headroom; refuse if none clears the nominal radius |
 | B | Acquire the rim — the existing `ProbeAsync`, outward from `C`, `0.9 × R` approach jump |
-| C | N+1 samples, Θ stepped by 360/N between them, station following the rim; the last repeats θ₀ |
+| C | N+1 samples, Θ stepped by 360/N between them, station following the rim; anomalous frames dropped; the last repeats θ₀ |
 | D | De-rotate + fit; settle the handedness, drop outliers past `max(3σ, 0.3 mm)`, refit once |
-| E | Closure check, then persist |
+| E | Closure check, then persist — with the notch, if a dropped frame turned out to be it |
 
 Step-and-settle throughout, and Θ is stepped **monotonically** through one revolution so backlash in
 the reduction loads identically at every sample. The **closure check** re-reads θ₀ at the end: a
@@ -1264,9 +1264,18 @@ radius disagreeing with the first sample by more than 400 steps means the wafer 
 (vacuum off, or Θ lost steps), so every earlier sample is suspect and the result is reported but
 **not saved**. It costs one extra grab, since a full revolution returns to the start anyway.
 
-These are 200 mm wafers with a **notch**, not a flat — under half a degree of arc, so it rarely
-lands on a sample and is an ordinary outlier when it does. The dropped angle *is* the notch angle;
-the run logs it, nothing consumes it yet.
+**Anomalous samples are dropped before they reach the fit.** Every frame is screened with
+`NotchDetector.TryCoarse` — the same test the notch sweep applies, at the same trigger — on the very
+frame the point came from, and a frame carrying the notch, a chip or debris is dropped rather than
+fitted. Leaving it to the 3σ drop is second-best: the bad point is in the fit that computes the cut
+it is then judged against. *Anomalous* is kept distinct from *missed* (`RimLook`): a miss sends the
+station hunting ±6 hops of Y, an anomaly means the rim is right there, so the sample simply ends.
+
+These are 200 mm wafers with a **notch**, not a flat: 2.9 mm of arc against a 4.9 mm frame, so at 15°
+sampling a sample overlaps it in ~30% of runs. The stage is stopped on it, so the fine detector gets
+a free look, and if the notch is wholly in frame the scan **saves the notch angle with the fit** —
+same fields, same `Save()`, converted after the offset exists because the bearing is measured from
+the wafer centre. Worth roughly 1 scan in 13 to 1 in 45; a catch, not a search.
 
 ### The stored result is not a point
 
@@ -1284,6 +1293,34 @@ exists to avoid.
 
 > Full derivation, the parameter table, and the verification are in
 > **[Wafer Centre-Finding by Rotation](WaferCentreByRotation/)**.
+
+### Finding the notch (`Vision/FrmVisionProtocols.NotchFind.cs`, `Vision/NotchDetector.cs`, `FrmMain.RimSweep.cs`, `Geometry/RimStation.cs`)
+
+Once the wafer's offset is known, the same station can be used to hunt for the **notch** — the one
+place on the rim that is not a circle. The centre-find drops the notch when it meets one and keeps it
+on the minority of runs where it lands wholly in frame; this finds it deliberately, from any
+orientation, and stores its bearing so the wafer can be turned to a datum.
+
+It is a **continuous** Θ sweep, not step-and-settle: a revolution costs 112 s of rotation whatever
+happens (359,859 ticks ÷ Θ's 3200 steps/s cap), and stopping ~157 times would triple that, while
+sweeping adds nothing because the detector runs in ~130 ms against a 710 ms budget. Y follows the
+rim's computed path — a 10 mm excursion at 365 steps/s, since all it cancels is the 2.5 mm
+eccentricity. Detection is two-stage: a line-residual test that tolerates a half-visible notch does
+the hunting, then a chord-anchored measurement on a stationary frame gives the apex.
+
+**Check notch angle** measures the stored angle against the wafer rather than against the eye. It
+solves the Θ that brings the notch to the camera station — solves, because the station's bearing
+*from the wafer centre* drifts as the eccentric centre orbits (`RimStation.TryStationBearing`, a
+three-pass fixed point) — re-measures there, and reports `measured − stored` in degrees and in mm of
+rim. Not circular: where it drives depends on the stored angle, what it measures there does not. It
+exists because the error budget says the software cannot be the source of a discrepancy of degrees:
+the apex is converted relative to the frame centre (±1.8° ceiling), the scan's 0.076 mm RMS bounds
+any `ChuckTicksPerRev` error to ±0.04° per revolution, and the 0.717 mm eccentricity caps an
+offset/sign error at ±0.82°.
+
+> The measured separations, the reason a 4× downscale destroys them, the two-apex distinction, the
+> error budget behind the check, and the list of what is still unverified on hardware are in
+> **[Notch Search by Continuous Sweep](NotchSearch/)**.
 
 ---
 
@@ -1304,6 +1341,20 @@ paints the newest finished frame.
   field of view **in steps**, which is why the auto centre-find recomputes its hop per run.
 * **Invert / Mono** are display-only (the camera is mounted inverted, so invert defaults on);
   detections always run on the **raw full-resolution** frame.
+* **The camera is mounted ~4.6° rotated**, and the affine carries it (column axis at 184.6° in the
+  stage frame, row axis at 94.45° — orthogonal to 0.1°, so a real rotation, not skew). Every
+  measurement divides it out; only the picture leans. **A display rotation to square the view up was
+  built and rolled back** on 2026-08-06: it would not straighten the notch (see *NotchSearch* §5),
+  and the machine now compensates by turning the **chuck** instead — `Geometry/CameraFrame.cs`, the
+  notch datum. If a display rotation is ever revisited, the coupling to remember is that
+  `VisionJogMath.TryUserVelocity` maps a *screen* direction through an affine defined on *raw*
+  pixels: rotating the display without turning the push back by the same angle leaves **8 %**
+  cross-coupling on a jog, and reversing the sign doubles it instead of removing it.
+* **The camera frame is the operator's frame for DIRECTIONS, and cannot be one for POSITIONS.** Its
+  origin travels with X/Y. VISION jog mode already works this way throughout — jog, analog stick, and
+  the relative mm moves, which run along the *screen* axes via the affine (`FrmMain.RelativeMove.cs`)
+  — and `CameraFrame` extends it to the notch datum. Absolute positions stay in the machine frame
+  because there is nowhere else for them to be.
 * **Crosshair ticks** are drawn at 1 mm spacing via `TickScaleProvider` →
   `VisionViewControl.MmPerPixel(calib)`, which needs both the pixel→step affine **and** X/Y
   steps/mm. The same scale drives the draggable **Measure** ruler and the µm/px readout.

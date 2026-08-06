@@ -30,9 +30,12 @@ namespace NanotecController
     //   B  raster down in Y until the rim is detected; that spot is the station
     //   C  N+1 samples, rotating Θ by 360/N between them (the last repeats θ₀ as a closure check).
     //      Θ ONLY — X and Y stand still unless a sample misses, when Y searches either side of the
-    //      station until the rim is back in the ~4 mm field the eccentricity swept it out of
+    //      station until the rim is back in the ~4 mm field the eccentricity swept it out of.
+    //      Every frame is screened with the notch detector's coarse test and an anomalous one is
+    //      DROPPED rather than fitted — see RimLook — and if the anomaly then measures as the notch
+    //      on the stationary frame, that sighting is kept and saved with the fit
     //   D  de-rotate + fit (WaferCentreScan), which also settles the handedness and drops outliers
-    //   E  closure check, then persist the offset (chuck frame) + radius + fit metadata
+    //   E  closure check, then persist the offset (chuck frame) + radius + fit metadata + any notch
     //   F  drive to the wafer centre for the Θ the run ends on
     // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
     public sealed partial class FrmVisionProtocols
@@ -64,6 +67,21 @@ namespace NanotecController
 
         private volatile bool _waferCancel;
         private bool _waferRunning;
+
+        // Scale for the coarse notch screen and for any notch measurement the scan makes. Fixed for
+        // the run, so it is a field rather than a seventh parameter on the detect path.
+        private double _waferUmPerPixel;
+
+        /// <summary>What one look at the rim came to. Anomalous is NOT a miss: the rim IS in view, it
+        /// just is not plain rim — the notch, debris, or a chipped edge — so the sample is dropped
+        /// where a miss would send the station hunting up and down Y for a rim that is already there.</summary>
+        private enum RimLook { Missed, Anomalous, Found }
+
+        /// <summary>A notch measured on one of the dropped frames, held until the fit is saved: the
+        /// apex only becomes an angle once the offset it is measured against exists.</summary>
+        private readonly record struct NotchSighting(
+            double ThetaDeg, double ApexRow, double ApexCol, double CrossRow, double CrossCol,
+            long MotorX, long MotorY, double DepthMm, double WidthMm);
 
         // --- Orchestration ----------------------------------------------------------
 
@@ -111,6 +129,7 @@ namespace NanotecController
             _waferRunning = true;
             _autoTarget = AutoTarget.Wafer;
             RefreshWaferUi();
+            RefreshNotchUi();
             RefreshAutoUi();
             // Same lockout the chuck run takes, for the same reason: FrmMain's own busy flag drops
             // between steps, which would leave the d-pad and the polled joystick live between a move
@@ -119,6 +138,10 @@ namespace NanotecController
             try
             {
                 _waferLog.Clear();
+                // The scan screens every frame with the notch detector, so it takes the same trigger
+                // threshold the notch window offers rather than a second copy of the number.
+                _waferUmPerPixel = UmPerPixel(a, kX, kY);
+                _notchDetector.CoarseThresholdMm = (double)_notchThreshold.Value;
                 await WaferScanCoreAsync(a, (ccx, ccy), kX, kY, nominalR, n);
             }
             finally
@@ -128,6 +151,7 @@ namespace NanotecController
                 _autoTarget = AutoTarget.Chuck;
                 RefreshWaferUi();
                 RefreshAutoUi();
+                RefreshNotchUi();
             }
         }
 
@@ -202,7 +226,9 @@ namespace NanotecController
             {
                 if (_waferCancel) { AutoLog("Cancelled."); _status.Text = "Wafer Θ scan cancelled."; return; }
                 AutoLog($"Descent {descent + 1}: Y={y:F0}...");
-                if (await TryDetectAtAsync((stationX, y), a, c, hop, nominalR) is { })
+                // Anomalous counts as acquired here: the descent only wants to know WHERE the rim is,
+                // and refusing the notch would carry the raster on past the rim into the wafer.
+                if ((await TryDetectAtAsync((stationX, y), a, c, hop, nominalR)).Look != RimLook.Missed)
                 {
                     station = (stationX, y);
                     acquired = true;
@@ -222,7 +248,8 @@ namespace NanotecController
             var samples = new List<WaferCentreScan.Sample>(n + 1);
             double firstRadius = 0;
             double lastRadius = 0;
-            int missed = 0;
+            int missed = 0, dropped = 0;
+            NotchSighting? sighting = null;
 
             for (int k = 0; k <= n; k++)
             {
@@ -237,20 +264,30 @@ namespace NanotecController
                 double thetaDeg = CrosshairRotation.ChuckTicksToDegrees(thetaTicks, CrosshairRotation.ChuckTicksPerRev);
 
                 _status.Text = $"Wafer Θ scan: sample {k + 1}/{n + 1} at Θ={thetaDeg:F1}°...";
-                (bool got, (double X, double Y) e, double stationY) =
+                (RimLook look, (double X, double Y) e, double stationY) =
                     await SampleAtStationAsync(station, a, c, hop, nominalR, yBottom, yTop);
                 if (_waferCancel) { AutoLog("Cancelled."); _status.Text = "Wafer Θ scan cancelled."; return; }
 
-                if (got)
+                // Follow the rim in Y only: the station stays on the X = X min line, and moves only as
+                // far as the search had to go to find the rim again. A dropped sample still saw the
+                // rim, so it still says where the station should stand.
+                if (look != RimLook.Missed) station = (station.X, stationY);
+
+                if (look == RimLook.Found)
                 {
                     double r = Dist(e, c);
                     samples.Add(new WaferCentreScan.Sample(thetaDeg, e.X, e.Y));
                     if (samples.Count == 1) firstRadius = r;
                     lastRadius = r;
                     AutoLog($"Θ={thetaDeg,6:F1}°: rim ({e.X:F0}, {e.Y:F0}), r={r:F0}.");
-                    // Follow the rim in Y only: the station stays on the X = X min line, and moves
-                    // only as far as the search had to go to find the rim again.
-                    station = (station.X, stationY);
+                }
+                else if (look == RimLook.Anomalous)
+                {
+                    dropped++;
+                    AutoLog($"Θ={thetaDeg,6:F1}°: rim is not plain here — sample dropped.");
+                    // The stage is standing on it, which is exactly the frame the FINE detector wants.
+                    // One grab settles whether the anomaly is the notch or a speck.
+                    if (sighting == null) sighting = await TryMeasureNotchAsync(thetaDeg);
                 }
                 else
                 {
@@ -269,8 +306,14 @@ namespace NanotecController
             // ---- Stage D: de-rotate and fit ----
             if (samples.Count < 3)
             {
-                _status.Text = $"Wafer Θ scan: only {samples.Count} sample(s) found — 3 are needed to fit.";
-                AutoLog($"Only {samples.Count} of {n + 1} samples found the rim. Nothing fitted.");
+                _status.Text = $"Wafer Θ scan: only {samples.Count} usable sample(s) — 3 are needed to fit.";
+                AutoLog($"Only {samples.Count} of {n + 1} samples were usable ({missed} missed the rim, " +
+                        $"{dropped} were dropped as anomalous). Nothing fitted." +
+                        (dropped > missed
+                            ? $" A whole scan reading as anomalous means the rim itself is reading badly, or the " +
+                              $"{_notchDetector.CoarseThresholdMm:F2} mm trigger is too low for this lighting — " +
+                              "one notch cannot account for more than a sample or two."
+                            : ""));
                 return;
             }
 
@@ -302,7 +345,8 @@ namespace NanotecController
 
             double radiusErr = fit.RadiusSteps - nominalR;
             string summary =
-                $"Wafer Θ scan (N={fit.Used}, {missed} missed, {fit.DroppedAngles.Count} dropped)\r\n" +
+                $"Wafer Θ scan (N={fit.Used}, {missed} missed, {dropped} anomalous, " +
+                $"{fit.DroppedAngles.Count} outliers)\r\n" +
                 $"offset X={fit.OffsetXSteps:F0}  Y={fit.OffsetYSteps:F0} steps\r\n" +
                 $"eccentricity {Math.Sqrt(fit.OffsetXSteps * fit.OffsetXSteps + fit.OffsetYSteps * fit.OffsetYSteps) / ((kX + kY) / 2.0):F3} mm\r\n" +
                 $"R={fit.RadiusMm:F2} mm ({radiusErr:+0;-0} steps vs nominal)\r\n" +
@@ -334,6 +378,34 @@ namespace NanotecController
                 cal.WaferCenterX = snap.X;
                 cal.WaferCenterY = snap.Y;
             }
+
+            // The notch, if one of the dropped samples turned out to be it. It goes in with the fit's
+            // own Save, and only here: the apex is a motor position until there is an offset to measure
+            // its bearing against, and that offset is what the lines above have just written. A scan
+            // that catches it saves the notch search a whole revolution.
+            string notchLine = "";
+            if (sighting is { } sight)
+            {
+                (double X, double Y) apex = CentreFinder.ToStepPoint(
+                    sight.ApexRow, sight.ApexCol, sight.CrossRow, sight.CrossCol, a, sight.MotorX, sight.MotorY);
+                if (RimStation.TryChuckFrameAngle(cal, sight.ThetaDeg, apex.X, apex.Y,
+                                                  out double notchDeg, out string? notchWhy))
+                {
+                    cal.NotchAngleDeg = notchDeg;
+                    cal.NotchDepthMm = sight.DepthMm;
+                    cal.NotchTimestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    notchLine = $"notch {notchDeg:F2}° (depth {sight.DepthMm:F3} mm)";
+                    AutoLog($"NOTCH seen at Θ={sight.ThetaDeg:F1}° during the scan: {notchDeg:F3}° in the " +
+                            $"chuck frame, depth {sight.DepthMm:F3} mm, width {sight.WidthMm:F3} mm. Saved " +
+                            "with the fit — the notch search does not need to run for this wafer.");
+                }
+                else
+                    AutoLog("A notch was measured during the scan but its angle could not be computed: " + notchWhy);
+            }
+            else if (cal.NotchAngleDeg is double stale)
+                AutoLog($"No notch was seen this scan. The stored {stale:F2}° angle is left alone, but it " +
+                        "predates this run — re-run the notch search if the wafer has been re-placed since.");
+
             try { cal.Save(); }
             catch (Exception ex)
             {
@@ -343,8 +415,8 @@ namespace NanotecController
             }
 
             AutoLog($"Fit: offset ({fit.OffsetXSteps:F0}, {fit.OffsetYSteps:F0}) steps, R={fit.RadiusMm:F2} mm, RMS={fit.RmsMm:F3} mm.");
-            _waferResult.Text = summary;
-            RefreshWaferUi();
+            _waferResult.Text = notchLine.Length > 0 ? summary + "\r\n" + notchLine : summary;
+            RefreshWaferUi();   // the notch buttons wait for the finally, which is where the run ends
 
             // ---- Stage F: end on the wafer centre rather than parked out on the rim. The fit is
             // already saved, so a failure here costs the position, not the measurement.
@@ -382,62 +454,93 @@ namespace NanotecController
         // --- Sampling ---------------------------------------------------------------
 
         /// <summary>
-        /// One sample: detect the rim at <paramref name="station"/>. On a miss, searches Y either side
+        /// One sample: detect the rim at <paramref name="station"/>. On a MISS, searches Y either side
         /// of it, down first, up to <see cref="WAFER_SEARCH_HOPS"/> hops each way — the eccentricity
         /// swings the rim out of a ~4 mm field as Θ turns, and it swings BOTH ways. Returns the Y it
-        /// succeeded at so the station can follow; on a miss the station is left where it was, so one
+        /// settled at so the station can follow; on a miss the station is left where it was, so one
         /// lost sample cannot strand the run away from the rim.
+        ///
+        /// An ANOMALOUS look ends the sample there and then, with no search: the rim is in the frame,
+        /// so there is nothing to hunt for, and hunting would walk ±9 mm of Y over a feature that is
+        /// only ~3 mm of rim wide and find the same anomaly again at the far end of it.
         /// </summary>
-        private async Task<(bool Found, (double X, double Y) Point, double StationY)> SampleAtStationAsync(
+        private async Task<(RimLook Look, (double X, double Y) Point, double StationY)> SampleAtStationAsync(
             (double X, double Y) station, PixelStepAffine a, (double X, double Y) c,
             double hop, double nominalR, double yMin, double yMax)
         {
-            if (await TryDetectAtAsync(station, a, c, hop, nominalR) is { } hit)
-                return (true, hit, station.Y);
+            (RimLook look, (double X, double Y) point) = await TryDetectAtAsync(station, a, c, hop, nominalR);
+            if (look != RimLook.Missed) return (look, point, station.Y);
 
             for (int k = 1; k <= WAFER_SEARCH_HOPS; k++)
             {
                 foreach (int sgn in new[] { -1, +1 })
                 {
-                    if (_waferCancel) return (false, default, station.Y);
+                    if (_waferCancel) return (RimLook.Missed, default, station.Y);
                     double y = station.Y + sgn * k * hop;
                     if (y < yMin || y > yMax) continue;
                     AutoLog($"  search {sgn * k:+0;-0} hop(s): Y={y:F0}...");
-                    if (await TryDetectAtAsync((station.X, y), a, c, hop, nominalR) is { } found)
-                        return (true, found, y);
+                    (look, point) = await TryDetectAtAsync((station.X, y), a, c, hop, nominalR);
+                    if (look != RimLook.Missed) return (look, point, y);
                 }
             }
             AutoLog($"  searched ±{WAFER_SEARCH_HOPS * hop:F0} steps of Y about {station.Y:F0} — no rim.");
-            return (false, default, station.Y);
+            return (RimLook.Missed, default, station.Y);
         }
 
         // Moves to target, verifies arrival, grabs, and returns the rim point if the detection passes
-        // the border and radial-band gates. Null on anything short of that.
-        private async Task<(double X, double Y)?> TryDetectAtAsync(
+        // the border and radial-band gates. Anomalous when the coarse notch test fires on that same
+        // frame — the point is then thrown away rather than fitted, because it is a point on the
+        // notch (or on debris) and not on the circle the fit is looking for.
+        private async Task<(RimLook Look, (double X, double Y) Point)> TryDetectAtAsync(
             (double X, double Y) target, PixelStepAffine a, (double X, double Y) c, double hop, double nominalR)
         {
-            if (!WithinTravel(target.X, target.Y, out _)) return null;
+            if (!WithinTravel(target.X, target.Y, out _)) return (RimLook.Missed, default);
             await MoveToUserAsync(target.X, target.Y);
-            if (_waferCancel) return null;
+            if (_waferCancel) return (RimLook.Missed, default);
 
             // Fresh read, not the cache: this M is what the rim point is built from.
-            if (!_owner.TryReadUserXyNow(out long mx, out long my)) return null;
+            if (!_owner.TryReadUserXyNow(out long mx, out long my)) return (RimLook.Missed, default);
             double tol = Math.Max(hop * WAFER_ARRIVE_FRAC, 1.0);
-            if (Math.Abs(mx - target.X) > tol || Math.Abs(my - target.Y) > tol) return null;
+            if (Math.Abs(mx - target.X) > tol || Math.Abs(my - target.Y) > tol) return (RimLook.Missed, default);
 
-            AutoDetection d = await DetectEdgeAsync();
+            AutoDetection d = await DetectEdgeAsync(_waferUmPerPixel);
             // Logged for every frame, accepted or not: a point that lands off the rim still passes the
             // gates below, so the detector's own view of the frame is the only record of WHY.
             if (!string.IsNullOrEmpty(d.Report))
                 AutoLog($"  detect @({target.X:F0}, {target.Y:F0}) px=({d.Row:F0}, {d.Column:F0})  {d.Report}");
-            if (!AcceptDetection(d, a, c, nominalR, mx, my, out (double X, double Y) e)) return null;
+            if (d.Anomalous)
+            {
+                AutoLog($"  anomalous: {d.AnomalyMm:F3} mm off straight over {d.AnomalyRun} points, past the " +
+                        $"{_notchDetector.CoarseThresholdMm:F2} mm / {_notchDetector.CoarseMinRunPoints} pt trigger.");
+                return (RimLook.Anomalous, default);
+            }
+            if (!AcceptDetection(d, a, c, nominalR, mx, my, out (double X, double Y) e)) return (RimLook.Missed, default);
 
             // Confirm on a second frame without moving, so a one-frame artefact cannot enter the fit.
+            // Not screened again: nothing has moved, so the first frame's verdict still holds.
             AutoDetection d2 = await DetectEdgeAsync();
-            if (!AcceptDetection(d2, a, c, nominalR, mx, my, out (double X, double Y) e2)) return null;
-            if (Math.Abs(e2.X - e.X) > tol || Math.Abs(e2.Y - e.Y) > tol) return null;
+            if (!AcceptDetection(d2, a, c, nominalR, mx, my, out (double X, double Y) e2)) return (RimLook.Missed, default);
+            if (Math.Abs(e2.X - e.X) > tol || Math.Abs(e2.Y - e.Y) > tol) return (RimLook.Missed, default);
 
-            return e;
+            return (RimLook.Found, e);
+        }
+
+        // The fine measurement on a frame the coarse screen has already called anomalous. Costs one
+        // grab, and answers a question the run needs anyway: an anomaly that measures as a notch is
+        // the notch, and one that does not is debris — either way the sample stays dropped.
+        private async Task<NotchSighting?> TryMeasureNotchAsync(double thetaDeg)
+        {
+            if (!_owner.TryReadUserXyNow(out long mx, out long my)) return null;
+
+            NotchDetector.Measurement? m = await MeasureAsync(_waferUmPerPixel);
+            if (m == null)
+            {
+                AutoLog("  not a notch (" + _notchDetector.LastReport.Trim() + ") — debris or a chipped edge.");
+                return null;
+            }
+            AutoLog($"  NOTCH: depth {m.Value.DepthMm:F3} mm, width {m.Value.WidthMm:F3} mm — held until the fit is saved.");
+            return new NotchSighting(thetaDeg, m.Value.ApexRow, m.Value.ApexCol, _lastCrossRow, _lastCrossCol,
+                                     mx, my, m.Value.DepthMm, m.Value.WidthMm);
         }
 
         // Border gate + radial band. The detector's threshold is adaptive, so a frame with no rim in
@@ -476,12 +579,13 @@ namespace NanotecController
 
         private void RefreshWaferUi()
         {
-            _waferRunBtn.Enabled = _view.IsCameraOpen && !_waferRunning && !_autoRunning;
-            _waferDia.Enabled = _waferSamples.Enabled = !_waferRunning && !_autoRunning;
+            _waferRunBtn.Enabled = _view.IsCameraOpen && !_waferRunning && !_autoRunning && !_notchRunning;
+            _waferDia.Enabled = _waferSamples.Enabled = !_waferRunning && !_autoRunning && !_notchRunning;
             _waferCancelBtn.Enabled = _waferRunning;
             // Go to Centre needs the OFFSET, not the snapshot: the target is recomputed for the
             // current Θ, which is the whole point of storing the offset.
-            _waferGoBtn.Enabled = !_waferRunning && !_autoRunning && _owner.Calibration.WaferOffsetX.HasValue;
+            _waferGoBtn.Enabled = !_waferRunning && !_autoRunning && !_notchRunning
+                                  && _owner.Calibration.WaferOffsetX.HasValue;
         }
     }
 }

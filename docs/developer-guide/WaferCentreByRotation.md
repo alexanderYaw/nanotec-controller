@@ -399,9 +399,9 @@ matches the nominal.
 |---|---|
 | A | Park at (X min, Y max) — the corner of the stored travel envelope (§2). Refuse up front if the nominal rim radius lies outside the band that line sweeps. |
 | B | Raster down in Y, one hop at a time, until the rim is detected. That spot is the station. |
-| C | N+1 samples, rotating Θ by 360/N between them, **Θ only** — X/Y move only to re-acquire a lost rim (§6). The last sample repeats θ₀. |
+| C | N+1 samples, rotating Θ by 360/N between them, **Θ only** — X/Y move only to re-acquire a lost rim (§6). Each frame is screened for an anomalous rim and dropped if it is one (see *The notch* below). The last sample repeats θ₀. |
 | D | De-rotate and fit (`WaferCentreScan`): settle the handedness, drop outliers past `max(3σ, 0.3 mm)`, refit once. |
-| E | Closure check, then persist. |
+| E | Closure check, then persist — including a notch, if one of the dropped frames turned out to be it. |
 | F | Drive to `WaferCentreAt(Θ)` for the angle the run ends on, so it finishes on the wafer centre rather than parked out on the rim. |
 
 Stage F runs **after** the save, so a move that fails costs the position, not the measurement — the
@@ -422,15 +422,53 @@ The last sample returns to θ₀, and its radius must reproduce the first sample
 lost steps — and **every earlier sample is suspect**, so the result is reported but *not saved*.
 This is nearly free: a full revolution returns to the start anyway, so it costs one extra grab.
 
-### The notch
+### The notch, and dropping anomalous samples
 
-These are 200 mm wafers with a **notch**, not a flat: under half a degree of arc, ~1 mm deep. At
-15° sampling it rarely lands on a sample at all, and when it does it is an ordinary outlier that
-the 3σ drop removes. The dropped angle *is* the notch angle — the run logs it, though nothing
-consumes it yet. A wafer with a **flat** would be a different matter (a 200 mm primary flat is ~33°
-of arc with a 4.2 mm sagitta) and would cost several samples; the run tolerates that by skipping
-them, but a 4.2 mm sagitta is past what the Y search reaches, so the rim would have to be
-re-acquired on the far side of the flat rather than tracked across it.
+These are 200 mm wafers with a **notch**, not a flat: 2.9 mm of arc (1.66°), ~1 mm deep. The frame
+covers ~4.9 mm of rim, so at 15° sampling (26.2 mm of rim between samples) a sample **overlaps** the
+notch about **30%** of runs and contains it whole about **8%**.
+
+An overlapping sample is a rim point that is not on the rim circle, by up to the notch's full ~1 mm.
+Leaving it to §D's 3σ drop works, but it is second-best: the outlier is *in* the fit that computes
+the cut it is then judged against, so it widens the RMS, pulls the centre, and — on a clean scan
+where the floor of 0.3 mm binds — can survive. The measurement is better thrown away before it
+becomes a sample, and the run has the means to recognise it: `NotchDetector.TryCoarse`, the same
+"is this rim anomalous?" test the notch sweep applies to every frame it passes, at the same trigger
+the notch panel sets. It runs **on the frame the point came from** — a verdict from a second grab
+would not belong to the point being judged — and only on frames where the edge detector found
+something, since an empty frame fails the coarse test on contour length anyway and costs ~230 ms to
+say so.
+
+**Anomalous is not the same as missed**, and `RimLook` keeps them apart. A miss sends the station
+hunting ±6 hops of Y for a rim that has drifted out of the field (§6); an anomaly means the rim is
+*right there*, so there is nothing to hunt for. Searching would walk ±9 mm of Y over a feature 3 mm
+wide and find the same anomaly at the far end of it. So an anomalous look ends the sample
+immediately — dropped, not skipped — and the station still follows the Y it was seen at, because a
+frame with a rim in it is still a good place to stand.
+
+**If the anomaly is the notch, the run keeps it.** The stage is stopped on it, which is the one
+condition `TryMeasure` wants, so a single extra grab settles whether the anomaly is a notch or a
+speck. When it measures as a notch the apex is held as a `NotchSighting` (apex px + the crosshair it
+was measured against + the motor position + Θ) and converted at stage E, *after* the fit is written:
+a chuck-frame bearing is measured from the wafer centre, and until the offset exists there is no
+wafer centre to measure from. It is then saved by the fit's own `Save()`.
+
+This is a **catch, not a search**. The fine detector needs the notch fully enclosed *and* clear of
+both end anchors, which holds over 0.32–1.16° of Θ against 15° of sample spacing — so a scan catches
+one somewhere between 1 run in 13 and 1 in 45. When it does, the notch search need not run at all
+for that wafer; when it does not, the
+sample was still correctly dropped and the log says whether the anomaly was a notch, debris, or a
+chipped edge. Finding the notch deliberately remains a separate run: see
+**[Notch Search by Continuous Sweep](NotchSearch/)**.
+
+A whole scan reading as anomalous is a different fault and is reported as one: one notch cannot
+account for more than a sample or two, so it means the rim is reading badly or the trigger is too
+low for the lighting.
+
+A wafer with a **flat** would be a different matter (a 200 mm primary flat is ~33° of arc with a
+4.2 mm sagitta) and would cost several samples; the run tolerates that by dropping them, but a
+4.2 mm sagitta is past what the Y search reaches, so the rim would have to be re-acquired on the far
+side of the flat rather than tracked across it.
 
 ### Parameters
 
@@ -438,7 +476,9 @@ re-acquired on the far side of the flat rather than tracked across it.
 |---|---|---|
 | `WAFER_BAND_LO/HI_FRAC` | 0.70 / 1.30 | Acceptance band on `\|E − C\|`, × nominal R. |
 | `WAFER_BORDER_MARGIN_PX` | 8 | Frame-border rejection (§6). |
-| `WAFER_SEARCH_HOPS` | 6 | Local search either side of the station along Y on a miss (§6). |
+| `WAFER_SEARCH_HOPS` | 6 | Local search either side of the station along Y on a miss (§6). Not run on an *anomalous* look. |
+| `CoarseThresholdMm` | 0.30 mm | Anomaly trigger for the per-frame screen. Taken live from the notch panel's **Trigger (mm)**, so there is one number rather than two. Plain rim reads 0.01–0.05 mm, the notch 0.55 mm. |
+| `CoarseMinRunPoints` | 200 | The departure must persist over this many contour points, which is what separates the notch from a speck. |
 | `SideProbeRadius` | 50 px | Collar width for the chuck-side choice. Must stay under the bevel's ~310 px. |
 | `MinCollarAreaPx` | 5,000 | Below this a collar piece is a fragment, not a flank. The two largest survivors are the two flanks; the darker is the chuck. |
 | `MaxSideContrast` | 0.80 | Darker flank ÷ brighter. Above it the region has the same surface on both sides — a chuck trough, not the rim. Rim gaps 0.46–0.73, troughs 0.89–0.99. |
@@ -469,6 +509,11 @@ So the scan stores the invariant instead:
 
 `CalibrationStore.WaferCentreAt(chuckAngleDeg)` rotates the offset back out to a motor position for
 any Θ, and is what both **Go to Centre** buttons use.
+
+A scan that caught the notch also writes `NotchAngleDeg`, `NotchDepthMm` and `NotchTimestamp` — the
+same three fields the notch search writes, with the same meaning, in the same `Save()`. A scan that
+did not leaves any stored angle alone and says so in the log: that angle belongs to whatever wafer
+was on the chuck when it was measured, and only the operator knows whether that is still this one.
 
 ## 9. Verification
 

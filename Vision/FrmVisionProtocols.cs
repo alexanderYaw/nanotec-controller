@@ -60,6 +60,15 @@ namespace NanotecController
         private readonly Label _waferResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
         private readonly TextBox _waferLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
 
+        // Notch find (FrmVisionProtocols.NotchFind.cs)
+        private readonly Button _notchRunBtn = new() { Text = "Find Notch (Θ sweep)", Enabled = false };
+        private readonly Button _notchCancelBtn = new() { Text = "Cancel", Enabled = false };
+        private readonly NumericUpDown _notchDatum = new() { Minimum = 0, Maximum = 360, Value = 0, DecimalPlaces = 1, Increment = 5 };
+        private readonly NumericUpDown _notchThreshold = new() { Minimum = 0.05M, Maximum = 1.00M, Value = 0.30M, DecimalPlaces = 2, Increment = 0.05M };
+        private readonly Button _notchGoBtn = new() { Text = "Rotate to datum", Enabled = false };
+        private readonly Button _notchCheckBtn = new() { Text = "Check notch angle", Enabled = false };
+        private readonly TextBox _notchLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
+
         // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
         private readonly ChuckEdgeDetector _edgeDetector = new();
         private readonly CentreFinder _chuckFinder = new();   // accumulates chuck edge points (user-frame steps)
@@ -116,8 +125,10 @@ namespace NanotecController
             Text = "Vision - calibration & centre-find";
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
-            ClientSize = new Size(1490, 680);
-            MinimumSize = new Size(1200, 720);
+            // Height carries the notch-find row under the wafer group (y 664..750); the bottom strip
+            // is anchored to the bottom, so everything above it keeps its place.
+            ClientSize = new Size(1490, 762);
+            MinimumSize = new Size(1200, 802);
 
             // ---- Live view (mirror) + captured pane (top row) --------------------
             // Left: a live MIRROR of the main-screen camera (crosshair toggle + shared zoom) so the
@@ -196,6 +207,53 @@ namespace NanotecController
             _waferResult.Location = new Point(360, 532);
             _waferResult.Size = new Size(330, 124);
             _waferResult.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            // ---- Notch find (bottom strip, below the wafer group) -----------------
+            // Needs the wafer centre-find first: the sweep follows the rim using the stored offset.
+            // Θ turns continuously for up to a revolution (~112 s — Θ's speed cap is the floor) while
+            // frames stream past a coarse detector; on a hit it stops and re-measures a stationary
+            // frame. "Rotate to datum" is separate on purpose, so a search never turns the wafer.
+            var notchLabel = new Label { Text = "Notch find (Θ sweep)", Location = new Point(12, 664), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+
+            // Exposed because the right value depends on how much the continuous sweep blurs the rim,
+            // which cannot be known off-hardware. Higher = fussier. Plain rim measures 0.01-0.05 mm
+            // and the notch 0.54 mm, so there is a lot of room between them.
+            var notchThreshLabel = new Label { Text = "Trigger (mm):", Location = new Point(186, 667), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            _notchThreshold.Location = new Point(272, 664);
+            _notchThreshold.Size = new Size(64, 22);
+            _notchThreshold.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            // Right of the trigger spinner (336) and clear of the log pane (520). Measures the stored
+            // angle against the wafer instead of against the eye: it turns the notch to the camera and
+            // re-measures it there, so a datum that looks wrong can be judged as a number.
+            _notchCheckBtn.Location = new Point(344, 662);
+            _notchCheckBtn.Size = new Size(168, 26);
+            _notchCheckBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchCheckBtn.Click += async (s, e) => await RunNotchCheckAsync();
+
+            _notchRunBtn.Location = new Point(12, 690);
+            _notchRunBtn.Size = new Size(152, 28);
+            _notchRunBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchRunBtn.Click += async (s, e) => await RunNotchFindAsync();
+
+            _notchCancelBtn.Location = new Point(170, 690);
+            _notchCancelBtn.Size = new Size(72, 28);
+            _notchCancelBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchCancelBtn.Click += (s, e) => CancelNotchFind();
+
+            var notchDatumLabel = new Label { Text = "Datum°:", Location = new Point(252, 695), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            _notchDatum.Location = new Point(306, 692);
+            _notchDatum.Size = new Size(64, 22);
+            _notchDatum.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+            _notchGoBtn.Location = new Point(378, 690);
+            _notchGoBtn.Size = new Size(134, 28);
+            _notchGoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _notchGoBtn.Click += async (s, e) => await RotateNotchToDatumAsync();
+
+            _notchLog.Location = new Point(520, 664);
+            _notchLog.Size = new Size(472, 86);
+            _notchLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Auto chuck centre-find (bottom strip, right of the wafer group) --
             // Rough-centre the chuck by hand, enter the nominal radius, and the stage probes outward in
@@ -404,6 +462,16 @@ namespace NanotecController
             Controls.Add(_waferGoBtn);
             Controls.Add(_waferLog);
             Controls.Add(_waferResult);
+            Controls.Add(notchLabel);
+            Controls.Add(notchThreshLabel);
+            Controls.Add(_notchThreshold);
+            Controls.Add(_notchRunBtn);
+            Controls.Add(_notchCancelBtn);
+            Controls.Add(notchDatumLabel);
+            Controls.Add(_notchDatum);
+            Controls.Add(_notchGoBtn);
+            Controls.Add(_notchCheckBtn);
+            Controls.Add(_notchLog);
             Controls.Add(autoLabel);
             Controls.Add(autoRadiusLabel);
             Controls.Add(_autoRadius);
@@ -475,6 +543,7 @@ namespace NanotecController
             // through it, so both conditions are applied in one place.
             RefreshAutoUi();
             RefreshWaferUi();
+            RefreshNotchUi();
             _rotBy.Enabled = _rotByBtn.Enabled = open;
             _rotTo.Enabled = _rotToBtn.Enabled = _signTestBtn.Enabled = open;
 
