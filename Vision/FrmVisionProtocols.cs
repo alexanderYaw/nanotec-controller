@@ -175,28 +175,35 @@ namespace NanotecController
             // The log pane is the run's transcript — which angles found an edge, and where.
             var waferLabel = new Label { Text = "Auto wafer centre-find (Θ scan)", Location = new Point(12, 506), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
+            // These labels are AutoSize, so their width is whatever the text measures under the current
+            // font/DPI. Placing the spinners from the measured width keeps them clear of the text; a
+            // fixed offset only holds for the exact metrics it was tuned against.
+            int After(Label l, int gap = 8) => l.Left + TextRenderer.MeasureText(l.Text, l.Font).Width + gap;
+
             var waferDiaLabel = new Label { Text = "Wafer Ø (mm):", Location = new Point(12, 535), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            _waferDia.Location = new Point(112, 532);
             _waferDia.Size = new Size(74, 22);
+            _waferDia.Location = new Point(After(waferDiaLabel), 532);
             _waferDia.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            var waferSamplesLabel = new Label { Text = "Samples:", Location = new Point(200, 535), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            _waferSamples.Location = new Point(262, 532);
+            var waferSamplesLabel = new Label { Text = "Samples:", Location = new Point(_waferDia.Right + 18, 535), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             _waferSamples.Size = new Size(56, 22);
+            _waferSamples.Location = new Point(After(waferSamplesLabel), 532);
             _waferSamples.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
+            // Button widths are sized to the caption for the same reason as the labels above — the
+            // previous fixed widths were narrower than the text and clipped it to an ellipsis.
+            _waferRunBtn.Size = new Size(172, 28);
             _waferRunBtn.Location = new Point(12, 560);
-            _waferRunBtn.Size = new Size(152, 28);
             _waferRunBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _waferRunBtn.Click += async (s, e) => await RunWaferScanAsync();
 
-            _waferCancelBtn.Location = new Point(170, 560);
-            _waferCancelBtn.Size = new Size(72, 28);
+            _waferCancelBtn.Size = new Size(76, 28);
+            _waferCancelBtn.Location = new Point(_waferRunBtn.Right + 8, 560);
             _waferCancelBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _waferCancelBtn.Click += (s, e) => CancelWaferScan();
 
-            _waferGoBtn.Location = new Point(248, 560);
             _waferGoBtn.Size = new Size(104, 28);
+            _waferGoBtn.Location = new Point(_waferCancelBtn.Right + 8, 560);
             _waferGoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _waferGoBtn.Click += async (s, e) => await GoToWaferCentreAsync();
 
@@ -204,8 +211,10 @@ namespace NanotecController
             _waferLog.Size = new Size(340, 62);
             _waferLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            _waferResult.Location = new Point(360, 532);
-            _waferResult.Size = new Size(330, 124);
+            // Starts clear of the widened button row; the right edge (690) still stops short of the
+            // auto-chuck column at 700.
+            _waferResult.Location = new Point(_waferGoBtn.Right + 12, 532);
+            _waferResult.Size = new Size(298, 124);
             _waferResult.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Notch find (bottom strip, below the wafer group) -----------------
@@ -218,41 +227,43 @@ namespace NanotecController
             // Exposed because the right value depends on how much the continuous sweep blurs the rim,
             // which cannot be known off-hardware. Higher = fussier. Plain rim measures 0.01-0.05 mm
             // and the notch 0.54 mm, so there is a lot of room between them.
-            var notchThreshLabel = new Label { Text = "Trigger (mm):", Location = new Point(186, 667), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            _notchThreshold.Location = new Point(272, 664);
+            var notchThreshLabel = new Label { Text = "Trigger (mm):", Location = new Point(After(notchLabel, 16), 667), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             _notchThreshold.Size = new Size(64, 22);
+            _notchThreshold.Location = new Point(After(notchThreshLabel), 664);
             _notchThreshold.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            // Right of the trigger spinner (336) and clear of the log pane (520). Measures the stored
-            // angle against the wafer instead of against the eye: it turns the notch to the camera and
+            // Right of the trigger spinner and clear of the log pane. Measures the stored angle
+            // against the wafer instead of against the eye: it turns the notch to the camera and
             // re-measures it there, so a datum that looks wrong can be judged as a number.
-            _notchCheckBtn.Location = new Point(344, 662);
-            _notchCheckBtn.Size = new Size(168, 26);
+            _notchCheckBtn.Location = new Point(_notchThreshold.Right + 8, 662);
+            _notchCheckBtn.Size = new Size(150, 26);
             _notchCheckBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _notchCheckBtn.Click += async (s, e) => await RunNotchCheckAsync();
 
+            _notchRunBtn.Size = new Size(164, 28);
             _notchRunBtn.Location = new Point(12, 690);
-            _notchRunBtn.Size = new Size(152, 28);
             _notchRunBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _notchRunBtn.Click += async (s, e) => await RunNotchFindAsync();
 
-            _notchCancelBtn.Location = new Point(170, 690);
-            _notchCancelBtn.Size = new Size(72, 28);
+            _notchCancelBtn.Size = new Size(76, 28);
+            _notchCancelBtn.Location = new Point(_notchRunBtn.Right + 8, 690);
             _notchCancelBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _notchCancelBtn.Click += (s, e) => CancelNotchFind();
 
-            var notchDatumLabel = new Label { Text = "Datum°:", Location = new Point(252, 695), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-            _notchDatum.Location = new Point(306, 692);
+            var notchDatumLabel = new Label { Text = "Datum°:", Location = new Point(_notchCancelBtn.Right + 10, 695), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             _notchDatum.Size = new Size(64, 22);
+            _notchDatum.Location = new Point(After(notchDatumLabel), 692);
             _notchDatum.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            _notchGoBtn.Location = new Point(378, 690);
-            _notchGoBtn.Size = new Size(134, 28);
+            _notchGoBtn.Size = new Size(128, 28);
+            _notchGoBtn.Location = new Point(_notchDatum.Right + 8, 690);
             _notchGoBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _notchGoBtn.Click += async (s, e) => await RotateNotchToDatumAsync();
 
-            _notchLog.Location = new Point(520, 664);
-            _notchLog.Size = new Size(472, 86);
+            // Starts clear of the widest row above it (the datum row); the right edge (992) still lines
+            // up with the auto-chuck log.
+            _notchLog.Location = new Point(_notchGoBtn.Right + 11, 664);
+            _notchLog.Size = new Size(440, 86);
             _notchLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             // ---- Auto chuck centre-find (bottom strip, right of the wafer group) --
@@ -262,10 +273,8 @@ namespace NanotecController
             var autoLabel = new Label { Text = "Auto chuck centre-find", Location = new Point(700, 506), AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             var autoRadiusLabel = new Label { Text = "Max R (steps):", Location = new Point(700, 532), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
 
-            // x=806: the AutoSize label above measures 100 px wide (700..800), so anything
-            // earlier than 800 is overlapped by it.
-            _autoRadius.Location = new Point(806, 529);
             _autoRadius.Size = new Size(110, 22);
+            _autoRadius.Location = new Point(After(autoRadiusLabel), 529);
             _autoRadius.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
             _autoRunBtn.Location = new Point(700, 558);
