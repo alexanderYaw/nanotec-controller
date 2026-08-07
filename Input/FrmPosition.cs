@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Globalization;
 using System.Threading.Tasks;
@@ -6,17 +6,10 @@ using System.Windows.Forms;
 
 namespace NanotecController
 {
-    /// <summary>
-    /// The form for picking a target position and moving the chuck there. Separate from the
-    /// main form so the position entry and the XY plot stay together, and so it can be left
-    /// open while using the main form's jog buttons to fine-tune the position.
-    ///
-    /// Pure UI like FrmCalibration/FrmParams: it owns no drive access. It reads the live
-    /// position + travel limits from FrmMain in the USER frame and executes through
-    /// FrmMain.MoveToAsync (which re-applies the per-axis bounds check + Y input flip).
-    /// Click the grid (or type X/Y/Z) to STAGE a target — nothing moves until Go. Z is
-    /// numeric only (no grid axis); the grid greys out until both X and Y limits are set.
-    /// </summary>
+    /// <summary>Picks a target position and moves the chuck there. Pure UI, owning no drive access:
+    /// it reads live position + travel limits from <see cref="FrmMain"/> in the USER frame and executes
+    /// through MoveToAsync. Clicking the grid or typing X/Y/Z only STAGES a target — nothing moves
+    /// until Go. Z is numeric only; the grid greys out until both X and Y limits are set.</summary>
     public sealed class FrmPosition : Form
     {
         private readonly IMotionHost _owner;
@@ -85,15 +78,13 @@ namespace NanotecController
             RefreshFromOwner();
         }
 
-        // A grid click stages a target: fill X/Y fields (which mirror the crosshair via
-        // TextChanged -> SyncMarkerFromFields). Z is left to manual entry. Nothing moves.
+        // A grid click stages a target by filling X/Y, which mirror the crosshair. Nothing moves.
         private void OnTargetPicked(PointF p)
         {
             _x.Text = ((long)Math.Round(p.X)).ToString(CultureInfo.InvariantCulture);
             _y.Text = ((long)Math.Round(p.Y)).ToString(CultureInfo.InvariantCulture);
         }
 
-        // Typing in X/Y moves the staged crosshair to match (grid mirrors the fields).
         private void SyncMarkerFromFields()
         {
             if (long.TryParse(_x.Text.Trim(), out long x) && long.TryParse(_y.Text.Trim(), out long y))
@@ -102,9 +93,8 @@ namespace NanotecController
 
         private async Task DoGo()
         {
-            // Lock target entry while the chuck moves so the user can't stage a new
-            // target mid-motion; the Go button is gated separately via CanMoveCalibration
-            // in RefreshFromOwner. Re-enabled in finally even if the move throws.
+            // Lock target entry while moving so a new target can't be staged mid-motion.
+            // Re-enabled in finally even if the move throws.
             SetInputsEnabled(false);
             try { await _owner.MoveToAsync(_x.Text, _y.Text, _z.Text); }
             finally { if (!IsDisposed) SetInputsEnabled(true); }

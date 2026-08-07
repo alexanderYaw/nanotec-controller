@@ -1,18 +1,16 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Accumulates rim points (USER-frame motor steps) and circle-fits them to a centre. Both the
-    /// chuck centre-find and the wafer centre-find use one of these; they differ only in which edge
-    /// detector feeds it and which CalibrationStore field the result persists to, so the point
-    /// conversion + circle fit live here once instead of being duplicated per feature.
+    /// Accumulates rim points (USER-frame motor steps) and circle-fits them to a centre. The chuck and
+    /// wafer centre-finds both use one, differing only in which edge detector feeds it and which
+    /// <see cref="CalibrationStore"/> field the result persists to.
     ///
     /// A rim point is the MOTOR position that would bring the detected edge pixel onto the crosshair:
-    ///   E = M + A·(p_cross − p_edge),  M = current motor (X,Y), A = pixel→step affine, p = (row,col).
-    /// The circle through those points is centred on the feature centre, so the fit centre IS the
-    /// motor position that puts the feature centre under the crosshair.
+    /// E = M + A·(p_cross − p_edge). The circle through those points is centred on the feature
+    /// centre, so the fit centre IS the motor position that puts that centre under the crosshair.
     /// </summary>
     public sealed class CentreFinder
     {
@@ -22,12 +20,9 @@ namespace NanotecController
         public int Count => _points.Count;
         public void Clear() => _points.Clear();
 
-        /// <summary>
-        /// Converts a detected edge pixel to the user-frame step point E = M + A·(p_cross − p_edge)
-        /// WITHOUT storing it. Separate from <see cref="Add"/> because the auto centre-find has to
-        /// sanity-check a candidate (side of the probe heading, distance band) before deciding whether
-        /// it belongs in the set — and that gate must not re-derive the conversion.
-        /// </summary>
+        /// <summary>Converts a detected edge pixel to the user-frame step point WITHOUT storing it.
+        /// Separate from <see cref="Add"/> because the auto centre-find sanity-checks a candidate
+        /// before deciding whether it belongs in the set, and that gate must not re-derive this.</summary>
         public static (double X, double Y) ToStepPoint(
             double edgeRow, double edgeCol, double crossRow, double crossCol,
             PixelStepAffine a, long motorX, long motorY)

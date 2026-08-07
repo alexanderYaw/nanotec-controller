@@ -1,28 +1,28 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace NanotecController
 {
-    // FrmMain — analog joystick wired DIRECTLY into the Nanotec drives' I/O (not a USB HID device).
-    // Ported from the vendor demo (Station/Joystick.cs), then corrected to the measured hardware:
-    // the stick's X/Y pots read on the X and Y drives' analogue input 1 (0x3220:01), and the knob's
-    // twist pot reads on the Z DRIVE's analogue input 1 (measured 2026-07-09) but commands the Θ axis.
-    // Deflection past a small deadband commands a proportional velocity jog; centring the stick (or
-    // loss of focus) stops. Twist → Θ: in RAW jog mode it jogs Θ at a proportional velocity; in VISION
-    // jog mode it rotates the chuck ABOUT THE CROSSHAIR (the tuned HoldRotate follower), so the point
-    // under the crosshair stays put — the "compensated rotation" the user asked for.
-    // The pots are read by DrivePoller (50 ms, background thread) and applied here on the UI thread;
-    // the poller is paused during drive ops, so its reads never load a running op.
-    //
-    // NO deadman (decision 2026-07-08): the machine's candidate deadman button (Input 4) is configured
-    // as the CiA-402 interlock on the X and Z drives, so pressing it FAULTS them — it's a stop/interlock,
-    // not a hold-to-run enable. So the joystick does not use it; moving needs only the drives enabled and
-    // the stick deflected. Do NOT re-add a hardware deadman on that input without first fixing the
-    // drive-side interlock config (see [[analog-joystick]] memory). The centre is still auto-captured,
-    // which guards against a mismatched fixed centre that once caused a jump. (Partial of FrmMain.)
+    /// <summary>
+    /// FrmMain — analog joystick wired DIRECTLY into the drives' I/O, NOT a USB HID device. The
+    /// stick's X/Y pots read on the X and Y drives' analogue input 1 (0x3220:01); the knob's twist pot
+    /// reads on the Z DRIVE's input but commands the Θ axis. Deflection past a deadband commands a
+    /// proportional velocity jog; centring the stick, or losing focus, stops.
+    ///
+    /// Twist → Θ jogs proportionally in RAW mode, and in VISION mode rotates the chuck ABOUT THE
+    /// CROSSHAIR through the tuned HoldRotate follower, so the point under the crosshair stays put.
+    /// The pots are read by <see cref="DrivePoller"/> on its background thread and applied here on the
+    /// UI thread.
+    ///
+    /// NO DEADMAN, deliberately: the candidate button (Input 4) is configured as the CiA-402 interlock
+    /// on the X and Z drives, so pressing it FAULTS them — it is a stop, not a hold-to-run enable. Do
+    /// NOT re-add a hardware deadman on that input without first fixing the drive-side interlock
+    /// config. The centre is auto-captured, guarding against the mismatched fixed centre that once
+    /// caused a jump.
+    /// </summary>
     public partial class FrmMain
     {
-        // --- Analog-joystick calibration (measured on hardware 2026-07-08) -----------
+        #region Analog-joystick calibration (measured on hardware)
         private const int AI_MID            = 251;    // fallback centre only — real centre is auto-captured per axis (_aiMid)
         private const int AI_SPAN           = 75;     // centre → full-deflection swing (measured dev ≈ ±77–81)
         private const int AI_DEADBAND       = 10;     // ignore |reading − mid| below this (centre jitter)
@@ -30,15 +30,13 @@ namespace NanotecController
         private const int AI_CENTRE_SAMPLES = 5;      // average the first N polls for the centre (robust to a stale first read)
         // Full-deflection speed is NOT a constant — it's each axis's user jog-speed slider (_axisRows[id].Speed.Value).
 
-        // Axes the joystick drives. Each entry is (axis to COMMAND, drive whose analogue input 1 supplies
-        // the pot, wiring sign). Read drive ≠ command axis for the twist: the knob's twist pot is wired
-        // into the Z DRIVE's analogue input 1 (measured 2026-07-09: twist-only test swung Z's 0x3220:01
-        // by ~±90 while every other channel stayed at noise), but it drives the Θ axis. The X/Y pots read
-        // on their own drives. (The Θ drive's own AI1 is the dead channel that sits at ~6.)
+        /// <summary>(axis to COMMAND, drive whose analogue input 1 supplies the pot, wiring sign). The
+        /// read drive differs from the command axis for the twist: its pot is wired into the Z DRIVE's
+        /// input but drives Θ. The Θ drive's own AI1 is a dead channel sitting at ~6.</summary>
         private static readonly (AxisId cmd, AxisId pot, int sign)[] AnalogAxes =
         [
-            (AxisId.X,     AxisId.X, +1),   // inverted 2026-07-08 (was −1) — X ran backwards on the bench
-            (AxisId.Y,     AxisId.Y, +1),
+            (AxisId.X,     AxisId.X, -1),   // flipped 2026-08-07 (was +1) — stick ran backwards on the bench
+            (AxisId.Y,     AxisId.Y, -1),   // flipped 2026-08-07 (was +1)
             (AxisId.Theta, AxisId.Z, +1),   // twist pot lives on the Z drive's AI1; sign flips if Θ turns the wrong way
         ];
 
@@ -57,8 +55,8 @@ namespace NanotecController
         // These signs map each pot's raw deflection to a screen direction — flip on the bench if
         // pushing right/up steers the wrong way on screen. They are independent of the raw
         // AnalogAxes signs above (which tune raw drive motion, a different frame).
-        private const int VISION_STICK_X = -1;   // pot-X deflection → screen right+ (inverted on the bench 2026-07-09)
-        private const int VISION_STICK_Y = -1;   // pot-Y deflection → screen up+  (inverted on the bench 2026-07-09)
+        private const int VISION_STICK_X = +1;   // pot-X deflection → screen right+ (flipped on the bench 2026-08-07)
+        private const int VISION_STICK_Y = +1;   // pot-Y deflection → screen up+  (flipped on the bench 2026-08-07)
 
         // VISION-mode twist → rotate about the crosshair. The twist starts the tuned HoldRotate
         // controller (Θ spins while X/Y follows to pin the crosshair); this sign maps the twist
@@ -270,5 +268,7 @@ namespace NanotecController
                 _lastAnalogVel[cmd] = 0;
             }
         }
+
+        #endregion
     }
 }

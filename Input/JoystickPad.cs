@@ -6,19 +6,19 @@ using System.Windows.Forms;
 namespace NanotecController
 {
     /// <summary>
-    /// On-screen (mouse-driven) virtual joystick. Drag the puck to deflect; the
-    /// normalized <see cref="Vector"/> (x = right+, y = up+, magnitude 0..1) carries
-    /// both ANGLE and DISTANCE, so it's a true analog input — the owner maps it
-    /// proportionally to axis velocities. Releasing the mouse springs the puck back to
-    /// centre → Vector (0,0) → stop (momentary, like a spring-return stick).
-    ///
-    /// The control only reports state; the owner polls <see cref="Vector"/> on a timer
-    /// and owns the motion/safety policy. Disabling the control re-centres it.
+    /// On-screen virtual joystick. <see cref="Vector"/> carries both ANGLE and DISTANCE, making it a
+    /// true analog input the owner maps proportionally to axis velocities. Releasing the mouse
+    /// springs the puck back to centre, like a spring-return stick. Reports state only — the owner
+    /// polls on a timer and owns the motion/safety policy. Disabling re-centres it.
     /// </summary>
     public sealed class JoystickPad : Control
     {
+        private const float RingInset = 10f;
+        private const float PuckRadius = 16f;
+        private const int DefaultExtent = 150;
+
         private bool _dragging;
-        private PointF _vec; // normalized, y up positive
+        private PointF _vec;
 
         /// <summary>Current deflection: x right+, y up+, each in [-1, 1]; (0,0) = centre.</summary>
         public PointF Vector => _vec;
@@ -26,11 +26,11 @@ namespace NanotecController
         public JoystickPad()
         {
             DoubleBuffered = true;
-            Size = new Size(150, 150);
+            Size = new Size(DefaultExtent, DefaultExtent);
             SetStyle(ControlStyles.ResizeRedraw, true);
         }
 
-        private float Radius => Math.Min(Width, Height) / 2f - 10f;
+        private float Radius => Math.Min(Width, Height) / 2f - RingInset;
         private PointF Center => new(Width / 2f, Height / 2f);
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -90,9 +90,8 @@ namespace NanotecController
 
             float px = c.X + _vec.X * r;
             float py = c.Y - _vec.Y * r;   // normalized → screen
-            const float pr = 16f;
             using var puckBrush = new SolidBrush(puck);
-            g.FillEllipse(puckBrush, px - pr, py - pr, 2 * pr, 2 * pr);
+            g.FillEllipse(puckBrush, px - PuckRadius, py - PuckRadius, 2 * PuckRadius, 2 * PuckRadius);
         }
     }
 }

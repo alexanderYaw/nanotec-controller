@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows.Forms;
 
 namespace NanotecController
@@ -8,7 +8,7 @@ namespace NanotecController
     // (Partial of FrmMain.)
     public partial class FrmMain
     {
-        // --- Per-axis hold-to-jog (individual control) ----------------------------
+        #region Per-axis hold-to-jog (individual control)
         // Quick SDO writes done on the UI thread so press/release ordering is exact.
 
         // Movement-inversion toggle (visual-centering): when on, flips the commanded jog
@@ -77,8 +77,9 @@ namespace NanotecController
             catch (DriveException ex) { AppendLog($"ERROR: command {id}: {ex.Message}"); }
         }
 
-        // --- Live status poll -----------------------------------------------------
+        #endregion
 
+        #region Live status poll
         /// <summary>
         /// Consumes one <see cref="DrivePoller"/> sample on the UI thread: axis readouts, the
         /// soft-limit guard, and the analog joystick. Bails while an op is running — a sample
@@ -180,5 +181,7 @@ namespace NanotecController
             _lastPos.Clear();
             _quickStopRecovered.Clear();
         }
+
+        #endregion
     }
 }

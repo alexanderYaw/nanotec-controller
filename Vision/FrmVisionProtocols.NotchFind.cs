@@ -1,72 +1,62 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVisionProtocols — NOTCH search by continuous Θ sweep.
-    //
-    // The notch has to be found on every wafer from an unknown orientation, so the whole 628 mm
-    // circumference has to be looked at. The camera sees ~4.9 mm of rim at a time, which sounds
-    // hopeless until two things are noticed:
-    //
-    //   1. The cost is Θ's top speed, not the number of frames. A revolution is 359,859 ticks at
-    //      3200 steps/s, so ~112 s of rotation happens whatever else does. Stepping and settling
-    //      ~150 times would roughly triple that; sweeping continuously adds almost nothing, because
-    //      the coarse detector runs in ~130 ms against a ~710 ms per-frame budget.
-    //   2. A frame only has to OVERLAP the notch, not contain it. The notch is 2.9 mm wide and the
-    //      frame covers 4.9 mm of rim, so the detection window is ~7 mm and a 4 mm capture pitch is
-    //      about twice as fine as it needs to be.
-    //
-    // Shape of a run:
-    //   A  park on the rim station (X = X min; Y computed from the stored wafer offset — see
-    //      Geometry/RimStation) and confirm the rim is actually there
-    //   B  sweep Θ continuously, grabbing frames free-running and testing each with the COARSE
-    //      detector, until one is anomalous or a full revolution has gone by
-    //   C  stop, back up onto the hit, and re-measure with the FINE detector on a STATIONARY frame
-    //   D  convert the apex to a chuck-frame bearing and persist it
-    // Rotating to a datum is a separate button, so a run never turns the wafer as a side effect.
-    //
-    // The two detectors are not interchangeable and the split is the point — see NotchDetector.
-    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    /// <summary>
+    /// FrmVisionProtocols — NOTCH search by continuous Θ sweep. The whole 628 mm circumference must be
+    /// looked at from an unknown orientation, and the camera sees ~4.9 mm of rim at a time — which
+    /// works because the cost is Θ's top speed, not the frame count (a revolution is ~112 s of
+    /// rotation whatever else happens, and the coarse detector runs in ~130 ms against a ~710 ms
+    /// budget), and because a frame need only OVERLAP the 2.9 mm notch, not contain it.
+    ///
+    /// Shape of a run:
+    ///   A  park on the rim station (X = X min, Y from the stored wafer offset) and confirm the rim
+    ///   B  sweep Θ continuously, testing each free-running frame with the COARSE detector, until one
+    ///      is anomalous or a full revolution has gone by
+    ///   C  stop, back up onto the hit, re-measure with the FINE detector on a STATIONARY frame
+    ///   D  convert the apex to a chuck-frame bearing and persist it
+    ///
+    /// Rotating to a datum is a separate button, so a run never turns the wafer as a side effect. The
+    /// two detectors are not interchangeable and the split is the point — see <see cref="NotchDetector"/>.
+    /// </summary>
     public sealed partial class FrmVisionProtocols
     {
-        // Overlap past a full revolution. The sweep starts from wherever Θ happens to be, so a notch
-        // sitting exactly at the start angle can be half out of frame on the first look; the extra
-        // arc guarantees it is seen whole on the way round.
+        #region Notch search tunables
+
+        /// <summary>Overlap past a full revolution. The sweep starts from wherever Θ happens to be, so
+        /// a notch at the start angle can be half out of frame on the first look.</summary>
         private const double NOTCH_SWEEP_DEGREES = 375.0;
 
-        // The re-centring search. The STEP is the number that matters and it must be finer than the
-        // window it is hunting for: the notch is only both fully enclosed and clear of the chord's
-        // end anchors over 0.32-1.16° of Θ (see NotchDetector.EndSpanPoints). A 1° step walked over
-        // that window on hardware and reported "ends are not plain rim" on the very frames that had
-        // the notch in them. 0.25° is under even the worst case.
-        // The SPAN has to cover the frame, since the coarse test can fire with the notch anywhere in
-        // it: a frame is 2.2-3.0° of rim, so ±1.5° reaches either edge from the middle.
+        /// <summary>Re-centring step. Must be finer than the window it hunts: the notch is both fully
+        /// enclosed and clear of the chord's end anchors over only 0.32-1.16° of Θ, and a 1° step
+        /// walked over that on hardware, reporting "ends are not plain rim" on the very frames that
+        /// had the notch in them.</summary>
         private const double NOTCH_NUDGE_DEG = 0.25;
+
+        /// <summary>Span must cover the frame, the coarse test being able to fire with the notch
+        /// anywhere in it: a frame is 2.2-3.0° of rim, so ±1.5° reaches either edge from the middle.</summary>
         private const int NOTCH_NUDGE_TRIES = 6;
 
-        // Speed for the re-centring moves. NOT a "slow because it is delicate" number: these are
-        // profile-POSITION moves, so the drive lands on the target regardless of how fast it gets
-        // there, and the wafer Θ scan commands 5000 for its own 14.4° steps. An earlier 400 made the
-        // whole re-centring take ~54 s and looked, correctly, like the machine crawling backwards.
+        /// <summary>Speed for the re-centring moves. NOT slow-because-delicate: these are
+        /// profile-POSITION moves, so the drive lands on target regardless of how fast it gets there.
+        /// An earlier 400 made the whole re-centring take ~54 s.</summary>
         private const int NOTCH_NUDGE_SPEED = 3200;
 
-        // The measured rim radius must stay within this of the stored radius, or the wafer has moved
-        // on the chuck (vacuum loss) and every angle measured against the stored offset is void. Same
-        // role as the Θ scan's closure check, and the same reason for existing.
+        /// <summary>The measured rim radius must stay within this of the stored radius, or the wafer
+        /// has moved on the chuck (vacuum loss) and every angle measured against the stored offset is
+        /// void. Same role as the Θ scan's closure check.</summary>
         private const double NOTCH_RADIUS_TOL_STEPS = 2000;
 
-        // How far the apex may sit from where the rim says it should be before the feature is refused
-        // as not-on-the-rim. Budget: the stored radius is the CHUCK-side gap boundary while the apex
-        // is traced on the WAFER side, a systematic ~0.3 mm, plus the radius fit (0.08 mm) and the
-        // pixel→step conversion (~0.1 mm). 1000 steps is 0.79 mm — 2.6x that budget, and half the
-        // 1.67 mm miss of the chuck port that was accepted as a notch on 2026-08-06.
+        /// <summary>How far the apex may sit from where the rim says it should be before the feature is
+        /// refused as not-on-the-rim. 0.79 mm — 2.6x the error budget, and half the 1.67 mm miss of the
+        /// chuck port accepted as a notch on 2026-08-06.</summary>
         private const double NOTCH_APEX_TOL_STEPS = 1000;
 
-        // Exclusion window around an anomaly already confirmed as not-a-notch. A frame covers ~2.8° of
-        // rim, so ±3° recognises the same feature whether it was seen at a frame edge or its middle.
+        /// <summary>Exclusion window around an anomaly already confirmed as not-a-notch. A frame covers
+        /// ~2.8° of rim, so ±3° recognises the same feature seen at an edge or in the middle.</summary>
         private const double NOTCH_REJECT_WINDOW_DEG = 3.0;
 
         // How many anomalies may fail confirmation before the run gives up. The arc budget already
@@ -90,7 +80,9 @@ namespace NanotecController
         private volatile int _notchMisses;
         private long _notchHitTheta;
 
-        // --- Orchestration ----------------------------------------------------------
+        #endregion
+
+        #region Orchestration
 
         private async Task RunNotchFindAsync()
         {
@@ -150,7 +142,7 @@ namespace NanotecController
             NotchLog($"Scale {umPerPixel:F3} µm/px; Θ capped at {speed} steps/s, so a revolution " +
                      $"takes {revSeconds:F0} s — that is the floor, not the vision.");
 
-            // ---- Stage A: park on the rim station ----
+            // Stage A: park on the rim station
             if (!_owner.TryReadThetaNow(out long theta0Ticks))
             { _status.Text = "Notch find: Θ position unavailable."; return; }
             double theta0 = CrosshairRotation.ChuckTicksToDegrees(theta0Ticks, CrosshairRotation.ChuckTicksPerRev);
@@ -189,7 +181,7 @@ namespace NanotecController
             }
             NotchLog($"Rim acquired at ({px}, {py}).");
 
-            // ---- Stages B and C, interleaved: sweep, confirm, and RESUME on a false hit ----
+            // Stages B and C, interleaved: sweep, confirm, and RESUME on a false hit
             //
             // The coarse test is deliberately loose — it has to fire on a notch that is only half in
             // frame, which costs it the order-of-magnitude margin the fine test enjoys (0.12 mm
@@ -249,19 +241,10 @@ namespace NanotecController
 
                 _status.Text = "Notch find: re-measuring...";
 
-                // Order chosen to MINIMISE TRAVEL, because every one of these is a Θ move and the
-                // zig-zag is what makes re-centring feel like the machine running away backwards:
-                //
-                //   null  measure where the sweep actually stopped — costs NO move at all, and it is
-                //         the best guess anyway. Θ over-runs by ~0.65° while ramping down, and since
-                //         the sweep drives the notch INTO the frame that over-run leaves it more
-                //         centred than the angle the hit was recorded at, not less.
-                //   +1,+2 carry on in the direction Θ was already turning: no reversal, and it keeps
-                //         pushing the notch towards the middle of the frame.
-                //   -1,-2 only then come back, in one reversal rather than four.
-                //
-                // Walking 0,+1,-1,+2,-2,+3,-3 instead covers the same span but travels 21.6° doing
-                // it, against 5.4° for this order.
+                // Ordered to MINIMISE TRAVEL: measure where the sweep stopped (no move, and the
+                // ramp-down over-run leaves the notch MORE centred), then carry on in the direction Θ
+                // was already turning, and only then reverse — once, not four times. Walking
+                // 0,+1,-1,+2,-2 covers the same span but travels 21.6° against 5.4° for this order.
                 var offsets = new List<double?> { null };
                 for (int k = 1; k <= NOTCH_NUDGE_TRIES; k++) offsets.Add(+k * NOTCH_NUDGE_DEG);
                 for (int k = 1; k <= NOTCH_NUDGE_TRIES; k++) offsets.Add(-k * NOTCH_NUDGE_DEG);
@@ -288,9 +271,8 @@ namespace NanotecController
                     if (m == null) continue;
 
                     // Shape passed; now WHERE it is. Every other test asks what the feature looks
-                    // like, and a circular arc looks like a notch from two flank fits — so this is
-                    // the one that separates the notch from a feature on the CHUCK whose dark edge
-                    // has merged with the rim gap into a single region.
+                    // like, and a circular arc looks like a notch from two flank fits — this is the
+                    // one that separates it from a chuck feature merged into the rim gap.
                     if (!ApexOnRim(cal, a, m.Value, atDeg, mx, my, radius, (kX + kY) / 2.0, out double miss))
                     {
                         NotchLog($"    ...but its apex sits {miss / ((kX + kY) / 2.0):+0.00;-0.00} mm off the rim " +
@@ -333,7 +315,7 @@ namespace NanotecController
             if (rejected.Count > 0)
                 NotchLog($"(Rejected {rejected.Count} anomaly(s) before this one.)");
 
-            // ---- Stage D: apex -> chuck-frame bearing ----
+            // Stage D: apex -> chuck-frame bearing
             NotchDetector.Measurement notch = best.Value;
             (double X, double Y) apex = CentreFinder.ToStepPoint(
                 notch.ApexRow, notch.ApexCol, _lastCrossRow, _lastCrossCol, a, bestX, bestY);
@@ -386,8 +368,9 @@ namespace NanotecController
             return Math.Abs(missSteps) <= NOTCH_APEX_TOL_STEPS;
         }
 
-        // --- The sweep's grab loop --------------------------------------------------
+        #endregion
 
+        #region The sweep's grab loop
         // Grabs frames free-running while the sweep turns, testing each with the COARSE detector.
         // Runs until cancelled; sets _notchHit (which the sweep's stop predicate reads) on the first
         // anomalous frame. Θ is taken from the sweep's published tick INSIDE the grab callback, before
@@ -479,8 +462,9 @@ namespace NanotecController
             return await tcs.Task;
         }
 
-        // --- Stationary helpers -----------------------------------------------------
+        #endregion
 
+        #region Stationary helpers
         // Full measurement on one stationary frame.
         private async Task<NotchDetector.Measurement?> MeasureAsync(double umPerPixel)
         {
@@ -563,8 +547,9 @@ namespace NanotecController
                          "trusting anything measured this run.");
         }
 
-        // --- Check ------------------------------------------------------------------
+        #endregion
 
+        #region Check
         // Search either side of where the stored angle says the notch is. The STEP is a frame's worth
         // of rim rather than the find's 0.25°, because this is not hunting for the enclosure window —
         // it is asking how far off the angle is, and anything past ~1.4° is out of frame entirely.
@@ -650,7 +635,7 @@ namespace NanotecController
             }
             double viewTilt = CameraFrame.TiltDeg(cal) ?? 0;
             NotchLog($"The station bears {bearing:F2}° from the wafer centre at Θ={target:F2}° " +
-                     $"({CameraFrame.ToView(bearing, viewTilt):F2}° in the view frame the datum uses), and the " +
+                     $"({CameraFrame.LabToDatum(bearing, viewTilt):F2}° on the datum's dial), and the " +
                      $"stored notch is {stored:F2}° in the chuck frame — so Θ={target:F2}° should put the notch " +
                      $"on the crosshair. One degree is {mmPerDeg:F2} mm of rim; the frame holds about 4.9 mm.");
             _status.Text = "Check notch: turning the notch to the camera...";
@@ -779,8 +764,9 @@ namespace NanotecController
             });
         }
 
-        // --- Datum ------------------------------------------------------------------
+        #endregion
 
+        #region Datum
         private async Task RotateNotchToDatumAsync()
         {
             CalibrationStore cal = _owner.Calibration;
@@ -794,40 +780,38 @@ namespace NanotecController
             int sign = cal.WaferFitSign ?? +1;
 
             // The datum is read in the CAMERA's frame — the bearing as it appears on the live view —
-            // because that is the frame the operator works in. The conversion is one angle, the
-            // camera's mounting tilt (CameraFrame), so the chuck turns by that much more and the
-            // wafer ends up square to the VIEW rather than to the stage.
+            // because that is the frame the operator works in, and quoted from NORTH (0 = north,
+            // 90 = west). The conversion is two angles, the camera's mounting tilt and that quarter
+            // turn (both in CameraFrame), so the chuck turns by that much more and the wafer ends up
+            // square to the VIEW rather than to the stage.
             //
-            // Underneath it is still a lab bearing. The stored notch angle is a CHUCK-frame bearing,
-            // invariant as Θ turns; the two are related by
-            //     lab = chuckFrame + sign·Θ            (the same relation WaferCentreAt applies)
-            // so the Θ that puts the notch on the datum is sign·(labDatum − notch), and the move is
-            // the difference from where Θ stands NOW.
-            //
-            // Θ and sign are both load-bearing and both were missing when this first shipped.
-            // Dropping Θ treats a target as a delta, so the answer is only right when Θ happens to
-            // read 0; dropping sign turns the wrong way entirely on this machine, where WaferFitSign
-            // is −1.
+            // Underneath it is still a lab bearing, related to the stored CHUCK-frame angle by
+            // lab = chuckFrame + sign·Θ, so the Θ putting the notch on the datum is
+            // sign·(labDatum − notch) and the move is the difference from where Θ stands NOW. Both Θ
+            // and sign are load-bearing: dropping Θ is only right when Θ reads 0, and dropping sign
+            // turns the wrong way entirely on this machine.
             double tilt = CameraFrame.TiltDeg(cal) ?? 0;
             double datum = (double)_notchDatum.Value;
-            double labDatum = CameraFrame.ToLab(datum, tilt);
+            double labDatum = CameraFrame.DatumToLab(datum, tilt);
             double nowLab = ((notch + sign * now) % 360.0 + 360.0) % 360.0;
             double targetTheta = sign * (labDatum - notch);
             double delta = ((targetTheta - now) % 360.0 + 540.0) % 360.0 - 180.0;
-            NotchLog($"Notch bears {CameraFrame.ToView(nowLab, tilt):F2}° in the view now " +
+            NotchLog($"Notch bears {CameraFrame.LabToDatum(nowLab, tilt):F2}° on the datum's dial now " +
                      $"({nowLab:F2}° in the machine frame; chuck-frame {notch:F2}°, Θ={now:F2}°, " +
                      $"sign {sign:+0;-0}).");
-            NotchLog($"The camera is mounted {tilt:+0.00;-0.00}° off the machine's axes, so the {datum:F1}° " +
-                     $"datum is {labDatum:F2}° in the machine frame; turning Θ by {delta:+0.00;-0.00}°.");
+            NotchLog($"The datum reads from north and the camera is mounted {tilt:+0.00;-0.00}° off the " +
+                     $"machine's axes, so the {datum:F1}° datum is {labDatum:F2}° in the machine frame; " +
+                     $"turning Θ by {delta:+0.00;-0.00}°.");
             _status.Text = $"Rotate to datum: turning {delta:+0.0;-0.0}°...";
             bool ok = await _owner.RotateThetaOnlyAsync(delta, NOTCH_NUDGE_SPEED);
             _status.Text = ok
-                ? $"Notch at the {datum:F1}° datum (view frame; {labDatum:F1}° machine)."
+                ? $"Notch at the {datum:F1}° datum ({labDatum:F1}° machine)."
                 : "Rotate to datum: the move did not complete — see the main log.";
         }
 
-        // --- Small helpers ----------------------------------------------------------
+        #endregion
 
+        #region Small helpers
         // Crosshair of the frame the last measurement ran on. ToStepPoint needs the same crosshair the
         // apex was measured against, and the measurement path does not go through AutoDetection.
         private double _lastCrossRow, _lastCrossCol;
@@ -874,5 +858,7 @@ namespace NanotecController
             // The check re-measures, so unlike the datum move it needs the camera.
             _notchCheckBtn.Enabled = _view.IsCameraOpen && idle && _owner.Calibration.NotchAngleDeg.HasValue;
         }
+
+        #endregion
     }
 }

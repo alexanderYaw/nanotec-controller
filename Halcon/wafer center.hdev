@@ -3,99 +3,21 @@
 <procedure name="main">
 <interface/>
 <body>
-<c>* Wafer-edge detector - HDevelop tuning script. Mirrors Vision/WaferEdgeDetector.cs.</c>
-<c>* Step with Run (F5); it pauses at each stop().</c>
-<c>* </c>
-<c>* The point of the script is the edge it does NOT report. Across the rim there are FIVE zones,</c>
-<c>* measured along the crosshair row of capture_20260803_175836_162.bmp:</c>
-<c>*   cols    0-1310   grey 255, dipping dark on the dies    wafer surface</c>
-<c>*   cols 1360-1670   grey 136-148                          BEVEL, ~310 px wide</c>
-<c>*   cols 1690-2540   grey 255                              wafer, outside the bevel</c>
-<c>*   cols 2555-2890   grey 10-27                            the unlit gap past the rim, ~345 px</c>
-<c>*   cols 2900-4015   grey 60-115                           background texture</c>
-<c>* The edge wanted is the one at col ~2890: the dark gap against the CHUCK. The chuck surface is</c>
-<c>* in focus, so that boundary is the sharper and more repeatable of the two. The gap's OTHER</c>
-<c>* boundary, at col ~2545 against the bevel, is the trap - it is a perfectly good edge of a</c>
-<c>* perfectly good region, ~345 px away on the wrong side, and picking it biases the fitted radius</c>
-<c>* by the gap's width on every sample. Taking whichever boundary point is nearest the crosshair</c>
-<c>* does NOT settle it: that just picks the side the crosshair happens to sit on. Step 5 settles it</c>
-<c>* by brightness - see there.</c>
-<c>* </c>
-<c>* NOTE ON THE OLD BRIGHT-SIDE METHOD (removed): this script, and the C# detector with it, used</c>
-<c>* to threshold the BRIGHT side - binary_threshold('max_separability','light'), close and fill</c>
-<c>* into one blob, take the largest, report its boundary point nearest the crosshair. That finds</c>
-<c>* the BEVEL, not the rim. Otsu cuts at 163, so the bevel at 136-148 reads DARK and splits the</c>
-<c>* wafer into two blobs, and then two things go wrong independently:</c>
-<c>*   - the larger blob is the INNER one (3.25M px vs 2.60M), so 'max_area' takes the wrong side</c>
-<c>*     of the bevel entirely;</c>
-<c>*   - even on the correct blob, its NEAREST boundary to the crosshair is still the bevel</c>
-<c>*     (348 px) rather than the rim (537 px).</c>
-<c>* So no rule of the form "brightest blob, nearest boundary" can work on this scene. Nor can</c>
-<c>* closing the bevel away: the bevel is ~310 px wide and the gap past the rim is ~345 px, near</c>
-<c>* enough the same that any radius bridging one bridges the other.</c>
-<c>* </c>
-<c>* The way out is to segment the OFF-WAFER side instead. The bevel is mid-grey; only the world</c>
-<c>* beyond the wafer is black. That inverts which zone is being measured but leaves the answer -</c>
-<c>* the boundary point nearest the crosshair - in the same place.</c>
-<c>* </c>
-<c>* Cut         : two-stage Otsu. A single Otsu lands at 163, between wafer and everything else,</c>
-<c>*               which is no use here - the bevel and the gap are both below it. Running Otsu</c>
-<c>*               AGAIN over bins [0, Split] alone splits that darker population, and THAT is the</c>
-<c>*               line between sustained black and mid-grey bevel/background (77 on this frame).</c>
-<c>*               Both stages are relative, so both track exposure, which is what varies here.</c>
-<c>*               Stage 1 reproduces binary_threshold('max_separability') exactly - checked, all</c>
-<c>*               three agree at 163 on this frame; it is spelled out longhand only because stage</c>
-<c>*               2 needs the same maths over a SUB-RANGE, which binary_threshold cannot express.</c>
-<c>*               Run headless through HDevEngine this script returns Split=163, Cut=77 and the</c>
-<c>*               edge point (1287.5, 2406.5), which is what WaferEdgeDetector.cs returns for the</c>
-<c>*               same frame - so this really is the mirror it claims to be.</c>
-<c>* CleanRadius : opens away speckle - the darker specks of background texture, which are not the</c>
-<c>*               gap and would roughen its outline.</c>
-<c>* CloseRadius : closes bright specks (dust, debris) sitting inside the gap.</c>
-<c>*               Note there is deliberately NO fill_up, unlike the chuck script: if the dark</c>
-<c>*               region ever enclosed the wafer, filling would swallow the wafer whole and the</c>
-<c>*               rim would vanish from the outline.</c>
-<c>* SeverRadius : opens AFTER the closing, to cut off dark structures narrower than 2x this. The</c>
-<c>*               chuck's machined GASHES read below Cut, and CloseRadius bridges the near ones</c>
-<c>*               into the band - growing dendritic tendrils that reach hundreds of px across the</c>
-<c>*               chuck and are, as far as everything downstream is concerned, the rim's own</c>
-<c>*               boundary. Step 7 then reports a point out on a tendril. On</c>
-<c>*               capture_20260805_111803_054.bmp that is exactly what happened: region area</c>
-<c>*               997,572 px against 798,899 with this step, and the reported point 375 px from</c>
-<c>*               the crosshair out in the chuck instead of 1,240 px away on the real band.</c>
-<c>*               The band is ~345 px wide and the tendrils a few tens, so 35 cuts between them;</c>
-<c>*               the region area plateaus from ~35 up (813k at 25, 799k at 35, 790k at 45,</c>
-<c>*               786k at 60) and the reported point stops moving there.</c>
-<c>*               It has to come AFTER the closing, not instead of a bigger CleanRadius: opening</c>
-<c>*               that wide first leaves dust specks too big for CloseRadius to fill, and it lets</c>
-<c>*               a bare-chuck frame (114724_720) segment into something that survives MinArea.</c>
-<c>* MinArea     : the gap spans the frame and runs to ~1.5M px. Drops dark die structures on the</c>
-<c>*               wafer and the smaller shadow troughs of the machined chuck. NOT sufficient on</c>
-<c>*               its own - the larger troughs reach 1.5 Mpx, which is why MaxMeanFraction exists.</c>
-<c>* MaxMeanFraction : a component is only the gap if it is genuinely BLACK, not merely below Cut.</c>
-<c>*               Its mean grey must be at most this fraction of Cut. Together with MinArea this</c>
-<c>*               is what makes a frame with no rim in it fail rather than report bare chuck as a</c>
-<c>*               rim point - see step 4. These two are the parameters to reach for first if a</c>
-<c>*               live arc starts reporting points off the rim.</c>
-<c>* FrameMargin : the region's outline also runs along the image frame. Clipping to a rectangle</c>
-<c>*               inset by this much throws those runs away. A frame taken wholly OFF the wafer</c>
-<c>*               is all "off-wafer" and its only boundary is that one, so clipping is also what</c>
-<c>*               makes such a frame fail rather than report the frame edge as a rim point.</c>
-<c>*               (WaferEdgeDetector.cs drops those points individually instead of clipping the</c>
-<c>*               contour; same effect on the nearest-point search.)</c>
-<c>* SideProbeRadius : width of the collar sampled either side of the gap to decide which side</c>
-<c>*               faces the CHUCK. Wide enough to average over the chuck's texture, narrow enough</c>
-<c>*               that the wafer-side collar stays on the bevel glint rather than reaching the</c>
-<c>*               darker wafer surface beyond it - see step 5.</c>
-<c>* MaxSideContrast : a dark region is only the rim gap if its two FLANKS differ in brightness -</c>
-<c>*               darker flank mean over brighter must be at or below this. A trough in the</c>
-<c>*               machined chuck has chuck on both flanks and reads near 1.0. Measured: rim gaps</c>
-<c>*               0.46-0.73, troughs 0.89-0.99. This is the filter that keeps a frame whose</c>
-<c>*               crosshair sits over the CHUCK from reporting the nearest trough - see step 5.</c>
-<c>* MinCollarArea / SideGrowRadius : discretisation slivers are not a side of the gap; and the</c>
-<c>*               collar starts one pixel clear of the gap, so the chosen side is grown back just</c>
-<c>*               far enough to overlap the gap's own boundary ring. SideGrowRadius stays tiny on</c>
-<c>*               purpose - a large value reaches across a narrow gap and re-admits the far side.</c>
+<c>* Radially the scene runs wafer - bevel - gap - chuck. The edge wanted is the unlit gap against</c>
+<c>* the CHUCK, the chuck being the in-focus surface and so the more repeatable of the two; the</c>
+<c>* gap's other boundary, against the bevel ~345 px away, is the trap, and picking it biases the</c>
+<c>* fitted radius by the gap's width on every sample.</c>
+<c>* Thresholding the BRIGHT side cannot work here - it finds the BEVEL, which Otsu reads as dark</c>
+<c>* and which is about as wide as the gap, so no closing radius separates them. So the dark</c>
+<c>* OFF-WAFER side is segmented instead, and step 5 decides which of its two boundaries is the rim.</c>
+<c>* Cut is a two-stage Otsu: a single Otsu lands between wafer and everything else, with the bevel</c>
+<c>* below it, so Otsu is run AGAIN over that darker population alone. Both stages are relative, so</c>
+<c>* both track exposure.</c>
+<c>* SeverRadius opens AFTER the closing, to cut off the dendritic tendrils that CloseRadius grows</c>
+<c>* when it bridges the chuck's machined gashes into the band. It has to come after, not instead</c>
+<c>* of a bigger CleanRadius, which would leave dust specks too big for CloseRadius to fill.</c>
+<c>* Deliberately NO fill_up, unlike the chuck script: if the dark region ever enclosed the wafer,</c>
+<c>* filling would swallow the wafer whole and the rim would vanish from the outline.</c>
 <c>* WaferIsBrighter: 0 flips which end of the histogram gets re-split, if the lighting inverts.</c>
 <l>CleanRadius := 7</l>
 <l>CloseRadius := 21</l>
@@ -114,11 +36,9 @@
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114724_720.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135114_498.bmp')</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_135135_136.bmp')</l>
-<c>* The frame to step through when checking step 5: its collar breaks into 6 pieces, so it is the</c>
-<c>* one where a threshold-against-the-brightest rule admits bevel-side slivers.</c>
+<c>* Step 5 test frame - its collar breaks into 6 pieces.</c>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260804_114358_183.bmp')</l>
-<c>* The frame to step through when checking SeverRadius: the chuck's gashes are bridged into the</c>
-<c>* band and grow tendrils across the chuck. Compare step 4 with SeverRadius 0 and 35.</c>
+<c>* SeverRadius test frame - compare step 4 with SeverRadius 0 and 35.</c>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260805_111803_054.bmp')</l>
 <l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/capture_20260805_111803_054.bmp')</l>
 <l>get_image_size (Image, Width, Height)</l>
@@ -128,10 +48,9 @@
 <l>dev_display (Image)</l>
 <l>disp_message (WindowHandle, '0: input frame  ' + Width + 'x' + Height, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 1. Single-channel byte image. The mono camera passes straight through; a colour frame</c>
-<c>*    yields its RED channel (the old colour-camera scenes were red-lit). The convert to 'byte'</c>
-<c>*    is a no-op on the 8-bit captures on file, but it is what WaferEdgeDetector.cs does and a</c>
-<c>*    deeper camera would otherwise put the two out of step - gray_histo bins differently.</c>
+<c>* 1. Single-channel byte image. Mono passes through; a colour frame yields its RED channel. The</c>
+<c>*    convert to 'byte' is a no-op on 8-bit captures but keeps a deeper camera in step with the</c>
+<c>*    C# detector - gray_histo bins differently.</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
 <l>    access_channel (Image, GrayRaw, 1)</l>
@@ -142,16 +61,14 @@
 <l>dev_display (Gray)</l>
 <l>disp_message (WindowHandle, '1: grey (' + Channels + ' channel(s) in)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 2. Stage-1 Otsu, over the whole histogram. This is the cut that is NOT wanted - it lands</c>
-<c>*    between the lit wafer and everything else, with the bevel on the dark side of it. It is</c>
-<c>*    computed only to bound stage 2.</c>
+<c>* 2. Stage-1 Otsu over the whole histogram - the cut that is NOT wanted, computed only to</c>
+<c>*    bound stage 2.</c>
 <l>get_domain (Gray, Domain)</l>
 <l>gray_histo (Domain, Gray, Histo, HistoRelative)</l>
 <l>Lo := 0</l>
 <l>Hi := 255</l>
-<c>*    The 1.0 * is load-bearing: gray_histo returns INTEGER counts, and HALCON's / truncates</c>
-<c>*    when both operands are integer tuples, so the class means below would come out floored</c>
-<c>*    and the chosen threshold drifts. Forcing reals at the source keeps the whole chain real.</c>
+<c>*    The 1.0 * is load-bearing: gray_histo returns INTEGER counts and HALCON's / truncates on</c>
+<c>*    integer tuples, which would floor the class means and drift the threshold.</c>
 <l>Bins := 1.0 * [Lo:Hi]</l>
 <l>Sub := 1.0 * Histo[Lo:Hi]</l>
 <l>Total := sum(Sub)</l>
@@ -159,16 +76,10 @@
 <l>tuple_cumul (Sub, WeightLow)</l>
 <l>tuple_cumul (Bins * Sub, MomentLow)</l>
 <l>WeightHigh := Total - WeightLow</l>
-<c>*    tuple_max2 floors the class weights at 1 for the division only - a class is empty at the</c>
-<c>*    very ends of the range, and its Between term is zeroed below anyway. (Note ==, on tuples,</c>
-<c>*    compares the WHOLE tuple and returns one value, so it cannot be used to build this mask.)</c>
 <l>tuple_max2 (WeightLow, 1, WeightLowSafe)</l>
 <l>tuple_max2 (WeightHigh, 1, WeightHighSafe)</l>
 <l>MeanLow := MomentLow / WeightLowSafe</l>
 <l>MeanHigh := (Moment - MomentLow) / WeightHighSafe</l>
-<c>*    Weights normalised by Total: the argmax is unchanged, but on raw pixel counts this product</c>
-<c>*    reaches ~4e17, and there is no reason to work that close to a double's precision when the</c>
-<c>*    objective is this flat near its peak.</c>
 <l>Between := (WeightLow / Total) * (WeightHigh / Total) * (MeanLow - MeanHigh) * (MeanLow - MeanHigh)</l>
 <l>tuple_sort_index (Between, BetweenIdx)</l>
 <l>Split := Lo + BetweenIdx[|BetweenIdx| - 1]</l>
@@ -179,10 +90,7 @@
 <l>dev_display (Stage1Dark)</l>
 <l>disp_message (WindowHandle, '2: stage-1 Otsu = ' + Split + '; everything at or below it in red - note the BEVEL is in there, which is why this cut is not the answer', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 3. Stage-2 Otsu, over that darker population ALONE. Same maths, restricted range. This is</c>
-<c>*    the cut that matters; LOOK HERE if the result is wrong. It should sit well above the</c>
-<c>*    floor of the gap (10-27 on this frame) and well below the bevel (136-148) - if it has</c>
-<c>*    drifted up towards the bevel, the frame probably has no dark gap in it at all.</c>
+<c>* 3. Stage-2 Otsu over that darker population</c>
 <l>if (WaferIsBrighter)</l>
 <l>    Lo := 0</l>
 <l>    Hi := Split</l>
@@ -190,9 +98,6 @@
 <l>    Lo := Split</l>
 <l>    Hi := 255</l>
 <l>endif</l>
-<c>*    The 1.0 * is load-bearing: gray_histo returns INTEGER counts, and HALCON's / truncates</c>
-<c>*    when both operands are integer tuples, so the class means below would come out floored</c>
-<c>*    and the chosen threshold drifts. Forcing reals at the source keeps the whole chain real.</c>
 <l>Bins := 1.0 * [Lo:Hi]</l>
 <l>Sub := 1.0 * Histo[Lo:Hi]</l>
 <l>Total := sum(Sub)</l>
@@ -200,16 +105,10 @@
 <l>tuple_cumul (Sub, WeightLow)</l>
 <l>tuple_cumul (Bins * Sub, MomentLow)</l>
 <l>WeightHigh := Total - WeightLow</l>
-<c>*    tuple_max2 floors the class weights at 1 for the division only - a class is empty at the</c>
-<c>*    very ends of the range, and its Between term is zeroed below anyway. (Note ==, on tuples,</c>
-<c>*    compares the WHOLE tuple and returns one value, so it cannot be used to build this mask.)</c>
 <l>tuple_max2 (WeightLow, 1, WeightLowSafe)</l>
 <l>tuple_max2 (WeightHigh, 1, WeightHighSafe)</l>
 <l>MeanLow := MomentLow / WeightLowSafe</l>
 <l>MeanHigh := (Moment - MomentLow) / WeightHighSafe</l>
-<c>*    Weights normalised by Total: the argmax is unchanged, but on raw pixel counts this product</c>
-<c>*    reaches ~4e17, and there is no reason to work that close to a double's precision when the</c>
-<c>*    objective is this flat near its peak.</c>
 <l>Between := (WeightLow / Total) * (WeightHigh / Total) * (MeanLow - MeanHigh) * (MeanLow - MeanHigh)</l>
 <l>tuple_sort_index (Between, BetweenIdx)</l>
 <l>Cut := Lo + BetweenIdx[|BetweenIdx| - 1]</l>
@@ -224,34 +123,7 @@
 <l>dev_display (OffWaferRaw)</l>
 <l>disp_message (WindowHandle, '3: stage-2 Otsu over bins [' + Lo + ',' + Hi + '] = ' + Cut + ' - the off-wafer side (red), before cleanup. The bevel should NOT be red now.', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 4. Clean up: open away speckle, close bright specks inside the gap, then keep only the</c>
-<c>*    components that are BOTH big enough AND black enough to be the gap. NO fill_up - see the</c>
-<c>*    header.</c>
-<c>* </c>
-<c>*    BOTH tests are needed, and this is the step that decides whether a frame with no rim in it</c>
-<c>*    fails cleanly. Otsu always returns a cut, so a frame of nothing but bare chuck still</c>
-<c>*    segments into something. The chuck is machined, and under oblique light its shadow troughs</c>
-<c>*    come out as long dark-ish blobs of 0.7-1.5 Mpx - as large as a real gap, so AREA alone</c>
-<c>*    passes them straight through. What separates them is the grey: measured on the component</c>
-<c>*    that actually supplies the reported point, a real gap runs mean 10-34 and a texture trough</c>
-<c>*    47-63. Taken as a fraction of Cut that is 0.24-0.52 against 0.70-0.81, so</c>
-<c>*    MaxMeanFraction = 0.6 sits in clear air. It has to be a FRACTION, not an absolute level:</c>
-<c>*    Cut is relative by design and runs 37-96 across the captures on file, so any fixed limit</c>
-<c>*    fails at one end of that range or the other.</c>
-<c>* </c>
-<c>*    select_gray is a FILTER, not a verdict, and that ordering matters. In</c>
-<c>*    capture_20260804_135114_498.bmp the real gap IS present and IS kept, but a texture trough</c>
-<c>*    sits nearer the crosshair and would win step 6 outright; dropping the trough here lets the</c>
-<c>*    gap win instead of failing the frame. In capture_20260804_114724_720.bmp - bare chuck, no</c>
-<c>*    wafer anywhere in view - nothing survives, and the frame is rejected at step 4 as it should</c>
-<c>*    be. Before this filter that frame reported a texture trough as a rim point.</c>
-<c>* </c>
-<c>*    Note the listing is built as a string TUPLE, one element per line: disp_message renders a</c>
-<c>*    tuple as consecutive lines, whereas 'text' + SomeTuple silently yields a tuple of strings</c>
-<c>*    where one string was meant. Comparisons collapse the other way - MeanGray &gt; X on a</c>
-<c>*    multi-region tuple returns ONE value, not a mask, so hand-rolling this test in tuple code</c>
-<c>*    would silently have gated on region 1 alone. Same family of trap as the == noted in step 2;</c>
-<c>*    select_gray sidesteps it by working on the region set directly.</c>
+<c>* 4. Clean up, then keep only the components BOTH big enough AND black enough to be the gap.</c>
 <l>opening_circle (OffWaferRaw, OffWaferOpened, CleanRadius)</l>
 <l>closing_circle (OffWaferOpened, OffWaferClosed, CloseRadius)</l>
 <l>opening_circle (OffWaferClosed, OffWaferSevered, SeverRadius)</l>
@@ -294,53 +166,20 @@
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 5. WHICH SIDE of the gap is the chuck. The gap has TWO boundaries and only one is wanted:</c>
-<c>*    radially the scene runs wafer - bevel - gap - chuck, and it is the gap-to-CHUCK boundary</c>
-<c>*    that is measured, the chuck being the in-focus surface. Nearest-to-the-crosshair alone picks</c>
-<c>*    whichever side the crosshair happens to sit on, and nothing downstream catches the mistake:</c>
-<c>*    the two boundaries are a couple of hundred px apart, well inside the scan's acceptance band,</c>
-<c>*    so the fit just comes out biased by the gap's width.</c>
-<c>* </c>
-<c>*    BRIGHTNESS decides it. The bevel is specular and throws a near-saturated glint that hugs the</c>
-<c>*    gap; the chuck is diffuse and mid-grey. Take a collar either side and keep the DARK one.</c>
-<c>*    Measured over the captures on file the chuck collar runs 0.4-0.8x the wafer collar's mean,</c>
-<c>*    at every collar width tried (30, 50, 60, 120 px).</c>
-<c>* </c>
-<c>*    Compare the TWO LARGEST pieces only, and COMPARE them rather than thresholding. A ragged gap</c>
-<c>*    outline breaks the collar into 6-13 fragments - see the listing below - and a bevel-side</c>
-<c>*    sliver reads darker than the bevel proper, so any cut-off against the brightest piece admits</c>
-<c>*    fragments from BOTH sides and the rim ring straddles the gap. Measured on</c>
-<c>*    capture_20260804_114358_183.bmp the old 0.85-of-brightest rule kept four of six pieces, three</c>
-<c>*    of them bevel-side slivers of 8-18 kpx against real sides of 233 and 344 kpx. Two candidates</c>
-<c>*    need no cut-off at all, which is why there is no longer a SideDarkFraction to tune.</c>
-<c>* </c>
-<c>*    Texture cannot decide it, counter-intuitive though that is: the glint is a saturated ridge</c>
-<c>*    speckled with dark pits, so the WAFER collar is the rougher of the two on both deviation</c>
-<c>*    (52-74 vs 41-49) and local gradient - the opposite of what the eye reports. That polarity</c>
-<c>*    also belongs to the current optics; captures from before the chuck was brought into focus</c>
-<c>*    show it reversed, which is reason enough not to build on it.</c>
-<c>* </c>
-<c>*    The two collars stay separate because the gap crosses the frame, so the collar cannot wrap</c>
-<c>*    round its ends - they ARE the image border. A gap that is a blob rather than a band gives</c>
-<c>*    one ring instead, and a gap running off one corner can leave the wafer side out of view</c>
-<c>*    entirely. Either way one flank means NO evidence about which boundary faces the chuck, so</c>
-<c>*    that region is dropped rather than guessed at: a dropped sample costs the scan a search hop,</c>
-<c>*    a boundary taken off the wrong side biases the fit by the gap's width and nothing downstream</c>
-<c>*    would catch it.</c>
-<c>* </c>
+<c>* 5. WHICH SIDE of the gap is the chuck. Nearest-to-the-crosshair alone picks whichever side the</c>
+<c>*    crosshair happens to sit on, and nothing downstream catches the mistake.</c>
+<c>*    BRIGHTNESS decides it: the bevel throws a near-saturated glint, the chuck is diffuse and</c>
+<c>*    mid-grey, so keep the DARKER collar. Compare the two LARGEST pieces only, and COMPARE them</c>
+<c>*    rather than thresholding - a ragged outline breaks the collar into 6-13 fragments, and any</c>
+<c>*    cut-off against the brightest admits slivers from BOTH sides. Texture cannot decide it: the</c>
+<c>*    glint is pitted, so the wafer collar is the rougher of the two, and that polarity belongs to</c>
+<c>*    the current optics anyway.</c>
+<c>*    One flank in view is NO evidence about which boundary faces the chuck, so the region is</c>
+<c>*    dropped rather than guessed at.</c>
 <c>*    FLANK CONTRAST is the third filter, and the one that matters when the crosshair sits over the</c>
-<c>*    CHUCK rather than the wafer. A rim gap has the bevel's glint on one flank and the chuck on the</c>
-<c>*    other; a shadow trough in the machined chuck has chuck on BOTH, so its two flank means are</c>
-<c>*    nearly equal. Measured over the captures on file, darker/brighter runs 0.46-0.73 for rim gaps</c>
-<c>*    against 0.89-0.99 for troughs, so MaxSideContrast = 0.80 sits in clear air. Nothing else</c>
-<c>*    separates them once a trough is near the crosshair: step 7 reports the boundary point NEAREST</c>
-<c>*    the crosshair, so with the rim far away a trough wins outright, and the scan's radial band</c>
-<c>*    cannot object either - a trough beside the crosshair sits at very nearly the station's own</c>
-<c>*    radius. (Old-optics captures, chuck defocused, measure 0.84 on a REAL gap and are therefore</c>
-<c>*    refused by this gate. They are not a target; the current optics are.)</c>
-<c>* </c>
-<c>*    All of this runs PER REGION, and the rim ring is assembled from the regions that pass. Merging</c>
-<c>*    first and testing the merger would let one trough contribute boundary that then wins step 7.</c>
+<c>*    CHUCK: a rim gap has glint on one flank and chuck on the other, a shadow trough has chuck on</c>
+<c>*    both and reads near 1.0. Nothing else separates them once a trough is near the crosshair.</c>
+<c>*    All of this runs PER REGION - merging first would let one trough contribute boundary.</c>
 <l>gen_empty_region (RimRing)</l>
 <l>Msg := '5: flanks per candidate region, collar radius ' + SideProbeRadius</l>
 <l>NumRim := 0</l>
@@ -355,8 +194,7 @@
 <l>        Msg := [Msg, '    r' + R + ': only ' + NumSides + ' flank - drop (wafer side out of view; nothing says which boundary faces the chuck)']</l>
 <l>        continue</l>
 <l>    endif</l>
-<c>*        The two largest pieces are the two flanks; the rest is fragmentation along a ragged</c>
-<c>*        outline. Sorted ascending, so the last two entries of the index tuple are the biggest.</c>
+<c>*        The two largest pieces are the flanks; sorted ascending, so they are the last two.</c>
 <l>    area_center (Sides, SideArea, SideRow, SideCol)</l>
 <l>    intensity (Sides, Gray, SideMean, SideDev)</l>
 <l>    tuple_sort_index (SideArea, AreaIdx)</l>
@@ -396,9 +234,8 @@
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 6. Drop the stretches of that ring which merely run along the image frame. A frame taken wholly</c>
-<c>*    OFF the wafer is all "off-wafer" and its only boundary is the frame, so dropping those runs is</c>
-<c>*    also what makes such a frame fail rather than report the frame edge as a rim point.</c>
+<c>* 6. Drop the stretches of that ring which merely run along the image frame. This is also what</c>
+<c>*    makes a wholly off-wafer frame fail rather than report the frame edge as a rim point.</c>
 <l>gen_rectangle1 (Inner, FrameMargin, FrameMargin, Height - 1 - FrameMargin, Width - 1 - FrameMargin)</l>
 <l>intersection (RimRing, Inner, Rim)</l>
 <l>area_center (Rim, RimArea, RimRow, RimCol)</l>

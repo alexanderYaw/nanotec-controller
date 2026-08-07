@@ -400,7 +400,7 @@ matches the nominal.
 | A | Park at (X min, Y max) — the corner of the stored travel envelope (§2). Refuse up front if the nominal rim radius lies outside the band that line sweeps. |
 | B | Raster down in Y, one hop at a time, until the rim is detected. That spot is the station. |
 | C | N+1 samples, rotating Θ by 360/N between them, **Θ only** — X/Y move only to re-acquire a lost rim (§6). Each frame is screened for an anomalous rim and dropped if it is one (see *The notch* below). The last sample repeats θ₀. |
-| D | De-rotate and fit (`WaferCentreScan`): settle the handedness, drop outliers past `max(3σ, 0.3 mm)`, refit once. |
+| D | De-rotate and fit (`WaferCentreScan`): settle the handedness, drop outliers past `clamp(2.5σ, 0.15 mm, 0.5 mm)`, refit — iterated, re-judging every sample each pass (§7.1). |
 | E | Closure check, then persist — including a notch, if one of the dropped frames turned out to be it. |
 | F | Drive to `WaferCentreAt(Θ)` for the angle the run ends on, so it finishes on the wafer centre rather than parked out on the rim. |
 
@@ -429,9 +429,9 @@ covers ~4.9 mm of rim, so at 15° sampling (26.2 mm of rim between samples) a sa
 notch about **30%** of runs and contains it whole about **8%**.
 
 An overlapping sample is a rim point that is not on the rim circle, by up to the notch's full ~1 mm.
-Leaving it to §D's 3σ drop works, but it is second-best: the outlier is *in* the fit that computes
-the cut it is then judged against, so it widens the RMS, pulls the centre, and — on a clean scan
-where the floor of 0.3 mm binds — can survive. The measurement is better thrown away before it
+Leaving it to §D's outlier drop works, but it is second-best: the outlier is *in* the fit that
+computes the cut it is then judged against, so it widens the RMS, pulls the centre, and can survive
+(§7.1 quantifies exactly when). The measurement is better thrown away before it
 becomes a sample, and the run has the means to recognise it: `NotchDetector.TryCoarse`, the same
 "is this rim anomalous?" test the notch sweep applies to every frame it passes, at the same trigger
 the notch panel sets. It runs **on the frame the point came from** — a verdict from a second grab
@@ -474,7 +474,7 @@ side of the flat rather than tracked across it.
 
 | Constant | Value | Why |
 |---|---|---|
-| `WAFER_BAND_LO/HI_FRAC` | 0.70 / 1.30 | Acceptance band on `\|E − C\|`, × nominal R. |
+| `WAFER_BAND_LO/HI_FRAC` | 0.90 / 1.10 | Acceptance band on `\|E − C\|`, × nominal R. Tightened from 0.70/1.30 on 2026-08-07: ±10 % is ±10 mm on a 200 mm wafer, still ~14× the 0.72 mm eccentricity measured on hardware, while ±30 % admitted a detection 30 mm off the rim. |
 | `WAFER_BORDER_MARGIN_PX` | 8 | Frame-border rejection (§6). |
 | `WAFER_SEARCH_HOPS` | 6 | Local search either side of the station along Y on a miss (§6). Not run on an *anomalous* look. |
 | `CoarseThresholdMm` | 0.30 mm | Anomaly trigger for the per-frame screen. Taken live from the notch panel's **Trigger (mm)**, so there is one number rather than two. Plain rim reads 0.01–0.05 mm, the notch 0.55 mm. |
@@ -483,13 +483,57 @@ side of the flat rather than tracked across it.
 | `MinCollarAreaPx` | 5,000 | Below this a collar piece is a fragment, not a flank. The two largest survivors are the two flanks; the darker is the chuck. |
 | `MaxSideContrast` | 0.80 | Darker flank ÷ brighter. Above it the region has the same surface on both sides — a chuck trough, not the rim. Rim gaps 0.46–0.73, troughs 0.89–0.99. |
 | `SeverRadius` | 35 px | Opening after the closing; cuts the chuck's gashes off the band. Must be well under half the band's ~345 px and above the tendrils' few tens. |
-| `WAFER_THETA_SPEED` | 3000 | Θ tops out at 3200; a revolution is 359,859 ticks ⇒ ~2 min of turning. |
+| `WAFER_THETA_SPEED` | 5000 | Θ's cap is 5000 (raised from 3200 on 2026-08-07); a revolution is 359,859 ticks ⇒ ~72 s of turning. |
 | `WAFER_CLOSURE_TOL_STEPS` | 400 | Closure tolerance (≈0.32 mm). |
-| `OUTLIER_SIGMA` / `OUTLIER_FLOOR_MM` | 3.0 / 0.3 mm | Outlier drop; the floor stops a clean scan shedding good points to its own noise. |
+| `OUTLIER_SIGMA` / `OUTLIER_FLOOR_MM` / `OUTLIER_MAX_MM` | 2.5 / 0.15 mm / 0.5 mm | Outlier cut = `clamp(σ·RMS, floor, max)`. The floor stops a clean scan shedding good points to its own noise; **the ceiling is what does the work at small N** (see below). |
+| `OUTLIER_MAX_PASSES` / `OUTLIER_MIN_KEPT` | 3 / 5 | Drop-and-refit iterations, and the point count below which a pass is abandoned rather than fitted. |
 | `SIGN_SEPARATION_MM` / `SIGN_MARGIN` | 0.05 mm / 0.5 | When the data may decide the handedness (§5). |
 
 Total run time is dominated by the single revolution, so N barely affects it — N = 24 is not
-expensive relative to N = 12.
+expensive relative to N = 12. The panel's **Samples** box defaults to **N = 8** (`_waferSamples`,
+`FrmVisionProtocols.cs`); the fit needs 3, and the outlier pass (§7.1) has more to work with the
+higher N goes.
+
+### 7.1 The outlier pass, and why a sigma multiple alone does not work
+
+Reworked 2026-08-07 after the old pass was observed accepting outliers. Three things were wrong, and
+only the third actually mattered:
+
+1. **The cut was loose** — `3σ` with a `0.3 mm` floor, against hardware scans that fit to an RMS of
+   **0.076 mm**. Anything within 4× the noise was kept unconditionally. Now `2.5σ` with a `0.15 mm`
+   floor (~2× the noise).
+2. **It ran once.** A gross outlier inflates the RMS that sets the cut, so the second-worst point can
+   hide inside a threshold the worst one widened. Now iterated up to `OUTLIER_MAX_PASSES`, each refit
+   tightening the next cut.
+3. **A multiple of the RMS cannot catch an outlier at small N at all** — the failure the other two
+   miss. With 9 points, one bad sample *drags the circle onto itself*: its own residual shrinks while
+   every other residual grows, so it ends up comfortably inside its own cut no matter what σ is. This
+   is why `OUTLIER_MAX_MM = 0.5 mm` exists — an absolute ceiling, justified physically rather than
+   statistically (6× the measured RMS; nothing genuine reaches it). **On short scans the ceiling is
+   the gate; the sigma term only takes over once N is large.**
+
+Measured offline against synthetic scans with known ground truth (`err` = distance from the true
+offset; the harness is the standalone-console-compiling-the-source pattern):
+
+| Case | Old: dropped / err | New: dropped / err |
+|---|---|---|
+| N=8, clean | 0 / 0.025 mm | 0 / 0.025 mm |
+| N=8, one 2.0 mm outlier | **0 / 0.487 mm** | 1 / 0.029 mm |
+| N=8, 2.0 + 1.2 mm | **0 / 0.367 mm** | 2 / 0.005 mm |
+| N=24, clean | 0 / 0.005 mm | 0 / 0.005 mm |
+| N=24, three outliers | **1 / 0.203 mm** | 3 / 0.017 mm |
+| N=24, one 0.45 mm | 1 / 0.010 mm | 1 / 0.010 mm |
+
+Each pass re-judges **every** sample, not just the survivors: the first fit is pulled towards a gross
+outlier, so good points on the far side can fall outside that pass's cut and must be readmitted once
+the refit is clean. Without readmission the same 1-outlier case at N=8 dropped **three** points.
+
+**Two limits worth knowing.** A sub-half-mm outlier at N=8 still survives (0.45 mm injected → kept,
+0.102 mm of error) because 9 points absorb it; at N=24 the same point is caught. And if a pass would
+leave fewer than `OUTLIER_MIN_KEPT` points, it is abandoned whole and **nothing is dropped** — with 4
+bad samples out of 9 the run keeps the distorted fit and reports it, RMS 0.855 mm against a typical
+0.026 mm. That is visible in the result panel rather than silent, but it is not rejected: there is no
+RMS gate on saving.
 
 ## 8. What is stored, and why it is not a point
 

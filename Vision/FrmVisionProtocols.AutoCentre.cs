@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading;
@@ -8,66 +8,61 @@ using HalconDotNet;
 
 namespace NanotecController
 {
-    // FrmVisionProtocols — AUTOMATIC chuck centre-find: the stage homes itself, drives to a fixed seed
-    // point and collects the eight rim points on its own, with no operator input beyond the max search
-    // radius. Nothing here replaces the maths — the points go into the same _chuckFinder and the same
-    // Pratt fit (ComputeCentre) as the manual flow; this is purely the orchestration that used to be
-    // the operator's hand on the jog.
-    //
-    // STEP-AND-SETTLE. Every probe advances in discrete hops and captures with the stage stopped, so
-    // the motor position paired with each frame is exact and the travel guard is inherent: a target
-    // past the guard is never even COMMANDED. A continuous jog gives neither — the frame would be
-    // exposed in motion, and there is no position sample corresponding to the exposure instant
-    // (see FrmMain.TryReadUserXyNow for why the cached one will not do).
-    //
-    // Shape of a run:
-    //   0  X and Y Home, then AUTO_SEED_DY along Y     → the seed point, in place of a rough centre
-    //   A  probe ±Y from the seed point                → bisect for cy
-    //   B  probe ±X from (seedX, cy)                   → bisect for cx, giving C₁ and a measured radius
-    //   C  probe the four diagonals from C₁            → four more rim points
-    //   D  Pratt-fit all eight; persist centre + radius
-    //   E  report per-point radial residuals
-    //   F  drive to the fitted centre                  → the run ends with the chuck centred
-    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    /// <summary>
+    /// FrmVisionProtocols — AUTOMATIC chuck centre-find: the stage homes itself, drives to a fixed
+    /// seed point and collects the eight rim points on its own, with no operator input beyond the max
+    /// search radius. The points go into the same _chuckFinder and the same Pratt fit as the manual
+    /// flow; this is purely the orchestration that used to be the operator's hand on the jog.
+    ///
+    /// STEP-AND-SETTLE: every probe advances in discrete hops and captures with the stage stopped, so
+    /// the motor position paired with each frame is exact and the travel guard is inherent — a target
+    /// past the guard is never even COMMANDED. A continuous jog gives neither.
+    ///
+    /// Shape of a run:
+    ///   0  X and Y Home, then AUTO_SEED_DY along Y   → the seed point, in place of a rough centre
+    ///   A  probe ±Y from the seed point              → bisect for cy
+    ///   B  probe ±X from (seedX, cy)                 → bisect for cx, giving C₁ and a radius
+    ///   C  probe the four diagonals from C₁          → four more rim points
+    ///   D  Pratt-fit all eight; persist centre + radius
+    ///   E  report per-point radial residuals
+    ///   F  drive to the fitted centre                → the run ends with the chuck centred
+    /// </summary>
     public sealed partial class FrmVisionProtocols
     {
-        // Fully automatic start: X and Y to their Home — the centre of the measured travel, which is
-        // where FindXyLimitsAsync already leaves the stage — then this far along +Y. Home is
-        // repeatable, so it replaces the operator's eye as the rough centre, and this offset is the
-        // fixed mechanical shift from Home to roughly-over-the-feature on this machine. USER frame,
-        // which is inverted from the raw drive frame (userY = −rawY), so the sign here is the one that
-        // moves the stage the right way on the machine, not a raw-frame direction. Z is NOT homed: it
-        // holds the focus the detector needs, and the traverse stays inside travel already covered at
-        // this height.
+        #region Auto centre-find tunables
+
+        /// <summary>Offset along +Y from Home to the seed point. Home is repeatable, so it replaces the
+        /// operator's eye as the rough centre. USER frame (userY = −rawY). Z is NOT homed — it holds
+        /// the focus the detector needs.</summary>
         private const double AUTO_SEED_DY = +15000;
-        // Arrival tolerance for the two seed moves. The probes size theirs from the hop, which is not
-        // known until the first frame; this is a plain absolute band, loose enough for profile-move
-        // settling but far tighter than the offset it is checking.
+
+        /// <summary>Arrival tolerance for the two seed moves — a plain absolute band, since the probes
+        /// size theirs from a hop not known until the first frame.</summary>
         private const double AUTO_SEED_TOL = 50;
-        // Stage C only: jump straight to this multiple of the MEASURED radius before hopping. Pure time
-        // optimisation — it skips the empty interior. Safe only because C₁ came from the bisection
-        // rather than a guess: from a rough centre off by δ, a jump aligned with δ lands at 0.8·R + δ,
-        // which can be past the boundary — and the boundary is then skipped UNSEEN.
+
+        /// <summary>Stage C only: jump straight to this multiple of the MEASURED radius before hopping,
+        /// skipping the empty interior. Safe only because C₁ came from the bisection rather than a
+        /// guess — from a rough centre off by δ the jump can land past the boundary, skipping it UNSEEN.</summary>
         private const double AUTO_APPROACH_R = 0.8;
-        // Distance-band LOWER bounds — the only fractional bounds left. Both upper bounds are now the
-        // flat max search radius the operator enters (see AutoCentreCoreAsync), so a detection is
-        // rejected on distance only for being implausibly CLOSE to the start, never for being far.
-        // That makes the max search radius the single number governing how far a probe may travel and
-        // how far out a detection is still believed — but it also means stage C no longer re-checks a
-        // diagonal against the radius the bisection just measured, so a false edge anywhere inside the
-        // search radius is now accepted.
-        private const double AUTO_BAND_LO_FRAC = 0.2;    // stages A/B, as a fraction of the max radius
-        private const double AUTO_TIGHT_LO_FRAC = 0.7;   // stage C, as a fraction of the measured r₁
-        // One hop, as a fraction of the frame's smaller extent in step space. Must stay well under a
-        // full frame: a bigger hop can carry the rim past the camera between captures, and
-        // ChuckEdgeDetector wants a ≥MinArcLength (800 px) arc, so a rim merely clipping a corner
-        // does not count as seen.
+
+        /// <summary>Distance-band LOWER bounds. Both upper bounds are the flat max search radius the
+        /// operator enters, so a detection is rejected on distance only for being implausibly CLOSE to
+        /// the start. That makes the max search radius the single number governing a probe's reach —
+        /// but it also means stage C no longer re-checks a diagonal against the measured radius.</summary>
+        private const double AUTO_BAND_LO_FRAC = 0.2;    // stages A/B, fraction of the max radius
+        private const double AUTO_TIGHT_LO_FRAC = 0.7;   // stage C, fraction of the measured r₁
+
+        /// <summary>One hop, as a fraction of the frame's smaller extent in step space. Must stay well
+        /// under a full frame: a bigger hop can carry the rim past the camera between captures, and a
+        /// rim merely clipping a corner does not meet ChuckEdgeDetector's MinArcLength.</summary>
         private const double AUTO_HOP_FRAC = 0.4;
-        // Backstop on one probe's hop count, in case the guard arithmetic is ever defeated by a
-        // degenerate hop size.
+
+        /// <summary>Backstop on one probe's hop count, should the guard arithmetic ever be defeated by
+        /// a degenerate hop size.</summary>
         private const int AUTO_MAX_HOPS = 500;
-        // Give up waiting on a detection job. The grab thread can drop one silently (camera closed
-        // mid-run, or PostFrameBitmap failing to convert), which would otherwise hang the run forever.
+
+        /// <summary>Give up waiting on a detection job — the grab thread can drop one silently, which
+        /// would otherwise hang the run forever.</summary>
         private const int AUTO_GRAB_TIMEOUT_MS = 8000;
 
         private volatile bool _autoCancel;
@@ -82,19 +77,18 @@ namespace NanotecController
 
         private AutoTarget _autoTarget = AutoTarget.Chuck;
 
-        // One detection job's result, carried back off the grab thread. FrameW/FrameH are the LIVE
-        // frame size (ZoomFactor is a centred-ROI crop, so this shrinks with zoom) and size the hop.
-        // Report is the wafer detector's per-region diagnostic (null for the chuck target), logged by
-        // the wafer scan so a point off the rim says which filter let the wrong region through.
-        // Anomalous is the coarse notch test's verdict on the SAME frame, filled in only when the
-        // caller asks for the screen (the wafer Θ scan does); AnomalyMm/AnomalyRun are its numbers.
+        /// <summary>One detection job's result, carried back off the grab thread. FrameW/FrameH are the
+        /// LIVE frame size (a centred-ROI crop, so it shrinks with zoom) and size the hop. Report is the
+        /// wafer detector's per-region diagnostic, null for the chuck target. Anomalous is the coarse
+        /// notch test's verdict on the SAME frame, filled in only when the caller asks for it.</summary>
         private readonly record struct AutoDetection(
             bool Found, double Row, double Column, double CrossRow, double CrossCol,
             double FrameW, double FrameH, string? Report = null,
             bool Anomalous = false, double AnomalyMm = 0, int AnomalyRun = 0);
 
-        // --- Awaitable grab + detect ------------------------------------------------
+        #endregion
 
+        #region Awaitable grab + detect
         // The same detector call as RequestEdge, but awaitable, with the result handed back instead of
         // stored. The overlay still lands on the captured pane so the operator can watch each hop.
         // Returns a default (FrameW = 0) if the camera is closed or the job never comes back.
@@ -184,8 +178,9 @@ namespace NanotecController
             return await tcs.Task;
         }
 
-        // --- Motion helpers ---------------------------------------------------------
+        #endregion
 
+        #region Motion helpers
         // Absolute X/Y move in the USER frame (Z deliberately untouched — blank zText). MoveToAsync
         // reports nothing back (an out-of-range target just logs "Move cancelled" and completes), so
         // arrival is verified by the caller against a fresh position read.
@@ -204,8 +199,9 @@ namespace NanotecController
             return true;
         }
 
-        // --- The probe --------------------------------------------------------------
+        #endregion
 
+        #region The probe
         /// <summary>
         /// Hops outward from <paramref name="c"/> along <paramref name="dir"/> until the rim is
         /// detected, the guard or travel envelope is reached (Missed), or a move fails / the operator
@@ -286,8 +282,9 @@ namespace NanotecController
             return (ProbeOutcome.Missed, default);
         }
 
-        // --- Orchestration ----------------------------------------------------------
+        #endregion
 
+        #region Orchestration
         /// <summary>
         /// Starts the automatic chuck centre-find from OUTSIDE this window — the main window's
         /// unified "Home &amp; centre chuck" chain. Deliberately just the Run button's own handler, so
@@ -440,7 +437,7 @@ namespace NanotecController
             // bounds stay fractional (see AUTO_BAND_LO_FRAC).
             double wideLo = AUTO_BAND_LO_FRAC * maxR, wideHi = maxR;
 
-            // ---- Stage A: vertical bisection (no jump — see AUTO_APPROACH_R) ----
+            // Stage A: vertical bisection (no jump — see AUTO_APPROACH_R)
             (ProbeOutcome oN, (double X, double Y) eN) = await ProbeAsync(c0, (0, 1), a, maxR, wideLo, wideHi, 0, hop, "N");
             if (oN == ProbeOutcome.Aborted) { Abandon(); return; }
             (ProbeOutcome oS, (double X, double Y) eS) = await ProbeAsync(c0, (0, -1), a, maxR, wideLo, wideHi, 0, hop, "S");
@@ -452,7 +449,7 @@ namespace NanotecController
             }
             double cy1 = (eN.Y + eS.Y) / 2.0;
 
-            // ---- Stage B: horizontal bisection, from the corrected Y ----
+            // Stage B: horizontal bisection, from the corrected Y
             (double X, double Y) ch = (c0.X, cy1);
             (ProbeOutcome oE, (double X, double Y) eE) = await ProbeAsync(ch, (1, 0), a, maxR, wideLo, wideHi, 0, hop, "E");
             if (oE == ProbeOutcome.Aborted) { Abandon(); return; }
@@ -476,12 +473,12 @@ namespace NanotecController
             AutoLog($"Bisection: centre ~({cx1:F0}, {cy1:F0}), R ~{r1:F0} steps.");
             if (r1 < 1.0) { _status.Text = "Auto centre-find: the bisection produced a degenerate radius."; return; }
 
-            // Stages A/B are a RE-CENTRING stage, not the estimator: TryDetect returns the rim point
+            // Stages A/B RE-CENTRE; they are not the estimator. TryDetect returns the rim point
             // nearest the CROSSHAIR, which lies along the ray C→M rather than on the scan line, so with
             // a laterally offset start the midpoint only approximates a true chord bisection. It is
             // good enough to aim the diagonals; the answer comes from the Pratt fit over all eight.
 
-            // ---- Stage C: four diagonals from C₁, now with the approach jump ----
+            // Stage C: four diagonals from C₁, now with the approach jump
             double tightLo = AUTO_TIGHT_LO_FRAC * r1, tightHi = maxR, jump = AUTO_APPROACH_R * r1;
             double k = Math.Sqrt(0.5);
             (double X, double Y, string Label)[] diagonals =
@@ -496,7 +493,7 @@ namespace NanotecController
                 if (o == ProbeOutcome.Found) points.Add(e);
             }
 
-            // ---- Stage D: fit ----
+            // Stage D: fit
             foreach ((double X, double Y) p in points) _chuckFinder.AddPoint(p.X, p.Y);
             RefreshEdgeUi();
             if (_chuckFinder.Count < 3)
@@ -510,7 +507,7 @@ namespace NanotecController
             // operational bound on how far a probe may travel, not a measurement of the feature.
             // ComputeCentre still persists the measured radius as ChuckRadius.
 
-            // ---- Stage E: per-point residuals. The fit's own RMS hides a single bad point among
+            // Stage E: per-point residuals. The fit's own RMS hides a single bad point among
             // eight; these say which direction it came from.
             (double X, double Y) fit = (_chuckCentre.Value.X, _chuckCentre.Value.Y);
             double rFit = 0;
@@ -520,7 +517,7 @@ namespace NanotecController
             foreach ((double X, double Y) p in points) worst = Math.Max(worst, Math.Abs(Dist(p, fit) - rFit));
             AutoLog($"Fit over {points.Count} points: centre ({fit.X:F0}, {fit.Y:F0}), worst radial residual {worst:F0} steps.");
 
-            // ---- Stage F: drive to the centre just found, so the run ends with the chuck centred
+            // Stage F: drive to the centre just found, so the run ends with the chuck centred
             // instead of parked out on the last diagonal. Bounds-checked and arrival-verified like
             // every other move here — MoveToAsync reports a rejected target only to the main log, and
             // a silent no-op would leave the stage at the rim while the status read "complete".
@@ -551,8 +548,9 @@ namespace NanotecController
             _status.Text = $"Auto centre-find complete: {points.Count} points, worst residual {worst:F0} steps, stage at the centre.";
         }
 
-        // --- Small helpers ----------------------------------------------------------
+        #endregion
 
+        #region Small helpers
         // The frame's two extents in step space, through the affine; the hop is a fraction of the
         // smaller. Computed per run, never cached: ZoomFactor is a centred-ROI crop applied by the grab
         // thread, so the field of view in steps changes with whatever zoom the operator is on.
@@ -607,5 +605,7 @@ namespace NanotecController
             _autoCancelBtn.Enabled = _autoRunning;
             RefreshEdgeUi();
         }
+
+        #endregion
     }
 }

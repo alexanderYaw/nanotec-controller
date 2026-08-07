@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
@@ -34,7 +34,7 @@ namespace NanotecController
         {
             visionHostPanel.Controls.Remove(visionPlaceholder);
 
-            // --- top toolbar ---
+            // top toolbar
             var toolbar = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = SystemColors.Control };
             toolbar.Controls.Add(new Label { Text = "Zoom:", Location = new Point(4, 12), AutoSize = true });
             _visionZoom = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(52, 8), Size = new Size(56, 24), Enabled = false };
@@ -99,7 +99,7 @@ namespace NanotecController
                 else { b.UseVisualStyleBackColor = true; b.BackColor = SystemColors.Control; }
             }
 
-            // --- bottom strip: quick-capture preview + Retry ---
+            // bottom strip: quick-capture preview + Retry
             var bottom = new Panel { Dock = DockStyle.Bottom, Height = 132, BackColor = SystemColors.Control };
             bottom.Controls.Add(new Label { Text = "Last capture", Location = new Point(4, 4), AutoSize = true });
             _previewBox = new PictureBox
@@ -117,7 +117,7 @@ namespace NanotecController
             _fpsLabel = new Label { AutoSize = true, ForeColor = Color.DimGray, Location = new Point(176, 70) };
             bottom.Controls.Add(_fpsLabel);
 
-            // --- live view fills the middle ---
+            // live view fills the middle
             _visionView.Dock = DockStyle.Fill;
             _visionView.StatusChanged += OnVisionStatus;
             _visionView.FpsChanged += text => { if (!IsDisposed) _fpsLabel.Text = text; };
@@ -185,7 +185,7 @@ namespace NanotecController
             }
         }
 
-        // --- Drift-corrected vision jog -------------------------------------------
+        #region Drift-corrected vision jog
         // The protocols window computes X/Y velocities from the camera-scale calibration so the
         // on-screen motion is purely horizontal/vertical. Deliberately does NOT use the
         // movement-inversion toggle (InvertDir). Soft-limit blocking is honoured like the
@@ -212,5 +212,7 @@ namespace NanotecController
             CommandAxisVelocity(AxisId.X, 0, honorSoftLimit: true);
             CommandAxisVelocity(AxisId.Y, 0, honorSoftLimit: true);
         }
+
+        #endregion
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Globalization;
 using System.Threading.Tasks;
@@ -6,15 +6,10 @@ using System.Windows.Forms;
 
 namespace NanotecController
 {
-    /// <summary>
-    /// Separate window for reading and writing drive parameters. Pure UI: all drive access,
-    /// timer coordination, and the single NanoLib channel live in <see cref="FrmMain"/> — this
-    /// form only calls FrmMain's params actions and shows their output in its own log.
-    ///
-    /// "Read Params" is the read-only sweep (writes nothing). "Write" sets any OD index:sub on
-    /// a chosen drive in RAM; "Save to NV" persists the drive's current values across a
-    /// power-cycle (object 0x1010:01). Writing arbitrary objects is an expert action — both
-    /// write paths confirm first.
+    /// <summary>Window for reading and writing drive parameters. Pure UI — all drive access and the
+    /// single NanoLib channel live in <see cref="FrmMain"/>. "Read Params" writes nothing; "Write"
+    /// sets any OD index:sub in RAM; "Save to NV" persists the drive's current values (0x1010:01).
+    /// Writing arbitrary objects is an expert action, so both write paths confirm first.
     /// </summary>
     public sealed class FrmParams : Form
     {

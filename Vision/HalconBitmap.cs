@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using HalconDotNet;
@@ -6,32 +6,25 @@ using HalconDotNet;
 namespace NanotecController
 {
     /// <summary>
-    /// Converts a HALCON image (HObject) to a System.Drawing.Bitmap so it can be shown in a
-    /// plain WinForms PictureBox.
-    ///
-    /// Why not HWindowControl: only the .NET-Framework HALCON builds (dotnet20/dotnet35) are
-    /// installed, and their HWindowControl derives from the Framework's System.Windows.Forms
-    /// — not loadable in this .NET 10 WinForms app. The headless HObject/HOperatorSet types
-    /// load fine, so we render through a Bitmap instead.
+    /// Converts a HALCON HObject to a System.Drawing.Bitmap for a plain WinForms PictureBox.
+    /// HWindowControl is not usable here: only the .NET-Framework HALCON builds are installed and
+    /// their HWindowControl derives from the Framework's System.Windows.Forms, which this .NET 10 app
+    /// cannot load. The headless HObject/HOperatorSet types load fine.
     /// </summary>
     public static class HalconBitmap
     {
         /// <summary>Converts the image to an 8-bit Bitmap (grayscale or 24-bit colour), full size.</summary>
         public static Bitmap ToBitmap(HObject image) => ToBitmap(image, 0, 0);
 
-        /// <summary>
-        /// Converts to an 8-bit Bitmap, first shrinking (in HALCON) to fit within
-        /// <paramref name="maxWidth"/>×<paramref name="maxHeight"/> if larger. Downscaling
-        /// natively before the managed pixel copy is the cheapest big win for live view on a
-        /// large sensor. Pass 0,0 to keep full resolution. With <paramref name="enhanceMono"/>
-        /// the (downscaled) frame is collapsed to grey and contrast-stretched to full range.
+        /// <summary>Converts to an 8-bit Bitmap, first shrinking in HALCON to fit within
+        /// <paramref name="maxWidth"/>×<paramref name="maxHeight"/>. Downscaling natively before the
+        /// managed pixel copy is the cheapest big win for live view on a large sensor. Pass 0,0 to keep
+        /// full resolution. <paramref name="enhanceMono"/> collapses to grey and contrast-stretches.
         /// </summary>
         public static Bitmap ToBitmap(HObject image, int maxWidth, int maxHeight, bool enhanceMono = false)
         {
-            // Downscale the NATIVE frame FIRST, then convert to 8-bit — so the type conversion and
-            // the managed pixel copy run on the small image, not the full sensor frame. Only the
-            // shrink touches full resolution. (Doing the convert first wasted CPU on every pixel
-            // the downscale was about to throw away — the live view's main per-frame cost.)
+            // Downscale the NATIVE frame FIRST: the type conversion and managed pixel copy then run
+            // on the small image, and only the shrink touches full resolution.
             HObject? scaled = null;
             HObject? img8 = null;
             HObject? grey = null;
@@ -87,8 +80,8 @@ namespace NanotecController
                 ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
             try
             {
-                // HALCON rows are contiguous (width bytes); the Bitmap stride is padded. Copy each
-                // row straight across rather than bouncing through a managed staging buffer.
+                // HALCON rows are contiguous; the Bitmap stride is padded. Copy row by row rather
+                // than bouncing through a managed staging buffer.
                 byte* src = (byte*)ptr.IP;
                 for (int y = 0; y < height; y++)
                     Buffer.MemoryCopy(src + (long)y * width, (byte*)bd.Scan0 + (long)y * bd.Stride,

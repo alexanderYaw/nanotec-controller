@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading.Tasks;
@@ -7,58 +7,55 @@ using System.Windows.Forms;
 namespace NanotecController
 {
     /// <summary>
-    /// Multi-axis motion GUI for the inspection table (X, Y, Z, Θ). Connects to all
-    /// four EtherCAT drives, enables/disables them, and offers two manual-control
-    /// inputs that both drive the shared <see cref="MultiAxisController"/>:
-    ///   • per-axis hold-to-jog buttons (individual control), and
-    ///   • a digital joystick (hold the deadman to move).
+    /// Multi-axis motion GUI for the inspection table (X, Y, Z, Θ). Connects to all four EtherCAT
+    /// drives, enables/disables them, and offers the manual-control inputs, all of which drive the
+    /// shared <see cref="MultiAxisController"/>.
     ///
-    /// Safety model: connecting performs NO motion; drives must be Enabled first.
-    /// All jogging is momentary — releasing a button, releasing the joystick deadman,
-    /// losing the joystick, or losing window focus halts motion immediately.
+    /// Safety model: connecting performs NO motion — drives must be Enabled first — and all jogging
+    /// is momentary, so releasing a button, losing the joystick, or losing window focus halts motion
+    /// immediately.
     ///
     /// Layout lives in FrmMain.Designer.cs; the four axis rows are built in code from
-    /// <see cref="TableAxes.Default"/> since they're identical and data-driven. The
-    /// behaviour is split across partial files by concern:
+    /// <see cref="TableAxes.Default"/>, being identical and data-driven. Behaviour is split across
+    /// partial files by concern:
     ///   • FrmMain.Connection.cs  — connect/disconnect, enable/disable
     ///   • FrmMain.Jog.cs         — per-axis jog buttons, status poll, soft-limit guard
     ///   • FrmMain.Input.cs       — USB + on-screen joystick input mapping
     ///   • FrmMain.Calibration.cs — Home All, Move To, limit capture/find, Go Home, Position Map
-    ///                              feed; also owns the calibration store and the home/find speeds
-    ///   • FrmMain.Params.cs      — drive-parameter read/write/save-to-NV (the FrmParams window's host)
-    ///   • FrmMain.Rotation.cs    — rotate-about-crosshair (Θ + X/Y follow loop) and the handedness sign
+    ///   • FrmMain.Params.cs      — drive-parameter read/write/save-to-NV
+    ///   • FrmMain.Rotation.cs    — rotate-about-crosshair and the handedness sign
     ///   • FrmMain.Vision.cs      — opens FrmVision; the drift-corrected vision-jog entry points
     /// This file holds shared state, the ctor, UI scaffolding, and lifecycle.
     /// </summary>
     public partial class FrmMain : Form, IMotionHost
     {
+        #region Shared state
+
         private readonly MultiAxisConnection _connection = new();
         private readonly IProgress<string> _log;
 
         private MultiAxisController? _motion;
-        // All drive reads run here, off the UI thread; created on connect, disposed on disconnect.
+
+        /// <summary>All drive reads run here, off the UI thread; created on connect, disposed on
+        /// disconnect.</summary>
         private DrivePoller? _poller;
+
         private bool _drivesEnabled;
         private bool _busy;
         private int _statusFailures;
 
         private const int EXPECTED_AXES = 4;
 
-        // A software (Npcap) EtherCAT master is not real-time; tolerate a few
-        // consecutive failed status reads before declaring the link lost.
+        /// <summary>A software (Npcap) EtherCAT master is not real-time, so tolerate a few
+        /// consecutive failed status reads before declaring the link lost.</summary>
         private const int MAX_CONSECUTIVE_READ_FAILURES = 5;
 
-        // The joystick "fast" button multiplier (capped at each axis's slider max).
+        /// <summary>The joystick "fast" button multiplier, capped at each axis's slider max.</summary>
         private const int FAST_FACTOR = 3;
 
-        // The limit-find/home speeds, their poll and timeout ceilings, and the calibration
-        // store itself all live in FrmMain.Calibration.cs with the code that uses them.
-
-        // Soft-limit jog guard (polarity-agnostic, COMMAND space): tracks the last polled
-        // position, parked-at-limit axes, the commanded direction, and the direction refused
-        // after tripping a limit — critical for Z, which has no hardware switch at either end,
-        // and for X, whose switches the drive ignores (0x3701 = -1). Logic lives in
-        // SoftLimitTracker; FrmMain does the Stop + log.
+        /// <summary>Soft-limit jog guard. Critical for Z, which has no hardware switch at either end,
+        /// and for X, whose switches the drive ignores. Logic lives in <see cref="SoftLimitTracker"/>;
+        /// FrmMain does the Stop and the log.</summary>
         private readonly SoftLimitTracker _softLimits = new();
 
         private sealed record AxisRow(Button Neg, Button Pos, Label Status, TrackBar Speed, Label SpeedValue);
@@ -88,8 +85,9 @@ namespace NanotecController
             if (calibWarning != null) AppendLog("WARN: " + calibWarning);
         }
 
-        // --- UI scaffolding (the data-driven controls built in code) --------------
+        #endregion
 
+        #region UI scaffolding (the data-driven controls built in code)
         /// <summary>
         /// Creates the per-axis jog rows: name + speed slider (+ live value) + hold-to-move
         /// −/+ buttons (direction only) + status. The slider is that axis's jog speed, used
@@ -97,7 +95,7 @@ namespace NanotecController
         /// </summary>
         private void BuildAxisRows()
         {
-            // ---- Direction d-pad (top of the panel) ------------------------------
+            // Direction d-pad (top of the panel)
             // X = ◀/▶, Y = ▲/▼, Z = ▲/▼ (right of the XY cross), Θ = ↺/↻.
             // Each is hold-to-jog. The sign handed to StartJog keeps the existing
             // per-axis convention (JogAt applies Z's InvertDirection internally), so
@@ -207,7 +205,7 @@ namespace NanotecController
                 BorderStyle = BorderStyle.Fixed3D,
             });
 
-            // ---- Per-axis speed slider + live position readout -------------------
+            // Per-axis speed slider + live position readout
             int rowY = 156;
             foreach (AxisConfig cfg in TableAxes.Default)
             {
@@ -252,8 +250,9 @@ namespace NanotecController
             PaintModeButtons();   // start in RAW; highlight the active mode
         }
 
-        // --- Shared op / timer helpers --------------------------------------------
+        #endregion
 
+        #region Shared op / timer helpers
         /// <summary>Runs a drive op off the UI thread with polling paused.</summary>
         private async Task<bool> RunDriveOp(Action op)
         {
@@ -441,8 +440,9 @@ namespace NanotecController
             leftPanel.Controls.Add(_stopButton);
         }
 
-        // --- Window lifecycle / focus safety --------------------------------------
+        #endregion
 
+        #region Window lifecycle / focus safety
         /// <summary>
         /// Safety: focus loss halts all motion AND pauses the joystick poll. Stopping the poll
         /// is essential — it keeps ticking while unfocused, so without this the next tick
@@ -499,8 +499,9 @@ namespace NanotecController
             _lastCapture?.Dispose();
         }
 
-        // --- Shared UI state ------------------------------------------------------
+        #endregion
 
+        #region Shared UI state
         private void SetState(bool connected, bool busy, string status)
         {
             _busy = busy;
@@ -564,7 +565,9 @@ namespace NanotecController
             RefreshRelativeMove();
         }
 
-        // --- Log: capped ring buffer + status strip + on-demand FrmLog ------------
+        #endregion
+
+        #region Log: capped ring buffer + status strip + on-demand FrmLog
         // The log box is gone; the strip shows only the latest line. The full history lives in a
         // bounded ring (so a long session can't grow unbounded) and is mirrored live to an open
         // FrmLog. AppendLog is only ever called on the UI thread (drive ops marshal through
@@ -606,5 +609,7 @@ namespace NanotecController
             _logWindow.Show();
             _logWindow.BringToFront();
         }
+
+        #endregion
     }
 }

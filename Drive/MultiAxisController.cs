@@ -4,30 +4,25 @@ using System.Collections.Generic;
 namespace NanotecController
 {
     /// <summary>
-    /// The shared motion API for the inspection table. One per-axis controller is
-    /// built over each connected drive (mapped by <see cref="AxisConfig.BusPosition"/>),
-    /// and every consumer — the joystick, the GUI buttons, and later the automation
-    /// sequencer — drives the table through THIS class, never the drives directly.
-    ///
-    /// Threading: NanoLib is single-channel per device, so every method takes the channel
-    /// lock. That is what lets <see cref="DrivePoller"/> read on its own thread while the UI
-    /// thread commands. Re-entrant, so the multi-step ops nest on one thread.
+    /// The shared motion API for the inspection table: every consumer drives the table through THIS
+    /// class, never a drive directly. NanoLib is single-channel per device, so every method takes the
+    /// channel lock — that is what lets <see cref="DrivePoller"/> read on its own thread while the UI
+    /// thread commands. Re-entrant, so multi-step ops nest on one thread.
     /// </summary>
     public sealed class MultiAxisController
     {
+        #region Construction
+
         private readonly Dictionary<AxisId, AxisDriver> _axes = new();
         private readonly object _channel = new();
 
-        // Axes currently running a profile-velocity jog. Tracked here — the only place that changes
-        // drive state — so it cannot drift; a stale entry would silently swallow a jog (see
-        // SetJogVelocity, which skips the halt-clearing controlword when the axis is already armed).
+        /// <summary>Axes currently armed for a profile-velocity jog. Tracked here, the only place that
+        /// changes drive state, so it cannot drift — a stale entry would silently swallow a jog.</summary>
         private readonly HashSet<AxisId> _jogArmed = new();
 
-        /// <summary>
-        /// Builds a controller per axis from the connection's handles.
-        /// Throws if a config points at a bus position that wasn't connected, so a
-        /// mis-count is caught here rather than as a null move later.
-        /// </summary>
+        /// <summary>Builds a controller per axis from the connection's handles. Throws if a config
+        /// points at an unconnected bus position, so a mis-count is caught here rather than as a
+        /// null move later.</summary>
         public MultiAxisController(MultiAxisConnection connection, IReadOnlyList<AxisConfig> configs)
         {
             if (connection.Accessor == null || !connection.IsConnected)
@@ -49,18 +44,17 @@ namespace NanotecController
 
         public bool Has(AxisId id) => _axes.ContainsKey(id);
 
-        /// <summary>
-        /// Looks up one axis. Throws <see cref="DriveException"/> — not KeyNotFoundException — for an
-        /// axis that isn't in the config, so a mapping slip surfaces through the same
-        /// <c>catch (DriveException)</c> every caller already has instead of escaping as an unhandled
-        /// crash. Private: reaching an AxisDriver from outside would bypass the channel lock.
-        /// </summary>
+        /// <summary>Looks up one axis, throwing <see cref="DriveException"/> rather than
+        /// KeyNotFoundException so a mapping slip surfaces through the <c>catch (DriveException)</c>
+        /// every caller already has. Private: an AxisDriver reached from outside would bypass the lock.</summary>
         private AxisDriver Axis(AxisId id)
             => _axes.TryGetValue(id, out AxisDriver? a)
                 ? a
                 : throw new DriveException($"Axis {id} is not connected (not in the axis map).");
 
-        // --- Enable / disable -----------------------------------------------------
+        #endregion
+
+        #region Enable and disable
 
         /// <summary>Enables every axis (walks each through the CiA 402 state machine).</summary>
         public void EnableAll()
@@ -94,13 +88,9 @@ namespace NanotecController
             }
         }
 
-        /// <summary>
-        /// If the axis is held in Quick-Stop-Active (e.g. after a limit hit), clears it by
-        /// re-enabling so a following move can take effect, and returns true. No-op (returns
-        /// false) when the axis is healthy, so a holding axis (e.g. Z under gravity) is NOT
-        /// briefly de-energised unnecessarily. Call this before commanding a move/jog that
-        /// must run even after a limit stop.
-        /// </summary>
+        /// <summary>Clears Quick-Stop-Active by re-enabling, returning true. No-op when the axis is
+        /// healthy, so a holding axis (Z under gravity) is never needlessly de-energised. Call before
+        /// a move that must run even after a limit stop.</summary>
         public bool RecoverIfQuickStopped(AxisId id)
         {
             lock (_channel)
@@ -113,13 +103,12 @@ namespace NanotecController
             }
         }
 
-        // --- Jog (joystick / manual) ----------------------------------------------
+        #endregion
 
-        /// <summary>
-        /// Jogs one axis at an explicit speed (drive velocity units), applying the
-        /// axis's InvertDirection. Direction is -1/0/+1; 0 stops. Used by the GUI jog
-        /// buttons, where the speed comes from a UI control rather than the config.
-        /// </summary>
+        #region Jog
+
+        /// <summary>Jogs one axis at an explicit speed (drive velocity units), applying the axis's
+        /// InvertDirection. Direction -1/0/+1; 0 stops.</summary>
         public void JogAt(AxisId id, int direction, int speed)
         {
             lock (_channel)
@@ -132,12 +121,9 @@ namespace NanotecController
             }
         }
 
-        /// <summary>
-        /// Commands a jog velocity: three SDO writes the first time (mode + target + controlword),
-        /// ONE thereafter while the axis stays armed. The velocity-vector inputs (analog joystick,
-        /// on-screen puck, vision jog) re-command on every change, so on the UI thread this is the
-        /// difference between three writes per update and one. Direction 0 stops (and disarms).
-        /// </summary>
+        /// <summary>Commands a jog velocity: three SDO writes the first time, ONE thereafter while the
+        /// axis stays armed. The velocity-vector inputs re-command on every change, so this is the
+        /// difference between three writes per update and one. Direction 0 stops and disarms.</summary>
         public void SetJogVelocity(AxisId id, int direction, int speed)
         {
             lock (_channel)
@@ -148,13 +134,9 @@ namespace NanotecController
             }
         }
 
-        /// <summary>
-        /// Velocity-only update to an already-running jog (one SDO write; no mode/controlword
-        /// traffic, and 0 holds at zero velocity WITHOUT the halt bit — see
-        /// <see cref="AxisDriver.UpdateJogVelocity"/>). Applies InvertDirection exactly like
-        /// <see cref="JogAt"/>; direction 0 commands zero velocity. Arm the axis with
-        /// <see cref="JogAt"/> first.
-        /// </summary>
+        /// <summary>Velocity-only update to an already-running jog — one SDO write, and 0 holds at zero
+        /// velocity WITHOUT the halt bit. Applies InvertDirection like <see cref="JogAt"/>, which must
+        /// have armed the axis first.</summary>
         public void UpdateJogVelocity(AxisId id, int direction, int speed)
         {
             lock (_channel)
@@ -196,15 +178,17 @@ namespace NanotecController
             }
         }
 
-        // --- Positioning (Profile Position) ---------------------------------------
+        #endregion
 
-        // Both leave the drive in Profile Position, so any velocity jog is over (see _jogArmed).
+        #region Positioning
 
+        /// <summary>Leaves the drive in Profile Position, so any velocity jog is over.</summary>
         public void MoveAbsolute(AxisId id, long targetPosition, int profileVelocity)
         {
             lock (_channel) { Axis(id).MoveAbsolute(targetPosition, profileVelocity); _jogArmed.Remove(id); }
         }
 
+        /// <summary>Leaves the drive in Profile Position, so any velocity jog is over.</summary>
         public void MoveRelative(AxisId id, long deltaPosition, int profileVelocity)
         {
             lock (_channel) { Axis(id).MoveRelative(deltaPosition, profileVelocity); _jogArmed.Remove(id); }
@@ -215,7 +199,9 @@ namespace NanotecController
             lock (_channel) return Axis(id).WaitForMotionComplete(timeoutMs, cancel);
         }
 
-        // --- Status ----------------------------------------------------------------
+        #endregion
+
+        #region Status
 
         public AxisDriver.AxisStatus GetStatus(AxisId id)
         {
@@ -246,7 +232,9 @@ namespace NanotecController
             lock (_channel) return Axis(id).ReadAnalogInput1();
         }
 
-        // --- Expert: arbitrary object write + NV save (the "Write Object" console) -----
+        #endregion
+
+        #region Expert object access
 
         /// <summary>Writes an arbitrary OD entry on one axis. Expert/manual use only.</summary>
         public void WriteObject(AxisId id, ushort index, byte subIndex, long value, uint bitLength)
@@ -265,5 +253,7 @@ namespace NanotecController
         {
             lock (_channel) Axis(id).SaveParametersToNV();
         }
+
+        #endregion
     }
 }

@@ -1,71 +1,56 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using HalconDotNet;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Locates the centre of the SOLID-DISK calibration fiducial in one frame, returning a
-    /// sub-pixel centre in image pixels. The disk reads distinctly brighter than a uniform
-    /// background, with bright diagonal scribe lines nearby that may or may not cross it.
-    /// Deliberately not tuned to one lighting/camera setup: the two captures on record differ
-    /// completely — the colour acA5472 saw a red-lit scene with the line cutting the disk and a
-    /// large bright blob in one corner (Desktop/images/solid_circle_fiducial.png), the mono
-    /// acA4024 sees a dark field with the lines clear of the disk
-    /// (Desktop/images/capture_20260730_162849_830.bmp) — and this pipeline handles both.
+    /// Locates the centre of the SOLID-DISK calibration fiducial, sub-pixel, in image pixels. This is
+    /// the 2D-localisable feature the pixel→step affine is calibrated against — the wafer edge cannot
+    /// serve, a smooth arc only revealing motion along its normal (the aperture problem).
     ///
-    /// Separate from <see cref="WaferEdgeDetector"/>: this is the 2D-localisable feature used to
-    /// calibrate the pixel→step affine. The disk gives a robust, rotation-free 2D point (the
-    /// wafer edge can't — a smooth arc only reveals motion along its normal, the aperture
-    /// problem). Method: segment the bright structures → CLOSE (bridge the rim notch where a
-    /// scribe line cuts the disk, absorb dark internal streaks) → FILL (close enclosed holes) →
-    /// OPEN with a disk larger than half the scribe-line width (severs/erases the thin lines),
-    /// leaving a near-perfect solid circle. The disk's centroid averages over thousands of
-    /// pixels, so it's sub-pixel and robust to speckle/specular texture.
+    /// Method: segment bright structures → CLOSE (bridge the notch where a scribe line cuts the rim)
+    /// → FILL → OPEN with a disk larger than half the scribe-line width, leaving a near-perfect solid
+    /// circle whose centroid averages over thousands of pixels. The fiducial is the ROUNDEST
+    /// surviving blob, not the biggest: a clipped corner blob can be larger but is elongated.
     ///
-    /// The fiducial is the ROUNDEST surviving blob, not the biggest: a clipped corner blob can
-    /// be larger but is elongated, so it loses on circularity. Thresholds are exposed for tuning
-    /// against live frames. Pass the FULL-RESOLUTION frame; the input is never modified.
+    /// Deliberately not tuned to one lighting/camera setup — the two captures on record differ
+    /// completely and this pipeline handles both. Pass the FULL-RESOLUTION frame; the input is never
+    /// modified.
     /// </summary>
     public sealed class SolidCircleDetector
     {
-        // These are in PIXELS, so they assume a disk far larger than the structures being
-        // removed; both captures on record satisfy that comfortably (disk r = 402 px mono,
-        // 310 px colour). A heavy zoom-out would need them revisited.
-        // ClosingRadius : bridge the notch where a scribe line cuts the rim; >= the widest gap.
-        // OpenRadius    : sized to SEVER a line where it crosses the disk, staying well below the
-        //                 disk radius. It need not erase a line outright — one that survives whole
-        //                 is elongated, so MinCircularity drops it anyway (that is what happens on
-        //                 the mono frames, where the ~65 px lines outlive a radius-20 opening).
-        // MinCircularity: rejects those surviving lines and any non-round blob.
+        #region Tunables
+
+        // In PIXELS, so they assume a disk far larger than the structures being removed. A heavy
+        // zoom-out would need them revisited.
+
+        /// <summary>Bridges the notch where a scribe line cuts the rim; >= the widest gap.</summary>
         public double ClosingRadius { get; set; } = 25;
+
+        /// <summary>Sized to SEVER a line crossing the disk, well below the disk radius. It need not
+        /// erase a line outright — a survivor is elongated, so MinCircularity drops it.</summary>
         public double OpenRadius { get; set; } = 20;
         public double MinCircularity { get; set; } = 0.85;   // 1 = perfect circle
         public double MinArea { get; set; } = 5000;          // ignore specks / thin lines
         public double MaxArea { get; set; } = 1e9;
-        /// <summary>
-        /// Forces one specific gray cut. Null (the default) picks the cut per frame — see
-        /// <see cref="Candidates"/> — which is what makes this survive a change of camera or
-        /// lighting. A fixed cut encodes one camera's exposure and nothing warns you when that
-        /// stops being true: the previous hard-coded 200 was measured off the colour acA5472
-        /// (red channel, background ~183, disk 219-250) and silently segmented FOUR pixels of a
-        /// mono acA4024 frame, whose background sits at ~53 and disk at ~120. Set this only to
-        /// pin down a frame while tuning.
-        /// </summary>
+        /// <summary>Forces one specific gray cut. Null (the default) picks the cut per frame, which is
+        /// what makes this survive a change of camera or lighting — a fixed cut encodes one camera's
+        /// exposure and gives no warning when that stops being true. Set only while tuning.</summary>
         public double? BrightThreshold { get; set; }
 
         /// <summary>The gray cut that produced the last successful detection, or NaN if the last
         /// <see cref="TryDetect"/> found nothing. Worth logging when a detection looks wrong.</summary>
         public double LastThreshold { get; private set; } = double.NaN;
 
-        /// <summary>
-        /// Why the last <see cref="TryDetect"/> returned false; null after a success. A bare
-        /// "not found" is what made the mono-camera failure so slow to diagnose — the detector
-        /// knew it had segmented four pixels and said nothing. This reports how close the best
-        /// candidate cut got, which distinguishes "segmented nothing" (threshold wrong) from
-        /// "found a blob but it wasn't round/big enough" (gates or optics wrong).
-        /// </summary>
+        /// <summary>Why the last <see cref="TryDetect"/> returned false; null after a success. Reports
+        /// how close the best candidate cut got, distinguishing "segmented nothing" (threshold wrong)
+        /// from "found a blob but it wasn't round/big enough" (gates or optics wrong).</summary>
         public string? LastFailure { get; private set; }
+
+        #endregion
+
+        #region Detection
 
         /// <summary>Fiducial centre + nominal radius, in image pixels (HALCON row/column).</summary>
         public readonly record struct Mark(double Row, double Column, double Radius);
@@ -142,17 +127,15 @@ namespace NanotecController
             }
         }
 
-        // The gray cuts to try, in no particular order (the caller scores them all). A manual
-        // BrightThreshold short-circuits to exactly that value.
-        //
-        // Why a ladder and not one clever statistic: measured against every capture on record,
-        // each frame accepts a BAND of cuts 11-15 wide, but no single statistic lands inside all
-        // of them. Otsu nails the mono frames (85, band 60-130) and the clean colour frame (211,
-        // band 195-245), yet reads 130 on the colour frames that contain a dark strip — it finds
-        // the valley between that strip and everything else, well below their 190-245 band. The
-        // 99th percentile covers the mono frames but overshoots the colour ones (251-255); the
-        // 95th only scrapes the band edges. Together they cover every frame at least twice over.
-        // A pass costs 1-17 ms and this runs once per Add Sample click, so the sweep is free.
+        #endregion
+
+        #region Threshold ladder
+
+        /// <summary>The gray cuts to try, in no particular order — the caller scores them all. A ladder
+        /// rather than one clever statistic because no single statistic lands inside every frame's
+        /// acceptable band: Otsu nails the mono frames but reads far low on colour frames containing a
+        /// dark strip, and the percentiles overshoot elsewhere. Together they cover every capture on
+        /// record at least twice over, and a pass costs 1-17 ms.</summary>
         private IEnumerable<double> Candidates(HObject gray)
         {
             if (BrightThreshold is double manual) { yield return manual; yield break; }
@@ -255,10 +238,13 @@ namespace NanotecController
             }
         }
 
-        // Independent single-channel byte image. A MONO camera (the current acA4024) passes
-        // straight through. For a COLOUR frame take the RED channel rather than a luminance
-        // gray: the markers were red-lit under the previous acA5472, and luminance weights red
-        // only ~0.3, throwing away most of the contrast. Input frame is never modified.
+        #endregion
+
+        #region Helpers
+
+        /// <summary>Independent single-channel byte image. Mono passes straight through; a colour frame
+        /// yields its RED channel rather than a luminance gray, the markers being red-lit and luminance
+        /// weighting red only ~0.3. The input frame is never modified.</summary>
         private static HObject Preprocess(HObject image)
         {
             HOperatorSet.CountChannels(image, out HTuple channels);
@@ -271,5 +257,7 @@ namespace NanotecController
             HOperatorSet.ConvertImageType(image, out HObject byteImg, "byte");
             return byteImg;
         }
+
+        #endregion
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading.Tasks;
@@ -6,25 +6,20 @@ using System.Windows.Forms;
 
 namespace NanotecController
 {
-    // FrmMain — owns all calibration motion and persistence (the FrmCalibration window is
-    // pure UI that calls these internal methods): Home All, Move To, Set Min/Max/Home
-    // capture, Go Home, and the unified X+Y auto limit-find. FrmMain is the single owner
-    // because NanoLib is single-channel and access must be serialized. (Partial of FrmMain.)
-    //
-    // Self-contained: the calibration store, the fixed home/find speeds and the poll/timeout
-    // ceilings are all declared at the top of this file, not in FrmMain.cs.
+    /// <summary>
+    /// FrmMain — owns all calibration motion and persistence: Home All, Move To, Set Min/Max/Home
+    /// capture, Go Home, and the unified X+Y auto limit-find. The FrmCalibration window is pure UI
+    /// calling these internal methods; FrmMain is the single owner because NanoLib is single-channel.
+    /// Self-contained — the store, speeds and ceilings are all declared here, not in FrmMain.cs.
+    /// </summary>
     public partial class FrmMain
     {
-        // --- Tuning constants -----------------------------------------------------
-        // Everything the calibration motion is tuned by lives here rather than in FrmMain.cs,
-        // so a speed or ceiling can be changed without leaving the file that uses it.
+        #region Tuning constants
 
-        // Speed for the automatic limit-find (X, Y), in drive velocity units. Kept low so the
-        // approach into the switch is gentle; the edge POSITION is captured the moment the bit
-        // sets, so physical overshoot doesn't bias the stored limit, and it cancels in the
-        // centre calc anyway. It still matters mechanically on X, which (0x3701 = -1) does not
-        // quick-stop itself and has a gentler decel ramp than Y, so it coasts further past the
-        // switch before this loop's Stop takes effect.
+        /// <summary>Speed for the automatic limit-find (X, Y). Kept low so the approach into the
+        /// switch is gentle. The edge POSITION is captured the moment the bit sets, so overshoot does
+        /// not bias the stored limit — but it still matters mechanically on X, which does not
+        /// quick-stop itself and coasts further past the switch than Y.</summary>
         private const int FIND_LIMIT_SPEED = 5000;
         // Limit-find polling + ceilings.
         private const int FIND_POLL_MS = 15;
@@ -55,7 +50,9 @@ namespace NanotecController
         // Assigned in the FrmMain ctor, which can log a load failure.
         private readonly CalibrationStore _calib;
 
-        // --- Calibration (chooser → two separate windows) -------------------------
+        #endregion
+
+        #region Calibration (chooser → two separate windows)
         // The button now offers a choice: the axis travel-limits/home window, or the vision
         // camera-scale + centre-find window (which is fed the main-screen camera).
 
@@ -125,7 +122,8 @@ namespace NanotecController
                     "2. Automatic chuck centre-find: probes the chuck edge in 8 directions and leaves " +
                     "the stage sitting on the fitted centre.\r\n\r\n" +
                     "Step 2 asks for its own confirmation before it moves, and needs the camera " +
-                    "streaming, the camera-scale calibration done, and Z focused on the chuck edge.\r\n\r\n" +
+                    "streaming, the camera-scale calibration done, and the chuck centre inner surface " +
+                    "in focus.\r\n\r\n" +
                     "Confirm the X/Y path is clear, then proceed?",
                     "Home & centre chuck", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
@@ -146,7 +144,9 @@ namespace NanotecController
 
         private async void homeAllButton_Click(object? sender, EventArgs e) => await HomeAllAsync();
 
-        // --- Position Map (separate window: XY grid + numeric X/Y/Z + Go) ----------
+        #endregion
+
+        #region Position Map (separate window: XY grid + numeric X/Y/Z + Go)
         // The window (FrmPosition) is pure UI; it reads the position/limits FrmMain exposes
         // in the USER frame and executes through the existing MoveToAsync. The FrmMain side
         // lives here (alongside MoveToAsync and the calibration store it shares).
@@ -180,7 +180,7 @@ namespace NanotecController
             _posWindow.BringToFront();
         }
 
-        // User frame ↔ raw drive frame. Y reads/enters inverted (user +Y = raw −Y) so the on-screen
+        // User frame ↔ raw drive frame: Y reads and enters inverted (user +Y = raw −Y) so the on-screen
         // position is intuitive; every other axis is identity. SINGLE SOURCE of the Y-sign convention.
         // The one deliberate exception is the vision-jog Y command (FrmMain.Vision.cs), whose sign is
         // empirical. Both directions are the same negation (an involution); the two names document, at
@@ -573,7 +573,7 @@ namespace NanotecController
             if (_stopRequested) { _motion!.Stop(id); throw new OperationCanceledException("Limit-find stopped by operator."); }
         }
 
-        // Background worker: steps every axis's find sequence round-robin on THIS one thread.
+        // Steps every axis's find sequence round-robin on THIS one thread.
         // Each step issues its bus traffic and then yields, so the axes take turns on the single
         // NanoLib channel while their motors run at the same time; one sleep per round keeps
         // every phase's millisecond budget wall-clock accurate for all of them. An axis that
@@ -728,5 +728,7 @@ namespace NanotecController
             try { _calib.Save(); }
             catch (Exception ex) { AppendLog($"WARN: calibration save failed: {ex.Message}"); }
         }
+
+        #endregion
     }
 }

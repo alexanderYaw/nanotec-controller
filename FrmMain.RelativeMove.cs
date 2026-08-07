@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading.Tasks;
@@ -6,17 +6,16 @@ using System.Windows.Forms;
 
 namespace NanotecController
 {
-    // FrmMain — physical-unit RELATIVE moves (mm for X/Y/Z, degrees for Θ) plus one-touch
-    // "go to stored centre" shortcuts. Built in code into a group under the jog cluster (house
-    // style). Mode-aware, mirroring the jog cluster:
-    //   • RAW  X/Y/Z → Δsteps = round(mm × StepsPerMm); target = current + Δ, via MoveToAsync
-    //                  (which bounds-checks and handles the Y user↔raw flip).
-    //   • RAW  Θ     → MoveThetaByDegreesAsync (Profile-Position to current + DegreesToChuckTicks).
-    //   • VISION X/Y → the mm is along the SCREEN axis; mapped to a stage (ΔX,ΔY) through the
-    //                  pixel→step affine and the per-axis steps/mm (so it tracks the crosshair
-    //                  regardless of camera rotation). Z stays raw in VISION too.
-    //   • VISION Θ   → RotateAboutCrosshairAsync (pins the crosshair point while Θ turns).
-    // All motion routes through the same serialized drive ops as the rest of FrmMain. (Partial.)
+    /// <summary>
+    /// FrmMain — physical-unit RELATIVE moves (mm for X/Y/Z, degrees for Θ) plus one-touch "go to
+    /// stored centre" shortcuts. Mode-aware, mirroring the jog cluster:
+    ///   • RAW  X/Y/Z → Δsteps = round(mm × StepsPerMm), via MoveToAsync, which bounds-checks and
+    ///                  handles the Y user↔raw flip
+    ///   • RAW  Θ     → MoveThetaByDegreesAsync
+    ///   • VISION X/Y → the mm is along the SCREEN axis, mapped through the pixel→step affine so it
+    ///                  tracks the crosshair regardless of camera rotation. Z stays raw
+    ///   • VISION Θ   → RotateAboutCrosshairAsync, pinning the crosshair point while Θ turns
+    /// </summary>
     public partial class FrmMain
     {
         private static readonly AxisId[] _relAxes = [AxisId.X, AxisId.Y, AxisId.Z, AxisId.Theta];

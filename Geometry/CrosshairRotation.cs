@@ -3,35 +3,21 @@ using System;
 namespace NanotecController
 {
     /// <summary>
-    /// Geometry for rotating the chuck ABOUT the camera crosshair instead of about the
-    /// chuck's own mechanical centre. The Θ axis only ever rotates about the chuck centre
-    /// C; to pivot about the crosshair we add an X/Y shift that makes the chuck centre
-    /// orbit the crosshair by the same angle — which is exactly what keeps the wafer point
-    /// under the crosshair pinned.
-    ///
-    /// All motor coordinates are in the USER frame (the frame C, the affine, and
-    /// TryCurrentUser all use). With the stored pixel→step affine A and the offset of the
-    /// current position from the chuck centre, the new X/Y target for a rotation of θ is:
-    ///
-    ///     S' = C + A·R(φ)·A⁻¹·(S − C),   φ = sign·θ
-    ///
-    /// A⁻¹·(S−C) is where the chuck centre sits relative to the crosshair, in pixels; R(φ)
-    /// orbits it; A maps the result back to steps. <paramref name="sign"/> (±1) is the image
-    /// handedness of a positive Θ move — NOT derivable from the translation-only affine, so
-    /// it is fixed empirically (Stage 2) and passed in here.
+    /// Geometry for rotating the chuck ABOUT the camera crosshair rather than its own mechanical
+    /// centre C. Θ only rotates about C, so pivoting about the crosshair means adding an X/Y shift
+    /// that makes C orbit the crosshair by the same angle: S' = C + A·R(φ)·A⁻¹·(S − C), φ = sign·θ,
+    /// with A the stored pixel→step affine. All motor coordinates are in the USER frame.
+    /// <c>sign</c> (±1) is the image handedness of a positive Θ move — not derivable from a
+    /// translation-only affine, so it is fixed empirically and passed in.
     /// </summary>
     public static class CrosshairRotation
     {
-        /// <summary>
-        /// Absolute USER-frame X/Y target that, paired with rotating Θ by <paramref name="angleRad"/>
-        /// from the start angle, keeps the point under the crosshair fixed. <paramref name="startX"/>/
-        /// <paramref name="startY"/> are the ORIGINAL position the rotation began from (pass S₀ on every
-        /// incremental step so error never accumulates). Returns false if the affine is degenerate.
-        ///
-        /// Uses the camera affine A: ΔS = A·(R(φ)−I)·A⁻¹·(S−C). A carries BOTH the per-axis scale
-        /// AND the camera↔stage orientation, so the correction cross-couples X and Y correctly —
-        /// which a bare steps/mm ratio cannot (it assumes the image axes line up with the stage).
-        /// </summary>
+        #region Crosshair pin geometry
+
+        /// <summary>Absolute USER-frame X/Y target that, paired with rotating Θ by
+        /// <paramref name="angleRad"/>, keeps the point under the crosshair fixed. Pass the ORIGINAL
+        /// S₀ as <paramref name="startX"/>/<paramref name="startY"/> on every incremental step so
+        /// error never accumulates. False if the affine is degenerate.</summary>
         public static bool TryXyTarget(
             PixelStepAffine a,
             long centerX, long centerY,
@@ -63,14 +49,10 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// Derivative of the pin target w.r.t. the (unsigned) rotation angle: d(target)/d(angleRad),
-        /// in STEPS PER RADIAN, for the same geometry as <see cref="TryXyTarget"/>. Because row/col
-        /// (the chuck-centre offset from the crosshair, in pixels) are constant over a rotation, the
-        /// target velocity is exactly A·R'(φ)·[row,col]·sign — no numeric differencing of quantized
-        /// targets. Multiply by d(angleRad)/dt (= 2π/ChuckTicksPerRev · Θ-rate) to get step-velocity.
-        /// This is the correct, noise-free velocity feedforward. Returns false if the affine is degenerate.
-        /// </summary>
+        /// <summary>Derivative of the pin target w.r.t. the unsigned rotation angle, in STEPS PER
+        /// RADIAN — the noise-free velocity feedforward, since row/col are constant over a rotation
+        /// and no numeric differencing of quantized targets is needed. Multiply by d(angleRad)/dt to
+        /// get step-velocity. False if the affine is degenerate.</summary>
         public static bool TryXyTargetVelocity(
             PixelStepAffine a,
             long centerX, long centerY,
@@ -99,11 +81,12 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// Motor encoder ticks per ONE full CHUCK revolution. The chuck turns through a gear
-        /// reduction, so this is NOT the motor's 40000/rev. Measured over multiple full
-        /// revolutions: 359859 ticks/rev (≈9:1 reduction).
-        /// </summary>
+        #endregion
+
+        #region Chuck angle
+
+        /// <summary>Motor encoder ticks per ONE full CHUCK revolution — NOT the motor's 40000/rev,
+        /// because the chuck turns through a ≈9:1 reduction. Measured over multiple revolutions.</summary>
         public const long ChuckTicksPerRev = 359859;
 
         /// <summary>Motor ticks to rotate the CHUCK by <paramref name="degrees"/> (through the gear),
@@ -111,17 +94,16 @@ namespace NanotecController
         public static long DegreesToChuckTicks(double degrees, long ticksPerRev)
             => (long)Math.Round(degrees / 360.0 * ticksPerRev);
 
-        /// <summary>
-        /// Absolute CHUCK angle in [0, 360) for a raw Θ motor position, folded through the gear
-        /// reduction. The inverse of <see cref="DegreesToChuckTicks"/>, and the ONLY correct way to
-        /// read a chuck angle: dividing by the motor's 40000 ticks/rev instead (as
-        /// <c>AxisDriver</c> once did) wraps nine times per chuck revolution, so an absolute
-        /// "rotate to" computed from it targets the wrong angle.
-        /// </summary>
+        /// <summary>Absolute CHUCK angle in [0, 360) for a raw Θ motor position, folded through the
+        /// gear reduction — the inverse of <see cref="DegreesToChuckTicks"/> and the ONLY correct way
+        /// to read a chuck angle. Dividing by the motor's 40000 ticks/rev wraps nine times per chuck
+        /// revolution, so an absolute "rotate to" computed that way targets the wrong angle.</summary>
         public static double ChuckTicksToDegrees(long ticks, long ticksPerRev)
         {
             double angle = (double)(ticks % ticksPerRev) / ticksPerRev * 360.0;
             return angle < 0 ? angle + 360.0 : angle;
         }
+
+        #endregion
     }
 }

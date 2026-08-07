@@ -3,16 +3,11 @@
 <procedure name="main">
 <interface/>
 <body>
-<c>* Reflective-mark detector</c>
-<c>* dev_display + stop() after each stage.</c>
-<c>* Press Run; it pauses at each stop() - press Run again to advance.</c>
-<c>* ClosingRadius: Upper limit for gap to be bridged (pixels)</c>
-<c>* MinCircularity: Set minimum "roundness" for an area to be considered a circle</c>
+<c>* Reflective-mark detector. Step with Run (F5); it pauses at each stop().</c>
 <l>ClosingRadius := 8</l>
 <l>MinCircularity := 0.5</l>
 <l>MinArea := 2000</l>
 <l>MaxArea := 1e9</l>
-<c>* Load a test frame - loads image from a specified path.</c>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
 <l>read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/Halcon/ImageDirectory/capture_20260618_151318_560.png')</l>
@@ -23,7 +18,7 @@
 <l>dev_display (Image)</l>
 <l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* Preprocess: red channel as byte (markers are red-lit).</c>
+<c>* Red channel as byte (the markers are red-lit).</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
 <l>    access_channel (Image, Single, 1)</l>
@@ -43,9 +38,8 @@
 <l>dev_display (Bright)</l>
 <l>disp_message (WindowHandle, '2: binary_threshold light (used=' + UsedThreshold + ')', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* Close ring gaps, fill the mark to a disk, take the dark band inside (the gap). The</c>
-<c>* ring's INNER EDGE is that band's outer boundary, so its CONVEX HULL is the solid</c>
-<c>* inner disk - glow-proof (ignores the centre) and clip-tolerant.</c>
+<c>* Close the ring, fill it, take the dark band inside. The ring's inner edge is that band's</c>
+<c>* outer boundary, so its convex hull is the solid inner disk.</c>
 <l>closing_circle (Bright, Closed, ClosingRadius)</l>
 <l>fill_up (Closed, Filled)</l>
 <l>difference (Filled, Closed, Gap)</l>
@@ -62,8 +56,7 @@
 <l>dev_display (Hole)</l>
 <l>disp_message (WindowHandle, '4: convex hull = SOLID inner disk', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* DIAGNOSTIC: inspect the largest inner region BEFORE filtering, so we can see exactly</c>
-<c>* why it is (or isn't) accepted. Read the area + circularity in the message.</c>
+<c>* The largest inner region BEFORE filtering - its area and circularity are in the message.</c>
 <l>connection (Hole, Connected)</l>
 <l>count_obj (Connected, NumParts)</l>
 <l>if (NumParts &lt; 1)</l>

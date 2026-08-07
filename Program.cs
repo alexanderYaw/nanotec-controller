@@ -19,9 +19,8 @@ namespace NanotecController
                 return;
             }
 
-            // Capture any unhandled exception (UI thread or background) to a crash log + dialog,
-            // instead of the process dying silently. Route UI-thread exceptions through
-            // Application.ThreadException so they're catchable here rather than terminating.
+            // CatchException routes UI-thread exceptions through ThreadException so they reach
+            // ReportCrash rather than terminating the process.
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) => ReportCrash("UI thread", e.Exception);
             AppDomain.CurrentDomain.UnhandledException += (s, e) => ReportCrash("background thread", e.ExceptionObject as Exception);
@@ -32,8 +31,8 @@ namespace NanotecController
             Application.Run(new FrmMain());
         }
 
-        // Writes the full exception (message + stack) to Desktop\nanotec_crash.log and shows it,
-        // so a crash becomes a concrete, reportable error rather than a silent exit.
+        /// <summary>Appends the exception to Desktop\nanotec_crash.log and shows it, so a crash is a
+        /// reportable error rather than a silent exit. Logging is best-effort; the dialog always shows.</summary>
         private static void ReportCrash(string where, Exception? ex)
         {
             string detail = ex?.ToString() ?? "(no exception object)";
@@ -44,7 +43,7 @@ namespace NanotecController
                     Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "nanotec_crash.log");
                 File.AppendAllText(path, text);
             }
-            catch { /* logging is best-effort; still show the dialog below */ }
+            catch { }
 
             MessageBox.Show(
                 "An unexpected error occurred (details saved to Desktop\\nanotec_crash.log):\r\n\r\n" + detail,

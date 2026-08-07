@@ -1,18 +1,13 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace NanotecController
 {
-    /// <summary>
-    /// Separate window for defining each linear axis's digital travel limits and Home.
-    /// This is pure UI: all motion, position reads, persistence, and timer coordination
-    /// live in <see cref="FrmMain"/> — NanoLib is single-channel, so one owner must
-    /// serialize access. This form only calls FrmMain's calibration actions and reflects
-    /// the shared <see cref="CalibrationStore"/>. Theta is excluded (the rotary chuck has
-    /// no home); only X, Y, Z appear.
-    /// </summary>
+    /// <summary>Window for defining each linear axis's digital travel limits and Home. Pure UI —
+    /// all motion, persistence and timer coordination live in <see cref="FrmMain"/>, which serializes
+    /// the single NanoLib channel. Θ is excluded; only X, Y, Z appear.</summary>
     public sealed class FrmCalibration : Form
     {
         private static readonly AxisId[] CalibAxes = [AxisId.X, AxisId.Y, AxisId.Z];
@@ -23,8 +18,8 @@ namespace NanotecController
         private sealed record Row(Label Readout, Button SetMin, Button ClearMin, Button SetMax, Button ClearMax, Button? SetHome, Button GoHome, TextBox StepsPerMm);
         private readonly Dictionary<AxisId, Row> _rows = new();
 
-        // The one auto-calibration button: X and Y find their limits together (Z has no
-        // switches, so it stays manual). Not per-axis — the run covers both.
+        /// <summary>The one auto-calibration button — X and Y find their limits together, so it is
+        /// not per-axis. Z has no switches and stays manual.</summary>
         private Button _findXy = null!;
 
         public FrmCalibration(IMotionHost owner)
@@ -35,10 +30,8 @@ namespace NanotecController
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 9F);
 
-            // The hint paragraph wraps, so its height is not a constant — it grows with the text
-            // and with the display scaling. Wrap it at roughly the width the axis rows below need
-            // (they run to ~900px), then start those rows below its MEASURED bottom: a hard-coded
-            // start-y is what let the text run over the X row.
+            // The hint wraps, so rows start below its MEASURED bottom — a hard-coded start-y let
+            // the text run over the X row.
             const int HINT_WRAP_WIDTH = 880;
             var hint = new Label
             {
@@ -54,7 +47,6 @@ namespace NanotecController
             };
             Controls.Add(hint);   // add first: the label takes the form's Font, then measures itself
 
-            // Buttons auto-size to their text so they don't clip at higher display scaling.
             int y = hint.Bottom + 16;
             int maxRight = Math.Max(480, hint.Right);
             foreach (AxisId id in CalibAxes) { maxRight = Math.Max(maxRight, BuildRow(id, y)); y += 84; }
@@ -70,8 +62,7 @@ namespace NanotecController
             saveMm.Click += (s, e) => SaveStepsPerMm();
             Controls.Add(saveMm);
 
-            // Widths come from PreferredSize (not .Right): an AutoSize button has not been
-            // laid out yet, so its Width is still the default until the form paints.
+            // PreferredSize, not .Right: an AutoSize button keeps its default Width until painted.
             int findX = 12 + saveMm.PreferredSize.Width + 12;
             _findXy = new Button
             {
@@ -93,7 +84,7 @@ namespace NanotecController
             UpdateUi();
         }
 
-        // Builds one axis row; returns the x just past its rightmost control (for form sizing).
+        /// <summary>Builds one axis row; returns the x just past its rightmost control.</summary>
         private int BuildRow(AxisId id, int y)
         {
             var name = new Label
@@ -112,9 +103,7 @@ namespace NanotecController
             Controls.Add(name);
             Controls.Add(readout);
 
-            // Action buttons, each auto-sized to its caption. Set Min/Max sit on the top row;
-            // Clear Min/Max sit directly BELOW their respective Set button (a second row). The
-            // remaining single buttons (Set Home / Find / Go Home) stay on the top row.
+            // Set Min/Max on the top row, Clear directly below each; Set Home / Go Home stay on top.
             const int gap = 6;
             int row1 = y + 2;
             int row2 = y + 38;
@@ -134,35 +123,29 @@ namespace NanotecController
                 return b;
             }
 
-            // Min column: Set Min on top, Clear Min below; advance by the wider of the two.
             Button setMin = Make("Set Min", x, row1);
             Button clearMin = Make("Clear Min", x, row2);
             x += Math.Max(setMin.PreferredSize.Width, clearMin.PreferredSize.Width) + gap;
 
-            // Max column: Set Max on top, Clear Max below.
             Button setMax = Make("Set Max", x, row1);
             Button clearMax = Make("Clear Max", x, row2);
             x += Math.Max(setMax.PreferredSize.Width, clearMax.PreferredSize.Width) + gap;
 
-            // Remaining buttons run along the top row only.
             Button AddTop(string text)
             {
                 Button b = Make(text, x, row1);
                 x += b.PreferredSize.Width + gap;
                 return b;
             }
-            // Z defines Home explicitly (no two references to centre). X and Y auto-find theirs
-            // through the single Find X & Y Limits button below, not per row.
+            // Z defines Home explicitly, having no two references to centre.
             Button? setHome = id == AxisId.Z ? AddTop("Set Home") : null;
             Button goHome = AddTop("Go Home");
 
-            // Steps/mm entry (second row, after the Clear buttons). Filled once from the store;
-            // the refresh timer must NOT touch it, or it would overwrite the user mid-typing.
+            // Filled once from the store; the refresh timer must NOT touch it, or it would
+            // overwrite the user mid-typing.
             var mmLabel = new Label { Text = "steps/mm:", Location = new Point(x, row2 + 6), AutoSize = true };
             Controls.Add(mmLabel);   // add first so it takes the form's Font before it is measured
-            // Start the box past the label's MEASURED width: a hard-coded offset cleared the label
-            // at 100% scaling only, and the label (drawn first, so ahead in z-order) covered the
-            // box at higher display scaling.
+            // Past the label's MEASURED width: a hard-coded offset only cleared it at 100% scaling.
             var mmBox = new TextBox { Location = new Point(x + mmLabel.PreferredSize.Width + gap, row2 + 2), Size = new Size(90, 24) };
             mmBox.Text = _owner.Calibration.For(id).StepsPerMm?.ToString("0.####") ?? "";
             Controls.Add(mmBox);
@@ -201,8 +184,8 @@ namespace NanotecController
             _findXy.Enabled = canMove;
         }
 
-        // Parses and persists all three steps/mm entries (empty clears one). All-or-nothing:
-        // a bad entry aborts before anything is stored, so the file never holds a half-edit.
+        /// <summary>Parses and persists all three steps/mm entries (empty clears one). All-or-nothing:
+        /// a bad entry aborts before anything is stored, so the file never holds a half-edit.</summary>
         private void SaveStepsPerMm()
         {
             var parsed = new Dictionary<AxisId, double?>();

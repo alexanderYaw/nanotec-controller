@@ -27,21 +27,22 @@ namespace NanotecController
     }
 
     /// <summary>
-    /// Reads the drives on a dedicated thread and pushes each result to the UI thread, so no
-    /// SDO round-trip ever blocks the message pump. Newest-only: a sample the UI hasn't taken
-    /// yet is superseded rather than queued.
-    ///
-    /// Cadence, per <see cref="TICK_MS"/> tick: analogue inputs every tick while
-    /// <see cref="PollAnalog"/>; positions every <see cref="POSITION_EVERY"/> ticks; statuswords
-    /// every <see cref="STATE_EVERY"/> position polls (display-only, so it doesn't need the
-    /// position's rate). See the Developer Guide, "GUI threading &amp; the drive poller".
+    /// Reads the drives on a dedicated thread and marshals each result to the UI thread, so no SDO
+    /// round-trip blocks the message pump. Newest-only: a sample the UI hasn't taken yet is
+    /// superseded rather than queued. See the Developer Guide, "GUI threading &amp; the drive poller".
     /// </summary>
     public sealed class DrivePoller : IDisposable
     {
+        #region Cadence
+
         private const int TICK_MS = 50;         // analog / joystick rate
         private const int POSITION_EVERY = 4;   // 200 ms — live readout + soft-limit guard
-        private const int STATE_EVERY = 3;      // every 3rd position poll → 600 ms
+        private const int STATE_EVERY = 3;      // every 3rd position poll → 600 ms (display only)
         private const int STOP_TIMEOUT_MS = 2000;
+
+        #endregion
+
+        #region State
 
         private readonly MultiAxisController _motion;
         private readonly Control _marshal;
@@ -61,6 +62,10 @@ namespace NanotecController
         private readonly object _gate = new();
         private DriveSample? _pending;
         private bool _postQueued;
+
+        #endregion
+
+        #region Lifecycle
 
         /// <param name="analogAxes">The drives whose analogue input 1 carries a joystick pot —
         /// only these are read, so the dead channel costs nothing.</param>
@@ -101,6 +106,13 @@ namespace NanotecController
             _task = null;
         }
 
+        #endregion
+
+        #region Poll loop
+
+        /// <summary>Per <see cref="TICK_MS"/> tick: analogue inputs every tick while
+        /// <see cref="PollAnalog"/>, positions every <see cref="POSITION_EVERY"/> ticks, statuswords
+        /// every <see cref="STATE_EVERY"/> position polls.</summary>
         private void Loop(CancellationToken ct)
         {
             var clock = new Stopwatch();
@@ -171,6 +183,12 @@ namespace NanotecController
             };
         }
 
+        #endregion
+
+        #region Marshalling to the UI thread
+
+        /// <summary>Replaces any untaken sample and posts a single delivery, so a slow UI thread
+        /// coalesces rather than accumulating a backlog.</summary>
         private void Publish(DriveSample sample)
         {
             bool post;
@@ -191,5 +209,7 @@ namespace NanotecController
             lock (_gate) { s = _pending; _pending = null; _postQueued = false; }
             if (s != null) _onSample(s);
         }
+
+        #endregion
     }
 }

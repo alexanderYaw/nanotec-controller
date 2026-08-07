@@ -4,42 +4,31 @@ namespace NanotecController
 {
     /// <summary>
     /// Where to stand to watch the wafer rim go past, and what angle of the wafer is being watched.
+    /// A 200 mm rim circle exceeds the X/Y travel, so the wafer is TURNED past a fixed station whose
+    /// only freedom is Y. Because the centre-find already measured the eccentric orbit
+    /// (WaferOffsetX/Y + WaferRadius), that Y can be COMPUTED for any Θ rather than hunted frame by
+    /// frame — which is what makes a continuous sweep possible.
     ///
-    /// A 200 mm rim circle is larger than the X/Y travel, so the camera cannot be driven around it
-    /// (see FrmVisionProtocols.AutoWafer) — only the line X = X min crosses the rim at all. The
-    /// wafer is therefore TURNED past a fixed station, and the station's only freedom is Y.
-    ///
-    /// The wafer sits eccentric on the chuck, so its centre orbits the rotation axis as Θ turns and
-    /// the rim swings radially in and out. The centre-find already measured that orbit
-    /// (WaferOffsetX/Y + WaferRadius), so the station's Y can be COMPUTED for any Θ rather than
-    /// searched for: it is where the vertical line X = station crosses the circle of radius R about
-    /// <see cref="CalibrationStore.WaferCentreAt"/>. That is what makes a continuous sweep possible
-    /// — the Y path is known in advance instead of being hunted frame by frame.
-    ///
-    /// Everything here is computed in MILLIMETRES and returned in steps. X and Y have different
-    /// StepsPerMm (1261.5 vs 1256.5), so the rim is only a circle — and a rotation only a rotation —
-    /// once that anisotropy is divided out. This matches WaferCentreScan, which measured the offset
-    /// the same way; doing it in steps here would disagree with the data it is built on.
+    /// Everything is computed in MILLIMETRES and returned in steps: X and Y differ in StepsPerMm, so
+    /// the rim is only a circle once that anisotropy is divided out. Matches
+    /// <see cref="WaferCentreScan"/>, which measured the offset the same way.
+    /// See Developer Guide, NotchSearch.md.
     /// </summary>
     public static class RimStation
     {
-        /// <summary>Angular step (degrees) used when walking a full revolution in
-        /// <see cref="TryStationYRange"/>. 1° is ~1.7 mm of rim and moves the station Y by at most
-        /// 114 steps, far finer than the ~10 mm peak-to-peak the path covers, so no extreme is
-        /// stepped over. (Measured against the stored calibration: the path runs 58,126..70,662
-        /// steps — 9.98 mm — for a 2.53 mm eccentricity, and its peak rate is 365 steps/s over a
-        /// 112 s revolution, which is 1/9th of the X/Y follower's velocity cap.)</summary>
+        #region Rim crossings
+
+        /// <summary>Angular step for the full-revolution walk in <see cref="TryStationYRange"/>. 1° is
+        /// ~1.7 mm of rim and moves the station Y by at most 114 steps, far finer than the ~10 mm
+        /// peak-to-peak the path covers, so no extreme is stepped over.</summary>
         private const double RANGE_WALK_DEG = 1.0;
 
-        /// <summary>
-        /// The station Y (motor steps) that puts the camera on the wafer rim when the chuck stands
-        /// at <paramref name="chuckAngleDeg"/>, with X pinned at <paramref name="stationX"/>.
-        ///
-        /// The line crosses the rim circle TWICE. <paramref name="preferY"/> chooses between them —
-        /// pass the previous step's Y so a sweep follows one branch continuously instead of jumping
-        /// to the far side of the wafer. Returns false if the calibration is incomplete or the
-        /// station line misses the rim entirely at this angle.
-        /// </summary>
+        private const double CoincidentTolerance = 1e-9;
+
+        /// <summary>The station Y (motor steps) putting the camera on the wafer rim at
+        /// <paramref name="chuckAngleDeg"/>, with X pinned at <paramref name="stationX"/>. The line
+        /// crosses the rim TWICE; pass the previous step's Y as <paramref name="preferY"/> so a sweep
+        /// follows one branch instead of jumping across the wafer.</summary>
         public static bool TryStationY(
             CalibrationStore cal, double chuckAngleDeg, double stationX, double preferY,
             out double y, out string? error)
@@ -51,13 +40,10 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// BOTH points where the station line crosses the rim, in USER-frame steps —
-        /// <paramref name="up"/> the greater. Exposed because choosing between them is a decision in
-        /// its own right (<see cref="TryChooseBranch"/>) and cannot be made by asking
-        /// <see cref="TryStationY"/> twice with extreme preferences: the differences overflow to
-        /// infinity and compare equal, so both calls return the same crossing.
-        /// </summary>
+        /// <summary>BOTH points where the station line crosses the rim, in USER-frame steps,
+        /// <paramref name="up"/> the greater. Exposed because <see cref="TryChooseBranch"/> cannot get
+        /// them by calling <see cref="TryStationY"/> twice with extreme preferences — those
+        /// differences overflow to infinity and compare equal, returning the same crossing.</summary>
         public static bool TryCrossings(
             CalibrationStore cal, double chuckAngleDeg, double stationX,
             out double up, out double down, out string? error)
@@ -84,19 +70,10 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// Picks WHICH of the two crossings to sweep on: the one whose entire revolution fits inside
-        /// <paramref name="travelMinY"/>..<paramref name="travelMaxY"/> (USER frame). If both fit, the
-        /// one nearer <paramref name="preferY"/> wins, so the run does not traverse the wafer for no
-        /// reason.
-        ///
-        /// This cannot be guessed from the travel limits. On the machine this was written for the
-        /// UPPER crossing runs 58,126..70,662 and leaves travel for 42% of the revolution, while the
-        /// LOWER one runs −69,438..−56,902 and fits completely — and "nearest Y max", the obvious
-        /// rule, picks the upper one. The centre-find gets away with having no rule here because it
-        /// rasters down from Y max until it happens to see the rim and skips whatever samples it then
-        /// loses; a continuous sweep cannot skip, so the branch has to be chosen deliberately.
-        /// </summary>
+        /// <summary>Picks WHICH crossing to sweep on: the one whose entire revolution fits inside
+        /// <paramref name="travelMinY"/>..<paramref name="travelMaxY"/>, nearer <paramref name="preferY"/>
+        /// if both fit. It cannot be guessed from the travel limits — "nearest Y max", the obvious
+        /// rule, picks a branch that leaves travel 42% of the way round. See NotchSearch.md §branch.</summary>
         public static bool TryChooseBranch(
             CalibrationStore cal, double stationX, double startAngleDeg,
             double travelMinY, double travelMaxY, double preferY,
@@ -133,14 +110,10 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// The Y extremes the station sweeps over one full revolution, following the branch that
-        /// <paramref name="startY"/> picks at <paramref name="startAngleDeg"/>. Walked step by step
-        /// rather than solved, because the branch choice is what makes the path continuous.
-        ///
-        /// Call this BEFORE a sweep: the whole path has to be inside travel, and finding that out
-        /// half a revolution in wastes a minute and leaves the stage out on the rim.
-        /// </summary>
+        /// <summary>The Y extremes the station sweeps over one full revolution on the branch
+        /// <paramref name="startY"/> picks. Walked rather than solved, because the branch choice is
+        /// what makes the path continuous. Call BEFORE a sweep — discovering the path leaves travel
+        /// half a revolution in wastes a minute and strands the stage on the rim.</summary>
         public static bool TryStationYRange(
             CalibrationStore cal, double stationX, double startAngleDeg, double startY,
             out double minY, out double maxY, out string? error)
@@ -159,15 +132,14 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// Which way the camera station bears from the WAFER centre when the chuck stands at
-        /// <paramref name="chuckAngleDeg"/> — a LAB bearing, the same convention the notch datum uses.
-        ///
-        /// It is not a constant, which is the whole reason this exists. The station rides the rim as
-        /// Θ turns while the wafer centre orbits the rotation axis, so the bearing drifts by roughly
-        /// ±atan(e/R) about its mean. Solving for it is what lets a check put the notch under the
-        /// crosshair rather than near it: one degree is 1.75 mm of rim against a ~4.9 mm frame.
-        /// </summary>
+        #endregion
+
+        #region Bearings
+
+        /// <summary>Which way the camera station bears from the WAFER centre at
+        /// <paramref name="chuckAngleDeg"/> — a LAB bearing, the convention the notch datum uses. Not
+        /// a constant: the bearing drifts by ~±atan(e/R) as the wafer centre orbits, and one degree is
+        /// 1.75 mm of rim against a ~4.9 mm frame.</summary>
         public static bool TryStationBearing(
             CalibrationStore cal, double chuckAngleDeg, double stationX, double preferY,
             out double bearingDeg, out double stationY, out string? error)
@@ -180,7 +152,7 @@ namespace NanotecController
                 return false;
 
             double bx = stationX / kX - centreXMm, by = stationY / kY - centreYMm;
-            if (Math.Abs(bx) < 1e-9 && Math.Abs(by) < 1e-9)
+            if (Math.Abs(bx) < CoincidentTolerance && Math.Abs(by) < CoincidentTolerance)
             {
                 error = "The station coincides with the wafer centre, so it has no bearing.";
                 return false;
@@ -190,20 +162,12 @@ namespace NanotecController
             return true;
         }
 
-        /// <summary>
-        /// The angle of a rim point in the CHUCK's rotating frame — i.e. an angle fixed to the
-        /// wafer, which is what a notch position has to be. <paramref name="pointX"/>/
-        /// <paramref name="pointY"/> are a rim point in user-frame motor steps (as
-        /// CentreFinder.ToStepPoint builds it) and <paramref name="chuckAngleDeg"/> is the angle Θ
-        /// stood at when it was measured.
-        ///
-        /// De-rotates about the chuck centre by −sign·θ exactly as WaferCentreScan does, then
-        /// measures the bearing from the WAFER centre — not the chuck centre, which is offset by
-        /// the eccentricity and would tilt the answer by up to atan(2.55/100) ≈ 1.5°.
-        ///
-        /// The result is 0–360°, increasing the same way <see cref="CalibrationStore.WaferCentreAt"/>
-        /// takes its angle, so notchAngle − currentΘ is directly a Θ move.
-        /// </summary>
+        /// <summary>The angle of a rim point in the CHUCK's rotating frame — an angle fixed to the
+        /// wafer, which is what a notch position has to be. De-rotates about the chuck centre by
+        /// −sign·θ as <see cref="WaferCentreScan"/> does, then bears from the WAFER centre, not the
+        /// chuck centre (the eccentricity would tilt the answer by up to ~1.5°). Returns 0–360°
+        /// increasing the same way <see cref="CalibrationStore.WaferCentreAt"/> takes its angle, so
+        /// notchAngle − currentΘ is directly a Θ move.</summary>
         public static bool TryChuckFrameAngle(
             CalibrationStore cal, double chuckAngleDeg, double pointX, double pointY,
             out double angleDeg, out string? error)
@@ -228,7 +192,7 @@ namespace NanotecController
 
             // Bearing from the wafer centre, which in that frame is the stored offset.
             double bx = rx - ox / kX, by = ry - oy / kY;
-            if (Math.Abs(bx) < 1e-9 && Math.Abs(by) < 1e-9)
+            if (Math.Abs(bx) < CoincidentTolerance && Math.Abs(by) < CoincidentTolerance)
             {
                 error = "The rim point coincides with the wafer centre, so it has no bearing.";
                 return false;
@@ -240,9 +204,12 @@ namespace NanotecController
             return true;
         }
 
-        // Everything the two public entry points share: the per-axis scales, the rim radius, and
-        // the wafer centre at this angle — all in mm. One place to fail, with one message per
-        // missing prerequisite rather than a bare false.
+        #endregion
+
+        #region Shared geometry
+
+        /// <summary>The per-axis scales, rim radius and wafer centre at this angle, all in mm — one
+        /// place to fail, with a message per missing prerequisite rather than a bare false.</summary>
         private static bool TryGeometry(
             CalibrationStore cal, double chuckAngleDeg,
             out double kX, out double kY, out double radiusMm,
@@ -263,8 +230,7 @@ namespace NanotecController
                 error = "No wafer radius stored — run the automatic wafer centre-find first.";
                 return false;
             }
-            // RadiusSteps was fitted in mm and scaled by the MEAN steps/mm (WaferCentreScan), because
-            // a radius is isotropic and cannot carry a per-axis scale. Undo it the same way.
+            // Fitted in mm and scaled by the MEAN steps/mm, a radius being isotropic. Undo it the same way.
             radiusMm = r / ((kX + kY) / 2.0);
 
             if (cal.WaferCentreAt(chuckAngleDeg) is not (long cx, long cy))
@@ -277,5 +243,7 @@ namespace NanotecController
             centreYMm = cy / kY;
             return true;
         }
+
+        #endregion
     }
 }
