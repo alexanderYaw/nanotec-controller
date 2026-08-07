@@ -41,6 +41,10 @@ namespace NanotecController
         private readonly Button _computeBtn = new() { Text = "Compute && Save A", Enabled = false };
         private readonly Button _clearBtn = new() { Text = "Clear", Enabled = false };
         private readonly TextBox _sampleList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
+        /// <summary>The fiducial's known diameter — the one physical length the whole scale rests on,
+        /// so it is on screen rather than a constant. Changing the target without changing this
+        /// silently rescales every mm-based move.</summary>
+        private readonly TextBox _fiducialDia = new() { Text = "1.0" };
         private readonly Label _calibResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
 
         #endregion
@@ -325,8 +329,17 @@ namespace NanotecController
             _clearBtn.Click += (s, e) => ClearSamples();
 
             _sampleList.Location = new Point(1000, 100);
-            _sampleList.Size = new Size(228, 210);
+            _sampleList.Size = new Size(228, 182);
             _sampleList.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+            var fiducialLabel = new Label { Text = "Fiducial ⌀ (mm):", Location = new Point(1000, 291), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            _fiducialDia.Location = new Point(1104, 288);
+            _fiducialDia.Size = new Size(124, 22);
+            _fiducialDia.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            // Show the diameter the stored affine was actually solved against, not the default, so a
+            // re-run cannot quietly change the assumed target size.
+            if (_owner.Calibration.PixelStep?.FiducialDiameterMm is double storedDia && storedDia > 0)
+                _fiducialDia.Text = storedDia.ToString("0.####");
 
             _computeBtn.Location = new Point(1000, 316);
             _computeBtn.Size = new Size(228, 32);
@@ -475,6 +488,8 @@ namespace NanotecController
             Controls.Add(_sampleBtn);
             Controls.Add(_clearBtn);
             Controls.Add(_sampleList);
+            Controls.Add(fiducialLabel);
+            Controls.Add(_fiducialDia);
             Controls.Add(_computeBtn);
             Controls.Add(_calibResult);
             Controls.Add(waferLabel);

@@ -40,7 +40,7 @@ flowchart TB
     AXIS ==> LINK
 ```
 
-**Golden rule:** every consumer (jog buttons, the analog joystick, the on-screen puck, the
+**Invariant:** every consumer (jog buttons, the analog joystick, the on-screen puck, the
 vision jog, calibration, the auto centre-find) commands motion through `MultiAxisController`
 — **never** a drive directly. That keeps direction inversion, the single-channel
 serialization, and the API surface in one place.
@@ -290,7 +290,7 @@ are disposed with `using`.
 
 `ListBuses()` keeps **both** `_busScan` (the `ResultBusHwIds`) and `_busIds` (the
 `BusHWIdVector` from `getResult()`) as fields, and `ReleaseBusScan()` disposes them in that
-order. This is not defensive tidiness — it is load-bearing:
+order. This is not defensive tidiness — it is required for correctness:
 
 * `getResult()` returns a **copy** of the vector, and that vector **owns** the native storage.
 * The `BusHardwareId` elements it hands out are **non-owning pointers into that storage**
@@ -460,7 +460,7 @@ caught at build time, not as a null move later.
   axis, then **one** per update while it stays armed, by falling through to `UpdateJogVelocity`
   instead of re-sending mode + controlword. Arming is tracked in `_jogArmed` **inside the
   controller** — the only place drive state changes — because a stale entry would skip the
-  halt-clearing controlword and silently swallow a jog. Every path that leaves an axis not
+  halt-clearing controlword and silently discard a jog. Every path that leaves an axis not
   jogging (`Stop`, `StopAll`, `DisableAll`, `EnableAll`/`EnableAxis`,
   `RecoverIfQuickStopped`, `MoveAbsolute`/`MoveRelative`) clears it.
 * `MoveAbsolute` / `MoveRelative` / `WaitForMotionComplete(id, ms, cancel)`.
@@ -482,20 +482,19 @@ other (NanoLib is single-channel per device). Callers must serialize — see §1
 dedicated background thread and pushes each result to the UI thread as a `DriveSample`;
 `FrmMain.OnDriveSample` consumes it (axis readouts, soft-limit guard, analog joystick).
 
-This was not always so, and the reason it changed is worth keeping: both polls used to be
-`System.Windows.Forms.Timer`s running on the UI thread — a 200 ms `GetStatus` sweep (2 SDOs ×
-4 axes) plus a 50 ms 3-pot joystick read, about **100 blocking SDO round-trips per second on
-the thread that paints**. Each one stalls the message pump for its round-trip, so the live
-camera view visibly juddered *while jogging* but stayed smooth during a preplanned move —
-because those pause the polls and run on a worker, leaving the UI thread free. Moving the
-polling off the UI thread gives manual jogging the same freedom. The UI thread keeps only the
-**commands**, where exact ordering matters and the traffic is send-on-change — and those are
-kept to one SDO write per update on the hot path (see `SetJogVelocity`, §9).
+The reason it changed is worth keeping: both polls used to be `System.Windows.Forms.Timer`s on the
+UI thread — a 200 ms `GetStatus` sweep (2 SDOs × 4 axes) plus a 50 ms 3-pot joystick read, about
+**100 blocking SDO round-trips per second on the UI thread**. Each stalls the message pump for its
+round-trip, so the live camera view visibly juddered *while jogging* but stayed smooth during a
+preplanned move, because those pause the polls and run on a worker. Moving the polling off the UI
+thread gives manual jogging the same behaviour. The UI thread keeps only the **commands**, where
+ordering matters and the traffic is send-on-change, and those are one SDO write per update on the
+hot path (`SetJogVelocity`, §9).
 
-**Measuring it:** the live view's status line reports the **painted** frame rate, not the
-grabbed one, and appends `(grab N)` only when the camera is running ahead of the UI. Those two
-numbers diverging is the direct symptom of a blocked UI thread — a frame gets superseded before
-`ShowPending` runs. If they agree, the view is as smooth as the camera allows.
+**Measuring it:** the live view's status line reports the **painted** frame rate, not the grabbed
+one, and appends `(grab N)` only when the camera is running ahead of the UI. The two numbers
+diverging is the direct symptom of a blocked UI thread — a frame is superseded before `ShowPending`
+runs. If they agree, the view is as smooth as the camera allows.
 
 Poller cadence, per 50 ms tick:
 
@@ -523,7 +522,7 @@ correctness — the lock covers it — but so the poller neither parks on the lo
 nor adds bus traffic to the timing-sensitive rotate follow loop. It uses
 `TaskCreationOptions.LongRunning` rather than `Task.Run`,
 because these ops sleep for their whole duration (up to minutes) and would otherwise mislead
-the thread pool's injection heuristic. Its `catch`-all is the last line of defence: it
+the thread pool's injection heuristic. Its `catch`-all is the final guard: it
 best-effort `StopAll`s before reporting, so an op that threw outside its own `finally` can't
 leave an axis under a velocity command.
 
@@ -798,32 +797,30 @@ one byte channel → for each candidate cut:
                  → keep the roundest across all cuts → area_center → centre (row, col)
 ```
 
-> **Why a ladder of cuts and not one statistic.** Measured over every capture on record, each
-> frame accepts a *band* of thresholds 11-15 grey levels wide — but no single statistic lands
-> inside all of them. Otsu is right on the mono frames (picks 85, band 60-130) and on the clean
-> colour frame (211, band 195-245), yet reads **130** on the colour frames containing a dark
-> strip at one edge: it locks onto the valley between that strip and everything else, far below
-> their 190-245 band, and the whole frame segments as one blob that fails the circularity gate.
-> The 99th percentile covers the mono frames but overshoots the colour ones (251-255); the 95th
-> only scrapes the band edges. Taken together the six candidates cover every capture at least
-> twice. Scoring on circularity — rather than taking the first cut that passes — also lands
-> mid-band, where the segmented rim is truest. A pass costs 1-17 ms and detection runs once per
-> **Add Sample** click (never per frame), so the sweep costs 100-300 ms and nothing in the live
-> path. A hard-coded cut is what broke this before: 200, measured off the colour camera,
-> segmented **four pixels** of a mono frame and the detector simply reported "not found".
+> **Why a ladder of cuts and not one statistic.** Each capture on record accepts a *band* of
+> thresholds 11–15 grey levels wide, and no single statistic lands inside all of them. Otsu is
+> correct on the mono frames (picks 85, band 60–130) and on the clean colour frame (211, band
+> 195–245), but reads **130** on the colour frames containing a dark strip at one edge: it selects
+> the valley between that strip and everything else, far below their 190–245 band, and the frame
+> segments as one blob that fails the circularity gate. The 99th percentile covers the mono frames
+> but overshoots the colour ones (251–255); the 95th reaches only the band edges. Together the six
+> candidates cover every capture at least twice. Scoring on circularity, rather than accepting the
+> first cut that passes, also selects mid-band, where the segmented rim is most accurate. A pass
+> costs 1–17 ms and detection runs once per **Add Sample** click, never per frame, so the sweep
+> costs 100–300 ms and nothing in the live path. A hard-coded cut is what broke this before: 200,
+> measured off the colour camera, segmented **four pixels** of a mono frame.
 
-> **Tunables** (`ClosingRadius`, `OpenRadius`, `MinCircularity`, `MinArea`, `MaxArea`) are
-> exposed as properties and set **empirically**, not by formula: run the .hdev script on
-> representative captures, read the real area/circularity, and set the gates with margin below
-> the true values. Size `ClosingRadius` just above the widest rim gap/streak, and `OpenRadius`
-> big enough to sever a line where it crosses the disk but well below the disk radius (too large
-> erases the disk too). `MinCircularity` defaults to `0.85` — tight enough to reject a line left
-> whole by the opening. These are in **pixels**, so they assume a disk far larger than what is
-> being removed; both captures on record clear that easily (disk r = 402 px mono, 310 px colour),
-> but a heavy zoom-out would need them revisited. `BrightThreshold` is normally left **null**
-> (auto, per the ladder above) and set only to pin one cut while tuning.
-> A missed detection costs more than a rare false hit, which the downstream circle-fit/residual
-> checks catch anyway.
+> **Tunables** (`ClosingRadius`, `OpenRadius`, `MinCircularity`, `MinArea`, `MaxArea`) are set
+> **empirically**, not by formula: run the .hdev script on representative captures, read the real
+> area/circularity, and set the gates with margin below the measured values. `ClosingRadius` goes
+> just above the widest rim gap or streak; `OpenRadius` big enough to sever a line where it crosses
+> the disk but well below the disk radius, since too large erases the disk. `MinCircularity`
+> defaults to `0.85`, tight enough to reject a line left whole by the opening. All are in
+> **pixels**, so they assume a disk far larger than what is being removed — both captures on record
+> satisfy that (disk r = 402 px mono, 310 px colour), but a heavy zoom-out would need them
+> revisited. `BrightThreshold` is normally **null** (auto, per the ladder above), set only to pin
+> one cut while tuning. A missed detection costs more than a rare false hit, which the downstream
+> circle-fit residual check catches.
 
 ---
 
@@ -851,25 +848,47 @@ camera were square to the stage they'd be ~0). The offsets `eX, eY` are fit but 
 only displacements are used downstream, so a constant offset cancels.
 
 Each sample pairs a detected fiducial pixel `(row, col)` (from §14) with the motor `(X, Y)` the
-table was at when the frame was grabbed. The fit is ordinary least squares (`TrySolve`):
+table was at when the frame was grabbed. The fit is ordinary least squares (`TrySolve`).
 
-1. **Centre the data** — subtract the pixel and step centroids. This drops the offset from the
-   slope estimation and conditions the problem.
-2. **Build the 2×2 pixel covariance** `M = [[drr, drc], [drc, dcc]]` — variances of `row`/`col`
-   on the diagonal, their covariance off it. `M` depends only on *where you sampled in the
-   image*, not on the motors.
-3. **Reject collinear samples** — if `det(M) = drr·dcc − drc² ≈ 0`, the sample points lie on a
-   line and a 2-D map can't be recovered ("move the table in BOTH X and Y").
-4. **Solve `M·[Xr;Xc] = [drX;dcX]` and `M·[Yr;Yc] = [drY;dcY]`** by Cramer's rule. `drX`…`dcY`
-   are the pixel↔step **cross-covariances** (the only place motor data enters). The same `M`
-   serves both axes — invert once, solve twice.
-5. **RMS residual in steps** is reported as a quality gate: small = the relationship really is
-   linear (no backlash/clipping); large = something's contaminated. ≥3 spanning samples needed.
+**Centre the data** first: with $\bar r,\bar c,\bar X,\bar Y$ the sample means, write
+$\rho_i = row_i - \bar r$, $\gamma_i = col_i - \bar c$, $\xi_i = X_i - \bar X$,
+$\eta_i = Y_i - \bar Y$. Centring removes the offsets from the slope estimation and conditions the
+problem, and the offsets are then recovered (and discarded) from the means.
 
-> Fitting steps = f(pixel) (rather than the causally/statistically cleaner pixel = f(steps),
-> since the *pixel* is the noisy measurement) is a deliberate trade: it yields `A = J⁻¹`
-> directly for runtime, and the two directions converge as the residual → 0 — which the gate in
-> step 5 enforces.
+Minimising $\sum_i (\xi_i - X_r\rho_i - X_c\gamma_i)^2$ gives the normal equations
+
+$$
+M\begin{bmatrix}X_r\\X_c\end{bmatrix} = \begin{bmatrix}d_{rX}\\d_{cX}\end{bmatrix},
+\qquad
+M\begin{bmatrix}Y_r\\Y_c\end{bmatrix} = \begin{bmatrix}d_{rY}\\d_{cY}\end{bmatrix},
+\qquad
+M = \begin{bmatrix}d_{rr} & d_{rc}\\ d_{rc} & d_{cc}\end{bmatrix},
+$$
+
+where $d_{rr} = \sum\rho_i^2$, $d_{cc} = \sum\gamma_i^2$, $d_{rc} = \sum\rho_i\gamma_i$ are the
+pixel second moments and $d_{rX} = \sum\rho_i\xi_i$, $d_{cX} = \sum\gamma_i\xi_i$,
+$d_{rY} = \sum\rho_i\eta_i$, $d_{cY} = \sum\gamma_i\eta_i$ the pixel↔step cross-moments — the only
+place motor data enters. **$M$ depends only on where the image was sampled, not on the motors**, so
+it is formed once and used for both axes. Cramer's rule with $\Delta = \det M = d_{rr}d_{cc} - d_{rc}^2$:
+
+$$
+X_r = \frac{d_{rX}d_{cc} - d_{cX}d_{rc}}{\Delta},\quad
+X_c = \frac{d_{rr}d_{cX} - d_{rc}d_{rX}}{\Delta},
+$$
+
+and identically for $Y_r, Y_c$ with $\eta$ in place of $\xi$.
+
+$\Delta \approx 0$ means the sample pixels lie on a line: a 1-D sample set cannot determine a 2-D
+map, and the solve is rejected with "move the table in BOTH X and Y". This is the same spanning
+requirement the circle fit has (§16 C), and it needs ≥3 samples.
+
+The **RMS residual in steps** is reported as a quality gate: small means the relationship really is
+linear (no backlash, no clipping); large means something is contaminated.
+
+> Fitting steps = f(pixel) rather than pixel = f(steps) — the latter being the statistically cleaner
+> direction, since the *pixel* carries the measurement noise — is a deliberate trade: it yields
+> $A = J^{-1}$ directly for runtime, and the two directions converge as the residual → 0, which the
+> RMS gate enforces.
 
 ### B. Correcting the chuck jog — rotation about the crosshair (`CrosshairRotation.cs`)
 
@@ -883,16 +902,34 @@ target for a Θ rotation of φ is:
 S' = C + A·R(φ)·A⁻¹·(S − C),     φ = sign·θ
 ```
 
-- **`A⁻¹·(S − C)`** — where the chuck centre sits relative to the crosshair, converted from
-  steps **into pixels** (`A⁻¹` is the 2×2 inverse, `det = Xr·Yc − Xc·Yr`; degenerate → abort).
-- **`R(φ)`** — orbit that pixel offset by the angle.
+- **`A⁻¹·(S − C)`** — the offset from chuck centre to crosshair, converted from steps **into
+  pixels** (`A⁻¹` is the 2×2 inverse, `det = Xr·Yc − Xc·Yr`; degenerate → abort).
+- **`R(φ)`** — rotate that pixel offset by the angle.
 - **`A·(…)`** — map the rotated offset **back to steps**.
 
-Using `A` (not a per-axis steps/mm scalar) is essential: a rotation in the image becomes a
-*coupled* X-and-Y move in steps whenever the camera is mounted at an angle, and only the full
-matrix (with its off-diagonals) cross-couples the correction correctly. `sign` (±1) is the
-image handedness of a positive Θ move — not derivable from the translation-only affine, so it
-is fixed empirically (the sign test) and persisted as `RotationSign`.
+**Why the rotation is conjugated into pixel space.** `S` is by construction the motor position that
+views a given material point, so rotating the chuck by φ about `C` sends that point's stage
+coordinate to `C + 𝑅(S − C)`, where `𝑅` is whatever a physical rotation looks like *in step
+coordinates*. A physical rotation is an isometry only in an isotropic frame. Step space is not one:
+X and Y differ by 0.4 % in steps/mm, so `R(φ)` applied directly to steps is a rotation composed with
+a 0.4 % shear. **Pixel space is** — the pixels are square, and the affine relates them to the stage
+by a scale plus a rotation, which is a similarity and therefore preserves angles. So `𝑅 = A·R(φ)·A⁻¹`,
+the conjugation above.
+
+The same argument is why the wafer Θ scan converts to millimetres before de-rotating (§18); the two
+routines divide out the same anisotropy by different means because one already holds `A` and the
+other already holds `StepsPerMm`.
+
+The **off-diagonals carry the camera's mounting rotation** (`Xc`, `Yr`; they would be ≈0 on a camera
+square to the stage), which is why a per-axis steps/mm scalar cannot substitute for `A` here: a
+rotation in the image is a *coupled* X-and-Y move in steps whenever the camera is mounted at an
+angle, and only the full matrix cross-couples the correction. **`sign` (±1)** is the image handedness
+of a positive Θ move; it is not derivable from a translation-only affine, so it is fixed empirically
+by the sign test and persisted as `RotationSign`.
+
+> The affine's own **skew** — how far its two pixel axes land from perpendicular once scaled to mm —
+> is the standing check that pixel space really is a similarity of the stage. Nothing in the
+> least-squares solve forces it to zero, so a large value invalidates this conjugation.
 
 > **Θ angle units.** Θ turns through a ~9:1 reduction, so chuck angles come from
 > `CrosshairRotation.ChuckTicksPerRev` (**359859**) — *not* `AxisDriver.ENCODER_TICKS_PER_REV`
@@ -955,8 +992,8 @@ Safety in the loop:
 ### Two knobs that are OFF, and why they must be tuned by eye
 
 `ROTATE_XY_DELAY_MS` (Θ head start) is **0**. A nonzero value makes Θ visibly lead, but the
-feature then swings off the crosshair during the uncompensated window and is yanked back —
-strictly worse for visual centering, which is the whole point of the feature.
+feature then swings off the crosshair during the uncompensated window and is returned abruptly —
+strictly worse for visual centring, which is the purpose of the feature.
 
 `ROTATE_LOOKAHEAD_MS` (project Θ forward before computing the pin target) is likewise **0**,
 and running it alongside the commanded-setpoint FF would double-compensate. What it would
@@ -1078,34 +1115,63 @@ conversion, and its **detector is different** from the chuck's, because the two 
   with framing — while Otsu, being *relative*, would shift with how much of the frame each side
   occupies, which is exactly what changes as the stage scans (A above).
 * **Wafer** (`WaferEdgeDetector`): segments the **off-wafer** side — the region past the rim, which
-  is unlit and reads near-black — and returns the boundary point of that region **nearest the
-  crosshair**. Here exposure *is* what varies, so the cut is adaptive: **two-stage Otsu**, the first
-  split isolating the lit wafer and the second taken *inside the dark part alone*. Then
-  `opening_circle` (`CleanRadius`) to erase speckle, `closing_circle` (`CloseRadius`) to absorb dust
-  specks, and a **double filter** — `select_shape` by `MinArea` *and* `select_gray` by mean grey
-  against `MaxMeanFraction × cut`. `WaferIsBrighter` flips the polarity if the lighting ever
-  inverts.
+  is unlit and reads near-black. Here exposure *is* what varies, so the cut is adaptive:
+  **two-stage Otsu**, the first split isolating the lit wafer and the second taken *inside the dark
+  part alone*. Then `opening_circle` (`CleanRadius`) to erase speckle, `closing_circle`
+  (`CloseRadius`) to absorb dust specks, and a **second** `opening_circle` (`SeverRadius`) to cut the
+  chuck's gashes back off the band. Every surviving region is screened on **three** criteria, the rim
+  ring is assembled from those that pass, and the reported point is that ring's point **nearest the
+  crosshair**. `WaferIsBrighter` flips the polarity if the lighting ever inverts.
 
 Segmenting the *bright* side instead — the obvious reading of "the wafer is brighter" — finds the
 **bevel**, not the rim. The bevel is a mid-grey band a few hundred pixels wide that can read either
 side of a single global cut, and when it reads dark it splits the wafer into two blobs whose shared
 boundary is nearer the crosshair than the rim is. §18 works this through against a real capture.
-Cutting on the dark side sidesteps it: the bevel is never black, only the world beyond the wafer is.
+Cutting on the dark side avoids this: the bevel is never black, only the region beyond the wafer is.
 
 That also removes the frame-border artefact the old pipeline had. With the wafer covering the whole
 view there is no large dark region, so the detector returns **false** instead of confidently
 reporting the frame border; boundary points on the frame itself are dropped outright.
 
-**Why both filters.** Otsu always returns a cut, so a frame with no rim in it still segments into
-*something*. The chuck is machined, and under oblique light its shadow troughs form long dark-ish
-blobs of 0.7–1.5 Mpx — as large as a real gap, so area alone lets them through, and one of them was
-being reported as a rim point. Grey level is what tells them apart: measured on the component that
-supplies the reported point, a real gap runs mean 10–34 against 47–63 for a trough, or 0.24–0.52 of
-the cut against 0.70–0.81. Hence `MaxMeanFraction = 0.6`, expressed as a fraction because the cut
-is relative by design and spans 37–96 across the captures on file. `select_gray` is applied as a
-*filter*, not a verdict, so when a trough happens to sit nearer the crosshair than the real gap,
-dropping it lets the gap win rather than failing the frame.
-Tuning mirror: `Halcon/wafer center.hdev`.
+**Why three filters, and why they run per region.** Otsu always returns a cut, so a frame with no
+rim in it still segments into *something* — and the machined chuck's shadow troughs are what gets
+segmented: long dark-ish blobs of 0.7–1.5 Mpx, as large as a real gap, so `MinArea` alone lets them
+through and one of them was being reported as a rim point. Grey level catches most of them: measured
+on the component that supplies the reported point, a real gap runs mean 10–34 against 47–63 for a
+trough, or 0.24–0.52 of the cut against 0.70–0.81, hence `MaxMeanFraction = 0.6` — a *fraction*
+because the cut is relative by design and spans 37–96 across the captures on file. But the cut
+drifts **up** when little black gap is in view, which is exactly the mostly-chuck framing where the
+problem appears, so the third test is structural rather than photometric: a rim gap has the **wafer
+on one flank**, a trough has chuck on both. `MaxSideContrast = 0.80` (darker collar mean ÷ brighter)
+lies between rim gaps at 0.46–0.73 and troughs at 0.89–0.99, with margin on each side.
+
+All three are **filters, not verdicts**, and all three run **per region, before the regions are
+merged** — merge first and a trough contributes boundary that then wins the nearest-point search,
+while filtering first lets a real gap win outright when a rejected blob happens to sit nearer the
+crosshair.
+
+**Which boundary of the gap.** Radially the scene runs **wafer – bevel – gap – chuck**, so the gap
+has two boundaries, and the **chuck side is the one measured**: the chuck is in focus, making that
+boundary the sharper and more repeatable, where the bevel side is a specular gradient whose apparent
+position moves with the illumination. Either choice is only a constant radial offset — circles
+fitted to the two are concentric — so the recovered **centre** is unaffected and only the fitted
+**radius** shifts. What is not acceptable is choosing *inconsistently* between samples, which is
+precisely what a plain nearest-to-the-crosshair rule does, and nothing downstream catches it because
+the two sides are a third of a millimetre apart. Brightness picks the side: a collar of
+`SideProbeRadius` (50 px) is taken either side, the **two largest** pieces are compared (fragments
+under `MinCollarAreaPx` are neither flank, and need no threshold once only two candidates remain),
+and the **darker** is kept — the bevel throws a near-saturated glint, the chuck is diffuse mid-grey.
+Fewer than two flanks **drops the region** rather than guessing which side faced the chuck.
+
+> **Standing consequence:** the fitted wafer radius now sits *above* `Ø/2 × StepsPerMm` by the gap's
+> width (~0.35 mm), where the old bevel-side detector fell *short* by the bevel's. Consistency of
+> that offset — not its size — is the cheap check on the side choice (§18).
+
+Tuning mirror: `Halcon/wafer center.hdev`. The measurements behind every constant here — the collar
+widths tried, texture tested and rejected as a discriminator, the `SeverRadius` sweep — are in
+**[Wafer Centre-Finding by Rotation](WaferCentreByRotation/)** §6. `NotchDetector` shares this front
+end but deliberately takes the **wafer**-side boundary, the notch being a feature of the wafer's
+outline rather than of where its shadow ends on the chuck.
 
 ---
 
@@ -1138,7 +1204,7 @@ the exposure instant.
 | **B** | probe ±X from `(seedX, cy)` → bisect for `cx`, giving `C₁` and a **measured** radius |
 | **C** | probe the four diagonals from `C₁` → four more rim points |
 | **D** | Pratt-fit all eight; persist centre + radius |
-| **E** | report per-point radial residuals (the fit's own RMS hides one bad point among eight) |
+| **E** | report per-point radial residuals (the fit's own RMS can conceal one bad point among eight) |
 | **F** | drive to the fitted centre → the run ends with the chuck centred |
 
 Stage 0 (`SeedFromHomeAsync`) is what makes the run fully automatic: Home for X/Y is the centre of
@@ -1190,8 +1256,8 @@ full frame or the boundary can be carried past the camera between captures — a
 `ChuckEdgeDetector` needs a ≥`MinArcLength` (800 px) arc, so a boundary merely clipping a corner
 does not count as seen. **`jump`** (`AUTO_APPROACH_R` = 0.8 × the *measured* radius) skips the empty chuck
 interior in stage C only; it is safe **only** because `C₁` came from the bisection rather than
-a guess. Every probe hops `dist = jump + k·hop`; the four cardinals pass `jump = 0` and so crawl
-outward from the seed point, which is why only the diagonals start with a single large leap.
+a guess. Every probe hops `dist = jump + k·hop`; the four cardinals pass `jump = 0` and so advance
+one hop at a time from the seed point, which is why only the diagonals begin with a single long move.
 
 ### Preconditions and failure behaviour
 
@@ -1228,6 +1294,12 @@ component perpendicular to the arc's chord essentially unconstrained.
 and carries the wafer. The stage parks on one reachable spot on the rim and Θ sweeps the entire rim
 past the camera — one station, one revolution, all of it inside the reachable band.
 
+That spot is a **corner of the travel, not a cardinal from `C`**. No cardinal reaches a 200 mm rim
+(the best is 88 mm against the 99.8 mm needed), but at (X min, Y max) the stage stands ≈100.8 mm off
+the rotation axis, and the whole line X = X min sweeps radii from 86.3 to 113.8 mm — so it crosses
+any rim inside that band. The run therefore parks at that corner and rasters **down** in Y until an
+edge appears, rather than computing where the rim ought to be.
+
 ### De-rotation
 
 Each sample is still `E_k = M_k + A·(p_cross − p_k)` (`CentreFinder.ToStepPoint`, unchanged), paired
@@ -1235,13 +1307,19 @@ with the chuck angle `θ_k` it was taken at. `WaferCentreScan` then converts `E_
 X and Y differ by 0.4 % in steps/mm, and a rotation is only a rotation once that is divided out —
 and de-rotates:
 
-```
-P_k = R(−σ·θ_k)·(E_k − C)/k
-```
+$$
+\mathbf{v}_k = \Big(\tfrac{E_{k,x}-C_x}{k_X},\ \tfrac{E_{k,y}-C_y}{k_Y}\Big),
+\qquad
+\mathbf{P}_k = R(-\sigma\theta_k)\,\mathbf{v}_k .
+$$
 
-The `P_k` are rim points in the **chuck's rotating frame**, spanning a full 360° even though every
-one was measured from the same small patch of travel. They go into the same Pratt `CircleFit` §16
-uses: a partial-arc problem turned into a full-circle one.
+Substituting $\mathbf{E}_k = \mathbf{C} + R(\theta_k)\mathbf{W} + R_w\hat{\mathbf{u}}_k$ (the rim
+circle at angle $\theta_k$, centred on the orbiting wafer centre) gives
+$\mathbf{P}_k = \mathbf{W} + R_w R(-\theta_k)\hat{\mathbf{u}}_k$, so
+$\lVert\mathbf{P}_k - \mathbf{W}\rVert = R_w$ for every $k$ **whatever point on the rim each sample
+happened to catch**. The `P_k` are rim points in the **chuck's rotating frame**, spanning a full
+360° even though every one was measured from the same small patch of travel, and they go into the
+same Pratt `CircleFit` §16 uses: a partial-arc problem converted into a full-circle one.
 
 The angle comes from `CrosshairRotation.ChuckTicksToDegrees` (Θ turns through ≈9:1, so the motor's
 40,000 ticks/rev would wrap nine times per chuck revolution) and is read fresh via
@@ -1249,11 +1327,17 @@ The angle comes from `CrosshairRotation.ChuckTicksToDegrees` (Θ turns through �
 
 ### A wrong chuck centre does not bias the offset
 
-If `C` is off by `δ`, then `P_k = W_true + R(−θ_k)·(R_w·n̂ − δ)` — still **exactly** a circle
-centred on `W_true`, with the radius changed to `|R_w·n̂ − δ|`. The error is absorbed entirely by
-the radius, so the measured eccentricity is relative to the *true* rotation axis regardless of how
-good `C` is, and a fitted radius disagreeing with the nominal wafer diameter is a free diagnostic
-on the chuck centre.
+If `C` is off by `δ`, then $\mathbf{P}_k = \mathbf{W}_\text{true} + R(-\theta_k)(R_w\hat{\mathbf{u}}_k - \boldsymbol{\delta})$.
+Where $\hat{\mathbf{u}}_k$ is a constant direction $\hat{\mathbf{n}}$ this is **exactly** a circle
+centred on $\mathbf{W}_\text{true}$ with radius $\lVert R_w\hat{\mathbf{n}} - \boldsymbol{\delta}\rVert$:
+the error is absorbed entirely by the radius and does not touch the offset. $\hat{\mathbf{u}}_k$
+varies by only $\pm\arctan(e/R_w) \approx \pm1.8°$, so the residual radius spread is
+$\approx 0.03\lVert\boldsymbol{\delta}\rVert$ — well inside the fit noise.
+**[Wafer Centre-Finding by Rotation](WaferCentreByRotation/)** §4 derives and bounds this.
+
+So the measured eccentricity is relative to the *true* rotation axis regardless of how good `C` is,
+and a fitted radius disagreeing with the nominal wafer diameter is an independent check on the
+chuck centre obtained at no extra cost.
 
 ### Handedness
 
@@ -1267,11 +1351,20 @@ lie exactly on some circle, so at N = 3 both signs fit perfectly.
 ### Keeping the rim in frame
 
 With X/Y parked, the rim sweeps radially past the camera by ±e and wanders tangentially by about
-the same, which a hand-placed wafer can push past a 5 × 3.7 mm frame. **The next station is the
-previous rim point** — `E_k` is by definition the position that puts it on the crosshair — so
-consecutive samples differ by only `~e·sin(Δθ)`, and every detection stays near the crosshair where
-affine error matters least. A miss searches ±3 hops along the station direction, then **skips that
-angle and carries on**; missed samples never abort a run.
+the same, which a hand-placed wafer can push past a 5 × 3.7 mm frame. The scan nonetheless samples
+**Θ only** and holds X/Y still, moving them **only when a sample misses** — the run is a measurement
+of where the rim is, and the fewer X/Y moves paired with it, the fewer places for a move to go
+wrong. A miss searches along Y about the station, ±`WAFER_SEARCH_HOPS` (6) hops, **down first but
+both ways**, and the station follows to wherever it re-acquired; if the search comes up empty the
+station is left where it was and the angle is **skipped**. Missed samples never abort a run.
+
+The search must go both ways because the outward radial at the station is +Y: an outward swing of
+the rim leaves the camera *inside* the wafer and recovery is +Y, an inward swing leaves it outside
+and recovery is −Y, and both happen once each per revolution. Down-only was tried first and spent
+half of every revolution walking the wafer's ~100 mm interior.
+
+*(Superseded: the original design moved the station onto each rim point `E_k`, keeping the rim
+continuously centred. It was dropped for plain Θ-only sampling.)*
 
 **Which edge gets detected matters more than it looks.** Thresholding the bright wafer finds the
 **bevel**, not the rim: in `images/capture_20260803_175836_162.bmp` the bevel is a ~310 px band at
@@ -1280,19 +1373,31 @@ wrong side, and even on the right side the nearest boundary is the bevel (348 px
 rim (537 px). Closing the gap is not an option either: the bevel (~310 px) and the dark gap beyond
 the rim (~345 px) are near enough the same width that no radius bridges one alone. So
 `WaferEdgeDetector` cuts on the **off-wafer** side instead (§16 D), which is the only part of the
-scene that is actually black. The scan still refuses detections within 8 px of a frame edge or
-outside a `[0.70, 1.30] × nominal` radius band, but those are now a second line rather than the
-thing holding the result up.
+scene that is actually black. The scan still refuses detections within `WAFER_BORDER_MARGIN_PX`
+(8 px) of a frame edge or outside a `[0.90, 1.10] × nominal` radius band — tightened from
+`[0.70, 1.30]` on 2026-08-07, which had admitted a detection 30 mm off the rim — but those are a
+second line rather than the thing holding the result up.
 
 ### Shape of a run
 
 | Stage | What it does |
 |---|---|
-| A | Station direction = the cardinal from `C` with the most travel headroom; refuse if none clears the nominal radius |
-| B | Acquire the rim — the existing `ProbeAsync`, outward from `C`, `0.9 × R` approach jump |
-| C | N+1 samples, Θ stepped by 360/N between them, station following the rim; anomalous frames dropped; the last repeats θ₀ |
-| D | De-rotate + fit; settle the handedness, drop outliers past `max(3σ, 0.3 mm)`, refit once |
+| A | Park at (X min, Y max) — the corner of the stored travel envelope; refuse up front if the nominal rim radius lies outside the band that line sweeps |
+| B | Raster **down** in Y, one hop at a time, until the rim is detected; that spot is the station |
+| C | N+1 samples, Θ stepped by 360/N between them, **Θ only** — X/Y move only to re-acquire a lost rim; anomalous frames dropped; the last repeats θ₀ |
+| D | De-rotate + fit; settle the handedness, then drop outliers past `clamp(2.5σ, 0.15 mm, 0.5 mm)` and refit — **iterated** up to 3 passes, re-judging every sample each pass |
 | E | Closure check, then persist — with the notch, if a dropped frame turned out to be it |
+| F | Drive to `WaferCentreAt(Θ)` for the angle the run ends on, so it finishes on the wafer centre rather than parked out on the rim |
+
+Stage F runs **after** the save, so a move that fails costs the position rather than the
+measurement — the same ordering as the chuck run's return-to-centre — and is skipped if the closure
+check failed, if the operator cancelled, or if the target is outside the travel envelope.
+
+Stage D's **absolute** ceiling is what does the work at small N, and it is not a refinement of the
+sigma term but a correction to it: with 9 points a bad sample *drags the circle onto itself*, so its
+own residual shrinks while every other residual grows and it sits comfortably inside its own cut
+whatever σ is. The 0.5 mm ceiling is justified physically (6× the measured RMS), and the sigma term
+only takes over once N is large.
 
 Step-and-settle throughout, and Θ is stepped **monotonically** through one revolution so backlash in
 the reduction loads identically at every sample. The **closure check** re-reads θ₀ at the end: a
@@ -1303,15 +1408,17 @@ radius disagreeing with the first sample by more than 400 steps means the wafer 
 **Anomalous samples are dropped before they reach the fit.** Every frame is screened with
 `NotchDetector.TryCoarse` — the same test the notch sweep applies, at the same trigger — on the very
 frame the point came from, and a frame carrying the notch, a chip or debris is dropped rather than
-fitted. Leaving it to the 3σ drop is second-best: the bad point is in the fit that computes the cut
-it is then judged against. *Anomalous* is kept distinct from *missed* (`RimLook`): a miss sends the
-station hunting ±6 hops of Y, an anomaly means the rim is right there, so the sample simply ends.
+fitted. Leaving it to stage D's outlier pass is second-best: the bad point is in the fit that
+computes the cut it is then judged against. *Anomalous* is kept distinct from *missed* (`RimLook`):
+a miss sends the station hunting ±6 hops of Y, an anomaly means the rim is right there, so the
+sample simply ends.
 
-These are 200 mm wafers with a **notch**, not a flat: 2.9 mm of arc against a 4.9 mm frame, so at 15°
-sampling a sample overlaps it in ~30% of runs. The stage is stopped on it, so the fine detector gets
+These are 200 mm wafers with a **notch**, not a flat: 2.9 mm of arc against a 4.9 mm frame, so a
+sample overlaps it with probability `(4.9 + 2.9) / (rim mm between samples)` — ≈30 % at N = 24 (15°,
+26.2 mm), ≈10 % at the default N = 8. The stage is stopped on it, so the fine detector gets
 a free look, and if the notch is wholly in frame the scan **saves the notch angle with the fit** —
 same fields, same `Save()`, converted after the offset exists because the bearing is measured from
-the wafer centre. Worth roughly 1 scan in 13 to 1 in 45; a catch, not a search.
+the wafer centre. At N = 24 that is roughly 1 scan in 13 to 1 in 45 — opportunistic, not a search.
 
 ### The stored result is not a point
 
@@ -1338,21 +1445,24 @@ on the minority of runs where it lands wholly in frame; this finds it deliberate
 orientation, and stores its bearing so the wafer can be turned to a datum.
 
 It is a **continuous** Θ sweep, not step-and-settle: a revolution costs 72 s of rotation whatever
-happens (359,859 ticks ÷ Θ's 5000 steps/s cap), and stopping ~157 times would quadruple that, while
-sweeping adds nothing because the detector runs in ~130 ms against a 460 ms budget. Y follows the
-rim's computed path — a 10 mm excursion at 365 steps/s, since all it cancels is the 2.5 mm
-eccentricity. Detection is two-stage: a line-residual test that tolerates a half-visible notch does
-the hunting, then a chord-anchored measurement on a stationary frame gives the apex.
+happens (359,859 ticks ÷ Θ's 5000 steps/s cap), and stopping ≈157 times would quadruple that, while
+sweeping adds nothing because the detector runs in ≈130 ms against a 457 ms budget. Y follows the
+rim's computed path — on the 2026-08-07 calibration a 12.7 mm excursion peaking at 697 steps/s, since
+all it cancels is the 3.2 mm eccentricity, magnified by `R_w/h` = 1.97 because the station stands
+off-axis. Detection is two-stage: a line-residual test that tolerates a half-visible notch does the
+searching, then a chord-anchored measurement on a stationary frame gives the apex.
 
-**Check notch angle** measures the stored angle against the wafer rather than against the eye. It
+**Check notch angle** measures the stored angle against the wafer rather than against visual
+inspection. It
 solves the Θ that brings the notch to the camera station — solves, because the station's bearing
 *from the wafer centre* drifts as the eccentric centre orbits (`RimStation.TryStationBearing`, a
 three-pass fixed point) — re-measures there, and reports `measured − stored` in degrees and in mm of
 rim. Not circular: where it drives depends on the stored angle, what it measures there does not. It
-exists because the error budget says the software cannot be the source of a discrepancy of degrees:
-the apex is converted relative to the frame centre (±1.8° ceiling), the scan's 0.076 mm RMS bounds
-any `ChuckTicksPerRev` error to ±0.04° per revolution, and the 0.717 mm eccentricity caps an
-offset/sign error at ±0.82°.
+exists because the error budget says the software cannot be the source of a discrepancy of degrees.
+Against the 24-sample scan the budget was drawn on (RMS 0.076 mm, eccentricity 0.717 mm): the apex is
+converted relative to the frame centre, so its error is bounded by half a frame diagonal ÷ `R_w`
+(±1.8°); the fit RMS bounds any `ChuckTicksPerRev` error to ±0.04° per revolution; and a fully
+mirrored eccentricity caps an offset/sign error at `2e/R_w` = ±0.82°.
 
 > The measured separations, the reason a 4× downscale destroys them, the two-apex distinction, the
 > error budget behind the check, and the list of what is still unverified on hardware are in
@@ -1405,7 +1515,7 @@ paints the newest finished frame.
 A camera-open failure must never block motion: the toolbar simply shows **Retry camera**, and
 everything drive-side keeps working.
 
-### Captured-bitmap pixel format — the indexed trap
+### Captured-bitmap pixel format — the indexed-format constraint
 
 `HalconBitmap.ToBitmap` returns **`Format8bppIndexed` for a 1-channel (mono) frame** and
 `Format24bppRgb` for colour. Indexed is the right choice for the live view — a third of the
@@ -1499,7 +1609,7 @@ routine does not depend on the drive's own limit reaction and needs no per-axis 
 quick-stops at its switches (`0x3701 = 6`), **X** ignores them (`0x3701 = -1`) and is stopped by
 this loop alone. Two consequences on X: `RecoverAndBackOff`'s `EnableDrive(true)` re-enables an
 axis that was never in Quick Stop (harmless — it is unconditional), and X coasts further past the
-switch than Y before the Stop bites, because its `0x6084` decel ramp is gentler. The *stored*
+switch than Y before the Stop takes effect, because its `0x6084` decel ramp is gentler. The *stored*
 limit is unaffected either way — the position is recorded the moment the bit sets, before the Stop.
 
 ---
@@ -1508,7 +1618,7 @@ limit is unaffected either way — the position is recorded the moment the bit s
 
 ### Read Params — read-only
 `DriveDiagnostics` is a **read-only** sweep — it calls only `readNumber`, so it can't disturb
-what it reports. This sidesteps the circularity of checking via PD Studio (opening a project
+what it reports. This avoids the circularity of checking via PD Studio (opening a project
 there may *write* it on connect). Three groups:
 
 * **Limits** — `0x2031`, `0x6073`, `0x6075`, `0x203B:01/02`, `0x6072`, `0x6080` (fixed units:
@@ -1542,7 +1652,7 @@ no validation beyond the drive's own — a wrong object or value can change any 
   Operation Enabled).
 * **All jogging is momentary** (button release / stick re-centre / puck re-centre).
 * **Focus loss** → `StopHoldRotate` always, then `StopAll` + pause joystick timer (the latter
-  skipped while `_busy`, so it can't stomp a running op or race the worker on the single
+  skipped while `_busy`, so it cannot disturb a running op or race the worker on the single
   channel).
 * **Joystick read failure** → stop the axes it was driving, and clear the send-on-change caches
   so a resume re-commands rather than assuming the last state held.

@@ -144,15 +144,7 @@ The error of each sample point $i$ to the best fit circle can be modelled by $f_
 
 </div>
 
-<iframe src="../RawSummationVisualiser.html" width="100%" height="620px" style="border:none;">
-    Your browser does not support iframes.
-</iframe>
-
 *Why the squared sum, and not the raw one — error balancing vs. least squares.*
-
-<iframe src="../DEFBowl.html" width="100%" height="620px" style="border:none;">
-    Your browser does not support iframes.
-</iframe>
 
 *$\Phi$ as a bowl over the coefficients: the minimum is the fit, and the bowl's shape is why
 the normal equations solve it in one step.*
@@ -281,10 +273,6 @@ $$\frac {dL}{du} = 2Mu - 2\lambda Nu = 0$$
 $$2Mu = 2\lambda Nu$$
 
 $$Mu = \lambda Nu$$
-
-<iframe src="../LagrangeVisualiser.html" width="100%" height="620px" style="border:none;">
-    Your browser does not support iframes.
-</iframe>
 
 *The constrained minimum in 3D: where the cost surface's gradient is parallel to the
 constraint's.*

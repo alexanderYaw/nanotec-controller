@@ -55,8 +55,8 @@ namespace NanotecController
         // These signs map each pot's raw deflection to a screen direction — flip on the bench if
         // pushing right/up steers the wrong way on screen. They are independent of the raw
         // AnalogAxes signs above (which tune raw drive motion, a different frame).
-        private const int VISION_STICK_X = +1;   // pot-X deflection → screen right+ (flipped on the bench 2026-08-07)
-        private const int VISION_STICK_Y = +1;   // pot-Y deflection → screen up+  (flipped on the bench 2026-08-07)
+        private const int VISION_STICK_X = -1;   // pot-X deflection → screen right+ (inverted on the bench 2026-08-07)
+        private const int VISION_STICK_Y = -1;   // pot-Y deflection → screen up+  (inverted on the bench 2026-08-07)
 
         // VISION-mode twist → rotate about the crosshair. The twist starts the tuned HoldRotate
         // controller (Θ spins while X/Y follows to pin the crosshair); this sign maps the twist

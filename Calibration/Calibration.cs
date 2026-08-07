@@ -16,7 +16,10 @@ namespace NanotecController
         /// <summary>Explicit home, used where Center doesn't apply (Z has no two references).</summary>
         public long? Home { get; set; }
 
-        /// <summary>Motor steps per millimetre of stage travel (user-entered). Null until entered;
+        /// <summary>Motor steps per millimetre of stage travel. Either entered by hand in the
+        /// calibration window, or — for X and Y — derived by the camera-scale calibration from the
+        /// fiducial's known diameter, which overwrites whatever was there. See
+        /// <see cref="PixelStepAffine.UmPerPixel"/> for the run that last derived it. Null until set;
         /// Θ never uses it, since degrees go via ChuckTicksPerRev.</summary>
         public double? StepsPerMm { get; set; }
 
@@ -38,6 +41,24 @@ namespace NanotecController
         /// <summary>RMS fit error of the calibration, in steps.</summary>
         public double ResidualSteps { get; set; }
         public string? Timestamp { get; set; }
+
+        /// <summary>Fiducial diameter (mm) this run was told to assume — the single physical length
+        /// the whole scale rests on.</summary>
+        public double? FiducialDiameterMm { get; set; }
+
+        /// <summary>Image scale derived from that diameter. Null on an affine solved before scale
+        /// derivation existed, or when no sample carried a usable radius, in which case the axes'
+        /// StepsPerMm are still whatever was last entered by hand.</summary>
+        public double? UmPerPixel { get; set; }
+
+        /// <summary>Sample-to-sample spread of the measured fiducial radius, as a percent of the mean.
+        /// It passes straight through to StepsPerMm, so this is the scale's error bar.</summary>
+        public double? ScaleSpreadPercent { get; set; }
+
+        /// <summary>Departure from perpendicular of the affine's two pixel axes once scaled to mm.
+        /// Nothing in the solve forces this to zero, so a large value means the affine is not a
+        /// rotation plus scale and the derived StepsPerMm should not be trusted.</summary>
+        public double? ScaleSkewDeg { get; set; }
     }
 
     /// <summary>
