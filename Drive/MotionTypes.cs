@@ -8,24 +8,14 @@ namespace NanotecController
         X,
         Y,
         Z,
-        Theta, // the rotary chuck
+        Theta,
     }
 
     /// <summary>
-    /// Per-axis configuration for the multi-axis motion layer.
-    ///
-    /// <para><b>Axis identity.</b> All four drives report EtherCAT NodeID 1, so an
-    /// axis is identified by its <see cref="BusPosition"/> — its index in the
-    /// daisy-chain scan order (exactly how PD Studio enumerates them). The mapping
-    /// of bus position → mechanical axis is established once at bring-up via the
-    /// wiggle test (jog each, watch which axis moves) and corrected here if X/Y are
-    /// swapped, etc.</para>
-    ///
-    /// <para><b>Units.</b> Jog velocities are in the drive's own velocity units
-    /// (object 0x60FF) — NOT yet converted to mm/deg. Per the Nanotec example the
-    /// unit is typically rpm, so keep these LOW until verified on hardware. Real
-    /// unit conversion (counts↔mm, counts↔deg) belongs with MoveAbsolute and will
-    /// read the factor-group objects (0x6091/0x6092) live from the drive.</para>
+    /// Per-axis configuration for the motion layer. All four drives report EtherCAT NodeID 1, so an
+    /// axis is identified by its <see cref="BusPosition"/> in the daisy-chain scan order. Jog
+    /// velocities are in the drive's own units (0x60FF), not mm/deg. Soft travel limits live in
+    /// <see cref="CalibrationStore"/>, not here.
     /// </summary>
     public sealed record AxisConfig
     {
@@ -43,20 +33,13 @@ namespace NanotecController
         /// <summary>Upper limit of the per-axis jog-speed slider (drive velocity units).</summary>
         public int JogVelocityMax { get; init; } = 2000;
 
-        // NOTE: soft travel limits are NOT here. They are captured per machine and persisted in
-        // CalibrationStore, and enforced by SoftLimitTracker. The drive's own 0x607D reads a fake
-        // ±9999999 on these units, so the stored limits are the only travel protection on the axes
-        // without a working switch — do not reintroduce a second, unenforced copy in this config.
-
+        /// <summary>Set where the axis is mounted against the others' polarity (Z).</summary>
         public bool InvertDirection { get; init; }
     }
 
     /// <summary>
-    /// The inspection table's physical axis layout. Confirmed EtherCAT scan order on
-    /// this machine is <b>X, Y, Z, Θ</b> (bus positions 0..3). This is the single
-    /// source of truth for the bus-position → axis mapping; the joystick, GUI, and
-    /// diagnostics all reference it. Jog speeds are placeholders in drive units —
-    /// verify scaling on hardware before raising them (units are configurable per axis).
+    /// The single source of truth for the bus-position → axis mapping. Confirmed EtherCAT scan
+    /// order on this machine is X, Y, Z, Θ (bus positions 0..3).
     /// </summary>
     public static class TableAxes
     {
@@ -64,13 +47,13 @@ namespace NanotecController
         [
             new AxisConfig { Id = AxisId.X,     Name = "X",     BusPosition = 0, JogVelocityDefault = 4000, JogVelocityMax = 6000 },
             new AxisConfig { Id = AxisId.Y,     Name = "Y",     BusPosition = 1, JogVelocityDefault = 4000, JogVelocityMax = 12000 },
-            new AxisConfig { Id = AxisId.Z,     Name = "Z",     BusPosition = 2, JogVelocityDefault = 300,  JogVelocityMax = 800, InvertDirection = true },   // Z is mounted "upside down" relative to the others, so invert its jog direction to match intuition
+            new AxisConfig { Id = AxisId.Z,     Name = "Z",     BusPosition = 2, JogVelocityDefault = 300,  JogVelocityMax = 800, InvertDirection = true },
             new AxisConfig { Id = AxisId.Theta, Name = "Theta", BusPosition = 3, JogVelocityDefault = 400,  JogVelocityMax = 3200},
         ];
 
         /// <summary>Config for an axis, or null if it is not in the layout. Avoids indexing
-        /// <see cref="Default"/> by the enum value, which only works while bus order happens to
-        /// match declaration order.</summary>
+        /// <see cref="Default"/> by the enum value, which only works while bus order matches
+        /// declaration order.</summary>
         public static AxisConfig? For(AxisId id)
         {
             foreach (AxisConfig c in Default) if (c.Id == id) return c;

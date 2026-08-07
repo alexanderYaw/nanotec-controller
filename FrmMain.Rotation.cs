@@ -1,20 +1,26 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 
 namespace NanotecController
 {
-    // FrmMain — rotation ABOUT the camera crosshair. The Θ axis rotates the chuck about its
-    // own mechanical centre; combining it with an X/Y shift (CrosshairRotation) makes the
-    // chuck centre orbit the crosshair, which pins the point under the crosshair while Θ turns.
-    // Runs CONTINUOUS, like the joystick: Θ jogs with a soft-ramped setpoint while a fast loop
-    // steers X/Y (also in velocity mode) toward the pin position, driven by an ANALYTIC velocity
-    // feedforward plus proportional trim — so all three axes move together, not step-and-settle.
-    // The hot loop touches the drives with velocity-only writes and position-only reads (arming
-    // mode/controlword once up front) to keep the SDO traffic — and so the loop period — down.
-    // FrmMain owns this because NanoLib access must be serialized. (Partial of FrmMain.)
+    /// <summary>
+    /// FrmMain — rotation ABOUT the camera crosshair. Θ rotates the chuck about its own mechanical
+    /// centre; combining that with an X/Y shift (<see cref="CrosshairRotation"/>) makes the chuck
+    /// centre orbit the crosshair, pinning the point under it while Θ turns.
+    ///
+    /// Runs CONTINUOUS, like the joystick: Θ jogs with a soft-ramped setpoint while a fast loop
+    /// steers X/Y in velocity mode toward the pin position, driven by an ANALYTIC velocity
+    /// feedforward plus proportional trim. The hot loop uses velocity-only writes and position-only
+    /// reads, arming mode/controlword once up front, so SDO traffic does not set the loop period.
+    /// FrmMain owns this because NanoLib access must be serialized.
+    ///
+    /// Tuning rationale for every constant below: Developer Guide §15.
+    /// </summary>
     public partial class FrmMain
     {
-        // Θ jog velocity during a rotation (drive units = steps/s, per the K-capture).
+        #region Rotation tuning
+
+        /// <summary>Θ jog velocity during a rotation (drive units = steps/s).</summary>
         private int _rotateThetaSpeed = 800;
 
         [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -23,79 +29,65 @@ namespace NanotecController
             get => _rotateThetaSpeed;
             set => _rotateThetaSpeed = Math.Clamp(value, 50, 2000);
         }
-        // Soft-start/stop: ramp the Θ velocity SETPOINT up over this long at the start, and back down
-        // as it nears the target, so Θ never accelerates faster than the X/Y follower can track — this
-        // is what negates the start/stop swing-out. Larger = gentler (and a slightly slower move). If a
-        // residual swing-out remains at the ends, raise this.
+
+        /// <summary>Soft-start/stop for the Θ velocity SETPOINT, so Θ never accelerates faster than
+        /// the X/Y follower can track — this is what negates the start/stop swing-out. Raise if a
+        /// residual swing-out remains at the ends.</summary>
         private const double ROTATE_THETA_RAMP_MS = 400.0;
-        private const int ROTATE_THETA_MIN_SPEED = 40;   // floor so the ramp ends don't stall Θ (steps/s)
-        // Head start: Θ jogs this long before X/Y compensates. 0 = OFF (X/Y pins from the first
-        // instant). A nonzero value makes Θ visibly lead, but the feature swings off the crosshair
-        // during the uncompensated window and is yanked back — worse for visual centering, so OFF.
+        private const int ROTATE_THETA_MIN_SPEED = 40;   // floor so the ramp ends don't stall Θ
+
+        /// <summary>Θ head start before X/Y compensates. 0 = OFF: a nonzero value makes Θ visibly
+        /// lead, but the feature swings off the crosshair during the uncompensated window and is
+        /// yanked back — worse for visual centering.</summary>
         private const int ROTATE_XY_DELAY_MS = 0;
-        // X/Y position-follow loop: period, proportional gain (velocity units per step of error),
-        // velocity clamp, smallest commanded velocity, and the dead-band under which an axis is
-        // held at zero velocity. GAIN/VMAX likely need tuning on hardware (units aren't mm/deg yet).
+
         private const int ROTATE_FOLLOW_MS = 25;
-        // GAIN is velocity-units per step of error. Too high overshoots: at velocity V the axis
-        // travels ~K·V·dt steps per tick, so a gain above ~1/(K·dt) ≈ 40 ("deadbeat") oscillates.
-        // With FF carrying the baseline velocity, GAIN only trims the residual — any FF velocity
-        // error Δv parks a standing offset of Δv/GAIN steps — but it ALSO multiplies the error
-        // NOISE (read-timing skew × axis speed, so ∝ pin radius) straight into the velocity
-        // command. Measured at GAIN=10 on a far-radius rotate: |Δvel| ≈ 108 vu/tick on a 574 vu
-        // baseline — 19% modulation at 40 Hz, the visible jitter — while the FF gains are within
-        // ~3% (K-capture), so a soft trim suffices: at 4, worst-case parked offset ≈ 3%·600/4 ≈
-        // 5 steps. Raise only if the mid-rotation pin err grows; expect jitter back in return.
+
+        /// <summary>Velocity-units per step of error. Above ~1/(K·dt) ≈ 40 it oscillates. With FF
+        /// carrying the baseline velocity this only trims the residual, and it multiplies error NOISE
+        /// (∝ pin radius) straight into the velocity command — which at GAIN=10 was the visible
+        /// jitter. Raise only if the mid-rotation pin err grows; expect jitter back in return.</summary>
         private const double ROTATE_FOLLOW_GAIN = 4.0;
+
         private const int ROTATE_FOLLOW_VMAX = 3200;   // X/Y follow speed cap (velocity units)
-        // Smallest commanded follow velocity (1 vu = 1 step/s). With FF supplying a steady baseline
-        // velocity, a low floor is safe and lets the slow/reversing axis creep instead of bang-banging
-        // at 40 (= 1 step/tick), which was the jitter. The earlier MINVEL=12 jitter was pure-P commands
-        // oscillating around zero — FF removes that. Raise if the drive stalls at very low velocity.
+
+        /// <summary>Smallest commanded follow velocity. With FF supplying a steady baseline a low
+        /// floor is safe, letting the slow/reversing axis creep instead of bang-banging at 1
+        /// step/tick. Raise if the drive stalls at very low velocity.</summary>
         private const int ROTATE_FOLLOW_MINVEL = 10;
         private const long ROTATE_FOLLOW_DEADBAND = 15;
-        // Radians of CHUCK rotation per motor tick (2π / ticks-per-rev). Converts the measured Θ
-        // tick-rate into the angular rate the analytic velocity feedforward needs.
+
+        /// <summary>Radians of CHUCK rotation per motor tick, converting the Θ tick-rate into the
+        /// angular rate the analytic feedforward needs.</summary>
         private static readonly double ROTATE_RADPERTICK = 2.0 * Math.PI / CrosshairRotation.ChuckTicksPerRev;
-        // Feedforward gain K (drive-velocity-units per step-per-tick of the target's motion), PER
-        // AXIS. The FF term is the ANALYTIC target velocity (CrosshairRotation.TryXyTargetVelocity
-        // × Θ tick-rate) rather than a numeric difference of quantized targets — so it is noise-free,
-        // and the old fragility (a bad estimate fighting the P-term) is gone. ENABLED: FF carries the
-        // baseline follow velocity and cancels the follower's constant time-lag, which is why
-        // ROTATE_LOOKAHEAD_MS is 0 (running both would double-compensate). K is a single per-axis
-        // scalar — steps moved per velocity-unit per second — measured by a temporary K-capture
-        // diagnostic (since removed); re-measure if the drives' velocity scaling ever changes.
-        private const double ROTATE_FOLLOW_FF_X = 39.84;   // measured via K-capture (1 vu = 1 step/s ⇒ ≈40)
+
+        /// <summary>Feedforward gain per axis: steps moved per velocity-unit per second. Measured by a
+        /// temporary K-capture diagnostic (since removed) — RE-MEASURE if the drives' velocity scaling
+        /// ever changes.</summary>
+        private const double ROTATE_FOLLOW_FF_X = 39.84;
         private const double ROTATE_FOLLOW_FF_Y = 39.60;
-        // Master (Θ) lookahead: project Θ this many ms into the future (via the COMMANDED setpoint
-        // velocity) before computing the X/Y pin target. What's left for it to cover is NOT servo
-        // lag (the drive-side ramps + commanded-setpoint FF reduced that to ~2 ms) but MECHANICAL
-        // COMPLIANCE: under load the stage elastically lags the motor encoders by a
-        // velocity-proportional twist that winds out during the move and springs back at stop —
-        // invisible to every motor-side metric, so this is tuned by the CAMERA, not the log.
-        // Bracketed empirically: 30 ms → feature visibly LEADS; 0 ms → visibly LAGS by about as
-        // much ⇒ optimum ≈ 15. NOTE the 'mid-rotation pin err' below is motor-side and SHOULD
-        // read ≈ +lookahead×velocity when the camera is happy — do not re-zero it against that.
+
+        /// <summary>Θ lookahead, OFF because the commanded-setpoint FF already cancels the follower's
+        /// time-lag and running both would double-compensate. What it would cover is mechanical
+        /// compliance, which is invisible to motor-side metrics — see Developer Guide §15, "Two knobs
+        /// that are OFF", before re-enabling it.</summary>
         private const double ROTATE_LOOKAHEAD_MS = 0.0;
-        // Complementary filter on the Θ used for the X/Y pin target. Each tick the model is
-        // PREDICTED forward with the commanded setpoint velocity (exact and lag-free — we command
-        // it) and then corrected by this fraction of the remaining measurement error (so it can
-        // never drift from the real Θ). Raw Θ reads carry a few ticks of timing/quantization noise,
-        // and the pin target amplifies Θ noise by the pin RADIUS — which is the command jitter seen
-        // when rotating about a point far from the chuck centre. A plain EMA would LAG a moving Θ
-        // and reintroduce the swing; prediction-from-the-setpoint doesn't. 0.15 ⇒ ~170 ms correction
-        // time-constant (well inside the settle window) and ~7× quieter targets. 1.0 disables (raw).
+
+        /// <summary>Complementary filter on the Θ feeding the pin target: predicted forward from the
+        /// commanded setpoint velocity, then corrected by this fraction of the remaining measurement
+        /// error so it cannot drift. The pin target amplifies Θ noise by the pin RADIUS. A plain EMA
+        /// would LAG a moving Θ and reintroduce the swing. 1.0 disables (raw).</summary>
         private const double ROTATE_THETA_BLEND = 0.15;
-        // Drive-side profile accel/decel (0x6083/0x6084, counts/s²) applied to all three axes for
-        // the duration of a rotation and restored on exit. These bound how fast the drive chases
-        // each new 0x60FF target; the stored default was an unmodeled lag/jerk on every 25 ms
-        // velocity step. X/Y: high enough to reach even a full VMAX step within ~half a tick
-        // (3200/0.0125 ≈ 256k). Θ: high enough that the actual velocity tracks the soft-ramped
-        // setpoint within a few ms — which the commanded-setpoint FF now assumes.
+
+        /// <summary>Drive-side profile accel/decel applied to all three axes for the duration and
+        /// restored on exit; the stored defaults were an unmodeled lag on every 25 ms velocity step.
+        /// X/Y reach a full VMAX step within ~half a tick; Θ tracks the soft-ramped setpoint within a
+        /// few ms, which the FF assumes.</summary>
         private const int ROTATE_XY_ACCEL = 250000;
         private const int ROTATE_THETA_ACCEL = 20000;
-        // Safety: if X/Y fall this far behind Θ, abort (can't keep up, or wrong handedness/polarity
-        // → a velocity loop would otherwise run away). After Θ stops, keep following up to settle-ms.
+
+        /// <summary>If X/Y fall this far behind Θ, abort — it cannot keep up, or the
+        /// handedness/polarity is wrong and a velocity loop would run away.</summary>
         private const long ROTATE_FOLLOW_MAXERR = 4000;
         private const int ROTATE_SETTLE_MS = 1500;
         private const int ROTATE_MAX_MS = 180000;
@@ -676,5 +668,7 @@ namespace NanotecController
             if (c.Max.HasValue && rawTarget > c.Max.Value)
                 throw new DriveException($"{id} target {rawTarget:N0} > Max {c.Max.Value:N0} — rotation needs more travel than available.");
         }
+
+        #endregion
     }
 }

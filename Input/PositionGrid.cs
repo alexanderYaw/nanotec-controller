@@ -1,20 +1,13 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace NanotecController
 {
-    /// <summary>
-    /// A 2-D map of the table's XY travel envelope. Renders the live chuck position as a
-    /// filled dot and a user-picked target as a hollow crosshair; clicking inside the plot
-    /// stages a target (clamped to the limits) and raises <see cref="TargetPicked"/>.
-    ///
-    /// Every coordinate exchanged with this control is in the USER frame — the same frame the
-    /// readouts and Move-To fields use (Y already inverted upstream in FrmMain). The control is
-    /// a pure renderer: it owns no drive access and moves nothing; the host decides what to do
-    /// with a picked target. The plot preserves true XY aspect (letterboxed) so on-screen
-    /// distances reflect real geometry.
-    /// </summary>
+    /// <summary>A 2-D map of the table's XY travel envelope: live position as a filled dot, a picked
+    /// target as a hollow crosshair. Every coordinate exchanged is in the USER frame. A pure renderer
+    /// owning no drive access — the host decides what to do with a picked target. Preserves true XY
+    /// aspect (letterboxed) so on-screen distances reflect real geometry.</summary>
     public sealed class PositionGrid : Control
     {
         private long _xMin, _xMax = 1, _yMin, _yMax = 1;
@@ -60,7 +53,7 @@ namespace NanotecController
             Invalidate();
         }
 
-        // -- geometry -----------------------------------------------
+        #region Geometry
         private const int PlotMargin = 46;
         private RectangleF PlotRect()
         {
@@ -96,7 +89,9 @@ namespace NanotecController
             return (v < 0) ? 0 : ((v > 1) ? 1 : v);
         }
 
-        // -- input -----------------------------------------------
+        #endregion
+
+        #region Input
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
@@ -111,7 +106,9 @@ namespace NanotecController
             TargetPicked?.Invoke(_target);
         }
 
-        // -- render -----------------------------------------------
+        #endregion
+
+        #region Render
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -158,8 +155,7 @@ namespace NanotecController
                 g.FillEllipse(brush, p.X - 5, p.Y - 5, 10, 10);
             }
 
-            // Locked during a move (host sets Enabled = false): dim the plot and say so.
-            // The live dot keeps updating underneath, so motion is still visible.
+            // Locked during a move: dim the plot, but the live dot keeps updating underneath.
             if (!Enabled)
             {
                 using var veil = new SolidBrush(Color.FromArgb(140, 245, 245, 245));
@@ -185,5 +181,7 @@ namespace NanotecController
             base.OnResize(e);
             Invalidate();
         }
+
+        #endregion
     }
 }

@@ -1,21 +1,19 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 
 namespace NanotecController
 {
     /// <summary>
-    /// The surface the tool windows (FrmCalibration, FrmParams, FrmPosition, FrmVision) call
-    /// back into. <see cref="FrmMain"/> is the sole implementer: it owns the single NanoLib
-    /// channel, serializes all drive access, and coordinates the status/joystick timers, so the
-    /// windows stay pure UI and never touch a drive directly.
-    ///
-    /// This interface exists to (a) document that owner surface in ONE place instead of scattered
-    /// across the FrmMain partials, and (b) decouple the windows from the concrete form so they can
-    /// be exercised against a fake. Members are grouped by the partial that implements them.
+    /// The surface the tool windows call back into. <see cref="FrmMain"/> is the sole implementer: it
+    /// owns the single NanoLib channel and serializes all drive access, so the windows stay pure UI.
+    /// Existing as an interface documents that owner surface in ONE place rather than scattered
+    /// across the FrmMain partials, and lets the windows be exercised against a fake. Members are
+    /// grouped by the partial that implements them.
     /// </summary>
     public interface IMotionHost
     {
-        // --- Calibration / positioning (FrmMain.Calibration.cs) ---
+        #region Calibration and positioning (FrmMain.Calibration.cs)
+
         CalibrationStore Calibration { get; }
         bool CanCaptureCalibration { get; }
         bool CanMoveCalibration { get; }
@@ -33,10 +31,9 @@ namespace NanotecController
         /// <summary>Aborts any preplanned move in progress. Cooperative — it only sets a flag; the
         /// running op notices at its next poll and halts the drives on its own thread.</summary>
         void RequestStop();
-        /// <summary>Locks out the host's MANUAL motion controls (jog buttons, joystick poll, puck,
-        /// relative moves) for the lifetime of the returned scope. For a caller running a LONG
-        /// SEQUENCE of moves — the auto centre-find — where the host's own per-op busy flag drops
-        /// between steps and would otherwise re-enable manual input mid-run.</summary>
+        /// <summary>Locks out the host's MANUAL motion controls for the scope's lifetime. For callers
+        /// running a LONG SEQUENCE of moves, where the host's per-op busy flag drops between steps and
+        /// would otherwise re-enable manual input mid-run.</summary>
         IDisposable BeginExternalOp(string what);
         void SetCalibrationMin(AxisId id);
         void SetCalibrationMax(AxisId id);
@@ -44,14 +41,20 @@ namespace NanotecController
         void ClearCalibrationMin(AxisId id);
         void ClearCalibrationMax(AxisId id);
 
-        // --- Drive parameters (FrmMain.Params.cs) ---
+        #endregion
+
+        #region Drive parameters (FrmMain.Params.cs)
+
         bool CanAccessParams { get; }
         bool CanWriteParams { get; }
         Task ReadAllParamsAsync(IProgress<string> sink);
         Task WriteObjectAsync(AxisId id, ushort index, byte sub, long value, uint bits, IProgress<string> sink);
         Task SaveParamsToNvAsync(AxisId id, IProgress<string> sink);
 
-        // --- Rotate about crosshair (FrmMain.Rotation.cs) ---
+        #endregion
+
+        #region Rotate about crosshair (FrmMain.Rotation.cs)
+
         int? RotationSign { get; }
         int RotateThetaSpeed { get; set; }
         void SetRotationSign(int sign);
@@ -63,7 +66,10 @@ namespace NanotecController
         Task HoldRotateAsync(int direction, Func<bool>? stopWhen = null);
         void StopHoldRotate();
 
-        // --- Continuous rim sweep, for the notch search (FrmMain.RimSweep.cs) ---
+        #endregion
+
+        #region Continuous rim sweep (FrmMain.RimSweep.cs)
+
         /// <summary>Turns Θ continuously while Y follows <paramref name="stationYAt"/> (a USER-frame Y
         /// for a CHUCK angle in degrees), until <paramref name="stopWhen"/> fires or
         /// <paramref name="maxDegrees"/> are swept. <paramref name="stopWhen"/> is polled on the drive
@@ -80,8 +86,13 @@ namespace NanotecController
         /// take less than ~112 s.</summary>
         int ThetaSpeedMax { get; }
 
-        // --- Drift-corrected vision jog (FrmMain.Vision.cs) ---
+        #endregion
+
+        #region Drift-corrected vision jog (FrmMain.Vision.cs)
+
         void VisionJogUser(int vxUser, int vyUser);
         void VisionStop();
+
+        #endregion
     }
 }

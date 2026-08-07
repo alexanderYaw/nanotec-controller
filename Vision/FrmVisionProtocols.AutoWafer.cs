@@ -1,69 +1,69 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace NanotecController
 {
-    // FrmVisionProtocols — AUTOMATIC wafer centre-find by Θ scan.
-    //
-    // The chuck centre-find drives the stage right around the chuck rim. That cannot work for the
-    // wafer: viewing the wafer rim needs motor positions on a circle of the wafer's own radius about
-    // the chuck centre, and a 200 mm wafer's rim circle is larger than the X/Y travel in both axes —
-    // only a band of it is reachable, and a circle fit over one short arc is badly conditioned.
-    //
-    // But the chuck IS the Θ axis and Θ is continuous, so the wafer can be turned instead of
-    // circled. The stage parks on ONE reachable spot on the rim and Θ sweeps the whole rim past the
-    // camera. De-rotating each sample by the angle it was taken at (WaferCentreScan) puts the points
-    // back on a full 360° circle, and the same Pratt fit the chuck uses finishes the job.
-    //
-    // The one reachable spot is a CORNER of the travel, not a cardinal from the chuck centre. No
-    // cardinal reaches a 200 mm rim — the best has ~88 mm against the ~100 mm needed — but the corner
-    // (X min, Y max) stands ~101 mm off the rotation axis, so the line X = X min does cross the rim.
-    // The run parks in that corner and rasters down Y until the rim appears.
-    //
-    // STEP-AND-SETTLE, exactly as the chuck run: Θ moves, stops, and only then is a frame grabbed,
-    // so the angle and the position paired with each frame are both exact.
-    //
-    // Shape of a run:
-    //   A  park at (X min, Y max) — the corner of the stored travel envelope
-    //   B  raster down in Y until the rim is detected; that spot is the station
-    //   C  N+1 samples, rotating Θ by 360/N between them (the last repeats θ₀ as a closure check).
-    //      Θ ONLY — X and Y stand still unless a sample misses, when Y searches either side of the
-    //      station until the rim is back in the ~4 mm field the eccentricity swept it out of.
-    //      Every frame is screened with the notch detector's coarse test and an anomalous one is
-    //      DROPPED rather than fitted — see RimLook — and if the anomaly then measures as the notch
-    //      on the stationary frame, that sighting is kept and saved with the fit
-    //   D  de-rotate + fit (WaferCentreScan), which also settles the handedness and drops outliers
-    //   E  closure check, then persist the offset (chuck frame) + radius + fit metadata + any notch
-    //   F  drive to the wafer centre for the Θ the run ends on
-    // (Partial of FrmVisionProtocols; layout lives in FrmVisionProtocols.cs.)
+    /// <summary>
+    /// FrmVisionProtocols — AUTOMATIC wafer centre-find by Θ scan. The chuck rim can be circled with
+    /// the stage; a 200 mm wafer's rim circle exceeds the X/Y travel in both axes, so only a band is
+    /// reachable and a fit over one short arc is badly conditioned.
+    ///
+    /// But the chuck IS the Θ axis, so the wafer is TURNED rather than circled: the stage parks on
+    /// one reachable spot and Θ sweeps the whole rim past the camera. De-rotating each sample by its
+    /// own angle (<see cref="WaferCentreScan"/>) puts the points back on a full 360° circle, and the
+    /// same Pratt fit the chuck uses finishes the job. That spot is a CORNER of the travel, not a
+    /// cardinal — no cardinal reaches a 200 mm rim, but (X min, Y max) stands ~101 mm off the axis.
+    ///
+    /// STEP-AND-SETTLE, exactly as the chuck run: Θ moves, stops, and only then is a frame grabbed.
+    ///
+    /// Shape of a run:
+    ///   A  park at (X min, Y max) — the corner of the stored travel envelope
+    ///   B  raster down in Y until the rim is detected; that spot is the station
+    ///   C  N+1 samples, rotating Θ by 360/N between them (the last repeats θ₀ as a closure check).
+    ///      Θ ONLY, unless a sample misses, when Y searches either side of the station. Every frame
+    ///      is screened with the notch detector's coarse test and an anomalous one DROPPED; if it
+    ///      then measures as the notch on a stationary frame, that sighting is saved with the fit
+    ///   D  de-rotate + fit, which also settles the handedness and drops outliers
+    ///   E  closure check, then persist the offset (chuck frame) + radius + metadata + any notch
+    ///   F  drive to the wafer centre for the Θ the run ends on
+    /// </summary>
     public sealed partial class FrmVisionProtocols
     {
-        // Acceptance band on |E − chuck centre|, as fractions of the nominal radius. Wide enough for
-        // any eccentricity that could physically sit on the chuck, tight enough to reject a
-        // detection that latched onto something other than the rim.
+        #region Auto wafer scan tunables
+
+        /// <summary>Acceptance band on |E − chuck centre| as fractions of the nominal radius. Wide
+        /// enough for any eccentricity that could physically sit on the chuck, tight enough to reject
+        /// a detection that latched onto something else.</summary>
         private const double WAFER_BAND_LO_FRAC = 0.70;
         private const double WAFER_BAND_HI_FRAC = 1.30;
-        // A detection this close to the frame edge (px) is refused. WaferEdgeDetector already drops
-        // boundary points sitting on the frame itself; this widens that margin, since a rim point
-        // that close to the edge has half its neighbourhood out of view.
+
+        /// <summary>A detection this close to the frame edge (px) is refused — wider than
+        /// WaferEdgeDetector's own margin, a rim point that close having half its neighbourhood out
+        /// of view.</summary>
         private const double WAFER_BORDER_MARGIN_PX = 8.0;
-        // Local search when a sample misses: this many hops either side of the station, along Y, down
-        // first. BOTH directions are needed — the eccentricity swings the rim radially in and out as
-        // Θ turns, and at the station the outward radial direction is +Y, so a downward-only search
-        // walks the wafer's whole interior on every outward swing. Following a radial swing of e
-        // costs e/|r̂·ŷ| of Y travel and |r̂·ŷ| ≈ 0.5 here, so ±6 hops ≈ ±9 mm of Y covers roughly
-        // ±4.5 mm of eccentricity. Bounded on purpose: a lost sample is cheap, a 100 mm traverse is not.
+
+        /// <summary>Local search when a sample misses: this many hops either side of the station,
+        /// along Y, down first. BOTH directions are needed — the eccentricity swings the rim radially
+        /// in and out, so a downward-only search walks the wafer's interior on every outward swing.
+        /// Bounded on purpose: a lost sample is cheap, a 100 mm traverse is not.</summary>
         private const int WAFER_SEARCH_HOPS = 6;
-        // Θ speed for the scan's rotations (drive units = steps/s). Θ tops out at 3200; a full
-        // revolution is 359,859 ticks, so one scan spends ~2 minutes turning whatever N is.
+
+        /// <summary>Θ speed for the scan's rotations (steps/s). Θ tops out at 3200 and a revolution is
+        /// 359,859 ticks, so a scan spends ~2 minutes turning whatever N is.</summary>
         private const int WAFER_THETA_SPEED = 5000;
-        // Arrival tolerance for the station moves, as a fraction of one hop.
+
+        /// <summary>Arrival tolerance for the station moves, as a fraction of one hop.</summary>
         private const double WAFER_ARRIVE_FRAC = 0.25;
-        // The closure sample returns to θ₀; its radius must reproduce the first sample's to within
-        // this many steps or the wafer moved on the chuck and the whole fit is void.
+
+        /// <summary>The closure sample returns to θ₀; its radius must reproduce the first sample's to
+        /// within this, or the wafer moved on the chuck and the whole fit is void.</summary>
         private const double WAFER_CLOSURE_TOL_STEPS = 400;
+
+        #endregion
+
+        #region Run state
 
         private volatile bool _waferCancel;
         private bool _waferRunning;
@@ -83,7 +83,9 @@ namespace NanotecController
             double ThetaDeg, double ApexRow, double ApexCol, double CrossRow, double CrossCol,
             long MotorX, long MotorY, double DepthMm, double WidthMm);
 
-        // --- Orchestration ----------------------------------------------------------
+        #endregion
+
+        #region Orchestration
 
         private async Task RunWaferScanAsync()
         {
@@ -167,7 +169,7 @@ namespace NanotecController
 
             AutoLog($"Chuck centre ({c.X:F0}, {c.Y:F0})  nominal R={nominalR:F0} steps  hop={hop:F0}.");
 
-            // ---- Stage A: park in the corner of the travel envelope ----
+            // Stage A: park in the corner of the travel envelope
             (long min, long max)? bx = _owner.UserLimits(AxisId.X);
             (long min, long max)? by = _owner.UserLimits(AxisId.Y);
             if (bx == null || by == null)
@@ -217,7 +219,7 @@ namespace NanotecController
             }
             AutoLog($"Parked at ({px}, {py}).");
 
-            // ---- Stage B: raster down in Y until the rim is in view ----
+            // Stage B: raster down in Y until the rim is in view
             _status.Text = "Wafer Θ scan: stepping down to find the rim...";
             (double X, double Y) station = default;
             bool acquired = false;
@@ -243,7 +245,7 @@ namespace NanotecController
             }
             AutoLog($"Rim acquired at ({station.X:F0}, {station.Y:F0}) after {descent + 1} step(s).");
 
-            // ---- Stage C: sample around one full revolution ----
+            // Stage C: sample around one full revolution
             double stepDeg = 360.0 / n;
             var samples = new List<WaferCentreScan.Sample>(n + 1);
             double firstRadius = 0;
@@ -303,7 +305,7 @@ namespace NanotecController
                 }
             }
 
-            // ---- Stage D: de-rotate and fit ----
+            // Stage D: de-rotate and fit
             if (samples.Count < 3)
             {
                 _status.Text = $"Wafer Θ scan: only {samples.Count} usable sample(s) — 3 are needed to fit.";
@@ -334,7 +336,7 @@ namespace NanotecController
             foreach (double d in fit.DroppedAngles)
                 AutoLog($"Dropped the Θ={d:F1}° sample as an outlier (the notch, or a bad detection).");
 
-            // ---- Stage E: closure, then persist ----
+            // Stage E: closure, then persist
             // The last sample returned to θ₀. Its radius must reproduce the first's; if it does not,
             // the wafer moved on the chuck (vacuum off) and every earlier sample is suspect.
             bool closed = samples.Count >= 2 && Math.Abs(lastRadius - firstRadius) <= WAFER_CLOSURE_TOL_STEPS;
@@ -418,7 +420,7 @@ namespace NanotecController
             _waferResult.Text = notchLine.Length > 0 ? summary + "\r\n" + notchLine : summary;
             RefreshWaferUi();   // the notch buttons wait for the finally, which is where the run ends
 
-            // ---- Stage F: end on the wafer centre rather than parked out on the rim. The fit is
+            // Stage F: end on the wafer centre rather than parked out on the rim. The fit is
             // already saved, so a failure here costs the position, not the measurement.
             string done = $"Wafer Θ scan complete: {fit.Used} samples, RMS {fit.RmsMm:F3} mm";
             if (centre == null)
@@ -451,8 +453,9 @@ namespace NanotecController
             _status.Text = done + ", stage at the wafer centre.";
         }
 
-        // --- Sampling ---------------------------------------------------------------
+        #endregion
 
+        #region Sampling
         /// <summary>
         /// One sample: detect the rim at <paramref name="station"/>. On a MISS, searches Y either side
         /// of it, down first, up to <see cref="WAFER_SEARCH_HOPS"/> hops each way — the eccentricity
@@ -560,8 +563,9 @@ namespace NanotecController
             return r >= WAFER_BAND_LO_FRAC * nominalR && r <= WAFER_BAND_HI_FRAC * nominalR;
         }
 
-        // --- Small helpers ----------------------------------------------------------
+        #endregion
 
+        #region Small helpers
         private bool TryStepsPerMm(out double kX, out double kY)
         {
             kX = _owner.Calibration.For(AxisId.X).StepsPerMm ?? 0;
@@ -587,5 +591,7 @@ namespace NanotecController
             _waferGoBtn.Enabled = !_waferRunning && !_autoRunning && !_notchRunning
                                   && _owner.Calibration.WaferOffsetX.HasValue;
         }
+
+        #endregion
     }
 }

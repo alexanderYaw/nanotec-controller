@@ -286,6 +286,24 @@ Connecting is **scan + verify only — it never enables a drive or commands moti
 Handles are exposed in bus order via `Handles`; identities via `Devices`. `Result*` objects
 are disposed with `using`.
 
+### SWIG ownership — why the bus scan is held in two fields
+
+`ListBuses()` keeps **both** `_busScan` (the `ResultBusHwIds`) and `_busIds` (the
+`BusHWIdVector` from `getResult()`) as fields, and `ReleaseBusScan()` disposes them in that
+order. This is not defensive tidiness — it is load-bearing:
+
+* `getResult()` returns a **copy** of the vector, and that vector **owns** the native storage.
+* The `BusHardwareId` elements it hands out are **non-owning pointers into that storage**
+  (confirmed by reading the generated SWIG IL — the element accessor constructs the managed
+  wrapper with `cMemoryOwn: false`).
+
+So holding only `_busScan` is not enough. If the `getResult()` vector is left to the finalizer,
+every `BusHardwareId` cached in `_buses` dangles and the next `getName()` is an access
+violation — this is the cause of the connect-time `SEHException` seen on 2026-08-03.
+
+> **Rule for any other NanoLib `getResult()` that returns a vector:** store the vector in a
+> field for as long as you hold its elements, and dispose the elements' references first.
+
 ---
 
 ## 4. Axis identity & configuration (`Drive/MotionTypes.cs`)
@@ -933,6 +951,24 @@ Safety in the loop:
 > `RotationSign` defaults to +1 with a warning until the sign test fixes it. The FF constants
 > `ROTATE_FOLLOW_FF_X/Y` were measured by a temporary K-capture diagnostic (since removed) —
 > **re-measure them if the drives' velocity scaling ever changes.**
+
+### Two knobs that are OFF, and why they must be tuned by eye
+
+`ROTATE_XY_DELAY_MS` (Θ head start) is **0**. A nonzero value makes Θ visibly lead, but the
+feature then swings off the crosshair during the uncompensated window and is yanked back —
+strictly worse for visual centering, which is the whole point of the feature.
+
+`ROTATE_LOOKAHEAD_MS` (project Θ forward before computing the pin target) is likewise **0**,
+and running it alongside the commanded-setpoint FF would double-compensate. What it would
+otherwise cover is **not** servo lag — the drive-side ramps plus FF cut that to ~2 ms — but
+**mechanical compliance**: under load the stage elastically lags the motor encoders by a
+velocity-proportional twist that winds out during the move and springs back at the stop.
+
+> **That twist is invisible to every motor-side metric.** If this is ever re-enabled it must be
+> bracketed with the **camera**, not the log: 30 ms made the feature visibly *lead* and 0 ms
+> made it lag by about as much, putting the optimum near 15 ms. And note that the
+> *mid-rotation pin err* the run logs is motor-side, so with a nonzero lookahead it *should*
+> read ≈ `+lookahead × velocity` when the camera is happy — **do not re-zero it against that.**
 
 ---
 

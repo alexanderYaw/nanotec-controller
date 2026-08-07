@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
@@ -9,8 +9,7 @@ namespace NanotecController
     // is mapped onto axis jog commands (send-on-change). (Partial of FrmMain.)
     public partial class FrmMain
     {
-        // --- Joystick -------------------------------------------------------------
-
+        #region Joystick
         private void inputSourceChanged(object? sender, EventArgs e)
         {
             // Source switch (Off / USB / On-screen, mutually exclusive): stop whatever
@@ -63,8 +62,9 @@ namespace NanotecController
             joystickStatusLabel.Text = (vx != 0 || vy != 0) ? $"On-screen: {vx}, {vy}" : "On-screen: idle";
         }
 
-        // --- XY velocity-vector jog (on-screen joystick) --------------------------
+        #endregion
 
+        #region XY velocity-vector jog (on-screen joystick)
         /// <summary>
         /// Commands the XY pair as a velocity vector (on-screen joystick), send-on-change.
         /// Vx/Vy are signed drive-velocity units; the geometric heading is exact only if
@@ -126,5 +126,7 @@ namespace NanotecController
             _aiCentreCount.Clear();
             _aiCentreRange.Clear();   // spread guard that rejects a mid-twist centre
         }
+
+        #endregion
     }
 }

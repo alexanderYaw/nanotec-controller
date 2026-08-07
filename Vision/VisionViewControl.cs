@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -11,32 +11,31 @@ using HalconDotNet;
 namespace NanotecController
 {
     /// <summary>
-    /// Self-contained live-camera view: owns the <see cref="VisionCamera"/>, the grab thread,
-    /// the newest-frame publish (older frames are dropped), the frame-job queue, and the
-    /// crosshair/tick overlay. Extracted from FrmVision so the live view can be embedded in any
-    /// window; the HOSTING FORM keeps the toolbar and the safety behaviour (Deactivate stops
-    /// motion — a control can't tell a form-level focus loss from a click elsewhere on the form).
+    /// Self-contained live-camera view: owns the <see cref="VisionCamera"/>, the grab thread, the
+    /// newest-frame publish (older frames are dropped), the frame-job queue and the crosshair/tick
+    /// overlay, so it can be embedded in any window. The HOSTING FORM keeps the toolbar and the
+    /// safety behaviour — a control can't tell a form-level focus loss from a click elsewhere on it.
     ///
-    /// Smoothness: a background thread grabs AND converts frames; the UI thread only paints the
-    /// newest finished frame. Frames are downscaled to the view size before conversion — the two
-    /// things that made the original timer-on-UI version laggy.
+    /// Smoothness comes from a background thread grabbing AND converting frames while the UI thread
+    /// only paints the newest finished one, and from downscaling before conversion.
     /// </summary>
     public sealed class VisionViewControl : UserControl, IVisionFrameSource
     {
+        #region Camera and grab state
+
         /// <summary>Available centred-ROI digital zoom factors (see <see cref="VisionCamera.Zoom"/>).</summary>
         public static readonly int[] ZoomFactors = [1, 2, 3, 5, 7, 10];
 
         private readonly VisionCamera _camera = new();
         private readonly PictureBox _liveBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
 
-        // One-shot jobs to run against the next grabbed frame, on the grab thread. The UI (this
-        // window or a protocols window via IVisionFrameSource) enqueues; GrabLoop drains them
-        // while the frame is alive. Each job runs its own detection + bitmap conversion and
-        // marshals to the UI thread itself (PostFrameBitmap).
+        /// <summary>One-shot jobs to run against the next grabbed frame, on the grab thread. The UI
+        /// enqueues; GrabLoop drains them while the frame is alive. Each job runs its own detection +
+        /// bitmap conversion and marshals to the UI thread itself.</summary>
         private readonly ConcurrentQueue<Action<HObject>> _frameJobs = new();
 
-        // How long teardown waits for the grab thread to release the camera handle. Sized for the
-        // worst case (a SetZoom reopen in flight), not the common one (a 100 ms grab timeout).
+        /// <summary>How long teardown waits for the grab thread to release the camera handle. Sized
+        /// for the worst case, a SetZoom reopen in flight, not the common 100 ms grab timeout.</summary>
         private const int GRAB_STOP_TIMEOUT_MS = 3000;
 
         private Task? _grabTask;
@@ -465,7 +464,7 @@ namespace NanotecController
         {
             int cw = _liveBox.ClientSize.Width, ch = _liveBox.ClientSize.Height;
             int cx = cw / 2, cy = ch / 2;
-            // The overlay is drawn in SCREEN pixels (constant across zoom). The measurement ticks are
+            // Drawn in SCREEN pixels, constant across zoom. The measurement ticks are
             // bumped WITH the zoom factor so they don't look thin against the magnified image at 3x/5x.
             // The crosshair arms go the other way — slightly THINNER as zoom rises (floored at 1 px) —
             // so the full-length arms don't dominate the finer view when magnified.
@@ -507,12 +506,11 @@ namespace NanotecController
         // Tick half-lengths (px), shortest → longest: 0.01 mm, 0.1 mm, 0.5 mm, 1 mm, 5 mm, 10 mm.
         private const int TICK_HUNDREDTH = 2, TICK_TENTH = 3, TICK_HALF = 6, TICK_MM = 10, TICK_5MM = 14, TICK_10MM = 18;
 
-        // Markings along a crosshair arm at a FIXED 1 mm pitch: a long tick every 1 mm, longer every
-        // 5 mm, longest + a distance label every 10 mm (and the first 1 mm is labelled to anchor the
-        // scale). Between the centre and the first mm, 0.1 mm sub-ticks are added when zoomed in far
-        // enough to resolve them, with 0.5 mm drawn a little longer. If 1 mm is too few screen px to
-        // resolve (zoomed out), the mm ticks thin to 5 mm — then 10 mm — so they don't smear into a
-        // bar. Zoom does not enter mmPerScreenPx (centred-ROI zoom leaves the image pixel unchanged).
+        /// <summary>Markings along a crosshair arm at a FIXED 1 mm pitch: longer every 5 mm, longest
+        /// plus a label every 10 mm. Sub-ticks appear inside the first mm when zoomed in far enough to
+        /// resolve them, and the mm ticks thin to 5 then 10 mm when zoomed out, so they don't smear
+        /// into a bar. Zoom does not enter mmPerScreenPx — a centred-ROI zoom leaves the pixel
+        /// unchanged.</summary>
         private static void DrawMmTicks(Graphics g, Pen pen, Font labelFont, bool horizontal, int cx, int cy, int extent, double mmPerScreenPx)
         {
             if (!(mmPerScreenPx > 0) || double.IsInfinity(mmPerScreenPx)) return;
@@ -771,5 +769,7 @@ namespace NanotecController
             }
             base.Dispose(disposing);
         }
+
+        #endregion
     }
 }

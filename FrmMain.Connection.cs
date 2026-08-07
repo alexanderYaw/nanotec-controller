@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -9,8 +9,7 @@ namespace NanotecController
     // enable/disable them, and the read-only parameter sweep. (Partial of FrmMain.)
     public partial class FrmMain
     {
-        // --- Connection -----------------------------------------------------------
-
+        #region Connection
         private async void connectButton_Click(object? sender, EventArgs e) => await ConnectAsync();
         private async void disconnectButton_Click(object? sender, EventArgs e) => await DisconnectAsync();
 
@@ -19,7 +18,7 @@ namespace NanotecController
             SetState(connected: false, busy: true, "Scanning buses...");
             ClearLog();
 
-            // The EtherCAT soft-master (NanoLib over Npcap) is timing-sensitive. Leaving the
+            // The EtherCAT soft-master is timing-sensitive. Leaving the
             // camera grab thread streaming through the bus scan/open crashed the process natively
             // (a regression from moving the live view onto the main screen). Pause the camera for
             // the whole connect sequence and resume it after — the same reason drive ops pause the
@@ -101,8 +100,9 @@ namespace NanotecController
             SetState(connected: false, busy: false, "Disconnected");
         }
 
-        // --- Enable / disable (all axes) ------------------------------------------
+        #endregion
 
+        #region Enable / disable (all axes)
         private async void enableButton_Click(object? sender, EventArgs e)
         {
             if (_motion == null) return;
@@ -115,7 +115,7 @@ namespace NanotecController
             if (ok) WarnIfMachineRestarted();
         }
 
-        // The X/Y/Z encoder counters are volatile — a controller power cycle zeroes them, which
+        // The X/Y/Z encoder counters are volatile: a controller power cycle zeroes them, which
         // silently invalidates the stored limits, home and chuck centre (all absolute step counts).
         // All three reading exactly 0 on the first enable of a session is that signature; a table
         // left anywhere real never lands on 0,0,0 on all three at once. Runs inside the enable's
@@ -154,5 +154,7 @@ namespace NanotecController
             _drivesEnabled = false;
             AppendLog("All drives DISABLED.");
         }
+
+        #endregion
     }
 }

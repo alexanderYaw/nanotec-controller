@@ -3,36 +3,20 @@ using System;
 namespace NanotecController
 {
     /// <summary>
-    /// The camera's own orientation in the machine, and the conversion between a bearing in the LAB
-    /// frame (user frame: 0° along +X, increasing towards +Y) and the bearing an operator reads off
-    /// the live view.
-    ///
-    /// The camera is bolted on at whatever angle the bracket gives it, and there is no reason for
-    /// that to be square with the stage — on this machine it is 4.6° out. The pixel→step affine
-    /// already carries the angle, so this is MEASURED rather than configured: one pixel COLUMN moves
-    /// the stage (Xc, Yc) steps, and the lab bearing of that vector is where the view's horizontal
-    /// points. Re-run the camera-scale calibration after a camera swap and this follows.
-    ///
-    /// Folded to (−90, 90]. The ~180° the camera is physically mounted at belongs to the live view's
-    /// own display flip (<see cref="VisionViewControl.InvertView"/>), and counting it twice would
-    /// turn every converted bearing upside down.
-    ///
-    /// <b>Orientation only.</b> The camera frame cannot carry POSITIONS: its origin travels with X
-    /// and Y, so a point expressed in it stops meaning anything the moment the stage moves. That is
-    /// why every vision measurement here is E = M + A·(p_cross − p_edge) — M, the motor position, is
-    /// what anchors the image to the machine. Directions have no origin, which is exactly why they
-    /// convert cleanly and positions do not.
+    /// Converts a bearing between the LAB frame (0° along +X, increasing towards +Y) and the bearing
+    /// an operator reads off the live view. The camera's mounting angle is MEASURED from the
+    /// pixel→step affine rather than configured, so it follows a re-run of the camera-scale
+    /// calibration. ORIENTATION ONLY — the camera frame cannot carry positions, because its origin
+    /// travels with X and Y. See Developer Guide, NotchSearch.md §"Camera frame".
     /// </summary>
     public static class CameraFrame
     {
-        /// <summary>
-        /// How far the camera is rotated from the machine's axes (degrees, +ve meaning a lab bearing
-        /// reads that much LOWER on the view). Null until the affine exists.
-        ///
-        /// Computed in mm, because X and Y differ by 0.4 % in steps/mm and a bearing is only a
-        /// bearing once that is divided out; without steps/mm it falls back to step space, which is
-        /// the same angle to within 0.06°.
-        /// </summary>
+        private const double DegenerateAffine = 1e-12;
+
+        /// <summary>How far the camera is rotated from the machine's axes (degrees; +ve means a lab
+        /// bearing reads that much LOWER on the view), folded to (−90, 90] so the view's own display
+        /// flip isn't counted twice. Null until the affine exists. Computed in mm, since X and Y
+        /// differ by 0.4% in steps/mm and a bearing is only a bearing once that is divided out.</summary>
         public static double? TiltDeg(CalibrationStore cal)
         {
             if (cal.PixelStep is not PixelStepAffine a) return null;
@@ -41,9 +25,9 @@ namespace NanotecController
             if (kX <= 0) kX = 1.0;
             if (kY <= 0) kY = 1.0;
 
-            // One pixel of COLUMN, in mm of stage: the direction the view's horizontal points.
+            // One pixel of COLUMN, in mm of stage: where the view's horizontal points.
             double cx = a.Xc / kX, cy = a.Yc / kY;
-            if (Math.Abs(cx) < 1e-12 && Math.Abs(cy) < 1e-12) return null;
+            if (Math.Abs(cx) < DegenerateAffine && Math.Abs(cy) < DegenerateAffine) return null;
 
             double deg = Math.Atan2(cy, cx) * 180.0 / Math.PI;
             return ((deg + 90.0) % 180.0 + 180.0) % 180.0 - 90.0;   // fold to (−90, 90]

@@ -1,50 +1,45 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 
 namespace NanotecController
 {
-    // FrmMain — CONTINUOUS Θ sweep of the wafer rim, for the notch search.
-    //
-    // Θ jogs without stopping while Y follows the rim's known path, so the whole circumference
-    // passes the camera in one revolution instead of a few hundred step-and-settle stops. A
-    // revolution is 359,859 ticks against Θ's 3200 steps/s cap (Drive/MotionTypes.cs), i.e. ~112 s
-    // of rotation whatever else happens — so the only thing worth optimising is what gets ADDED to
-    // that, and stopping 150 times would roughly triple it.
-    //
-    // NOT RotateAboutCrosshairAsync. That one pins the material point under the crosshair, which is
-    // rotation about a point ON the rim: the same patch of wafer stays in view and the sweep would
-    // learn nothing. Here the camera must hold station on the rim CIRCLE while the wafer turns
-    // underneath it, which is a completely different target — supplied by the caller as
-    // stationYAt (see Geometry/RimStation).
-    //
-    // X does not move and is not armed. The rim circle is bigger than X/Y travel and only the line
-    // X = X min crosses it (FrmVisionProtocols.AutoWafer), so there is one station line and the only
-    // freedom is Y. The Y path is a ~10 mm peak-to-peak excursion at ≤365 steps/s — 1/9th of
-    // ROTATE_FOLLOW_VMAX — because all it has to cancel is the wafer's 2.5 mm eccentricity, not a
-    // 100 mm pin radius. This is by far the gentlest thing the follower has been asked to do.
-    //
-    // WHY THIS IS A SECOND LOOP rather than a refactor of the two in FrmMain.Rotation.cs. What is
-    // worth sharing is the TUNING — ROTATE_FOLLOW_*, the ramp constants, FollowVel, CommandFollow —
-    // and being a partial of the same class this file uses those directly, so there is no second
-    // copy of any measured value. The loop bodies genuinely differ (one axis not two; an analytic
-    // pin target vs an opaque delegate; a stop condition that is a vision result rather than an
-    // angle), and folding three shapes into one parameterised loop would put the joystick twist and
-    // the crosshair rotate — both tuned on hardware, both in daily use — at risk of a silent
-    // regression to save a control structure. If the three ever converge, unify then.
-    // (Partial of FrmMain.)
+    /// <summary>
+    /// FrmMain — CONTINUOUS Θ sweep of the wafer rim, for the notch search. Θ jogs without stopping
+    /// while Y follows the rim's known path, so the whole circumference passes the camera in one
+    /// revolution rather than a few hundred step-and-settle stops. A revolution is ~112 s of rotation
+    /// whatever else happens, so only what gets ADDED to that is worth optimising.
+    ///
+    /// NOT RotateAboutCrosshairAsync — that pins the material point under the crosshair, which keeps
+    /// the same patch of wafer in view and would teach the sweep nothing. Here the camera holds
+    /// station on the rim CIRCLE while the wafer turns underneath, a completely different target,
+    /// supplied by the caller as stationYAt (see <see cref="RimStation"/>).
+    ///
+    /// X does not move and is not armed: only the line X = X min crosses the rim circle, so the only
+    /// freedom is Y, and its path is a ~10 mm excursion at ≤365 steps/s — the gentlest thing the
+    /// follower has been asked to do.
+    ///
+    /// This is a SECOND LOOP rather than a refactor of the two in FrmMain.Rotation.cs. The TUNING is
+    /// what is worth sharing, and being a partial of the same class this file uses those constants
+    /// directly, so no measured value is duplicated. The loop bodies genuinely differ — one axis not
+    /// two, an analytic pin target vs an opaque delegate, a stop condition that is a vision result
+    /// rather than an angle — and folding three shapes into one parameterised loop would risk a
+    /// silent regression in the joystick twist and the crosshair rotate to save a control structure.
+    /// </summary>
     public partial class FrmMain
     {
-        // A sweep may legitimately run a full revolution plus ramps; ROTATE_MAX_MS (3 min) is too
-        // tight once Θ is run slower than its cap for a blur test.
+        #region Sweep tuning
+
+        /// <summary>A sweep may legitimately run a full revolution plus ramps, which ROTATE_MAX_MS is
+        /// too tight for once Θ runs slower than its cap.</summary>
         private const int SWEEP_MAX_MS = 300000;
 
-        // Half-interval (degrees) of the central difference that estimates the station's velocity for
-        // the feedforward. The target is an analytic function of Θ, so this differences the FUNCTION
-        // at two angles — it is NOT the diff-of-quantised-commands that put noise on the crosshair
-        // rotate's velocity (see the FF note in FrmMain.Rotation.cs). Its only error is the ±1 step
-        // rounding inside WaferCentreAt, which over a 2° baseline is ~1% of the path's 114 steps/deg
-        // peak rate.
+        /// <summary>Half-interval of the central difference estimating the station's velocity for the
+        /// feedforward. The target is an analytic function of Θ, so this differences the FUNCTION at
+        /// two angles — NOT the diff-of-quantised-commands that put noise on the crosshair rotate's
+        /// velocity. Its only error is the ±1 step rounding inside WaferCentreAt.</summary>
         private const double SWEEP_FF_HALF_DEG = 1.0;
+
+        #endregion
 
         private long _sweepThetaTicks;
 

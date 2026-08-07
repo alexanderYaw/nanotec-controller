@@ -9,24 +9,22 @@ namespace NanotecController
         int BusPosition, string Name, string Serial, string Firmware);
 
     /// <summary>
-    /// EtherCAT bring-up: scans the line and connects to EVERY drive found, preserving
-    /// bus (scan) order. The four inspection-table axes are then addressed by
-    /// <see cref="AxisConfig.BusPosition"/>.
-    ///
-    /// This only connects + verifies — it never enables a drive or commands motion.
-    /// Motion is the job of the per-axis controllers built on top of <see cref="Handles"/>.
+    /// EtherCAT bring-up: scans the line and connects to EVERY drive found, preserving bus (scan)
+    /// order, so axes can be addressed by <see cref="AxisConfig.BusPosition"/>. Connects and
+    /// verifies only — never enables a drive or commands motion.
     /// </summary>
     public sealed class MultiAxisConnection
     {
+        #region State
+
         private NanoLibAccessor? _accessor;
         private BusHardwareId? _adapter;
-        // Bus-hardware scan kept alive between ListBuses() and Connect()/Disconnect().
-        // _busIds is the one that matters: getResult() hands back a vector that OWNS the native
-        // storage, and its elements are NON-owning pointers into it (verified in the SWIG IL), so
-        // letting it be finalized dangles every BusHardwareId in _buses and the next getName() is
-        // an access violation. Holding only _busScan is NOT enough — getResult() returns a copy.
+
+        // BOTH must stay fields: _busIds owns the native storage that every BusHardwareId in
+        // _buses points into non-owningly. See Developer Guide §3, "SWIG ownership".
         private ResultBusHwIds? _busScan;
         private BusHWIdVector? _busIds;
+
         private readonly List<BusHardwareId> _buses = new();
         private readonly List<DeviceHandle> _handles = new();
         private readonly List<DeviceIdentity> _devices = new();
@@ -42,12 +40,13 @@ namespace NanotecController
         public bool IsConnected { get; private set; }
         public string AdapterName { get; private set; } = "";
 
-        /// <summary>
-        /// Enumerates the available bus hardware (network interfaces) so the user can pick
-        /// one. The returned display strings are index-aligned with the selection passed
-        /// back to <see cref="Connect"/>. Re-scannable; the result is held internally so
-        /// the chosen adapter stays valid through Connect.
-        /// </summary>
+        #endregion
+
+        #region Scan and connect
+
+        /// <summary>Enumerates the available network interfaces. The returned display strings are
+        /// index-aligned with the selection passed back to <see cref="Connect"/>; the scan is held
+        /// internally so the chosen adapter stays valid through Connect.</summary>
         public IReadOnlyList<string> ListBuses(IProgress<string> log)
         {
             log.Report("Initializing NanoLib accessor...");
@@ -62,7 +61,6 @@ namespace NanotecController
                 return [];
             }
 
-            // Field, not a local: see _busIds — the entries added to _buses point into it.
             _busIds = _busScan.getResult();
             var names = new List<string>(_busIds.Count);
             for (int i = 0; i < _busIds.Count; i++)
@@ -76,13 +74,9 @@ namespace NanotecController
             return names;
         }
 
-        /// <summary>
-        /// Opens the chosen adapter (by its index in the last <see cref="ListBuses"/>
-        /// result), then adds + connects every drive found. <paramref name="expectedDeviceCount"/>
-        /// is used only to warn on a mismatch (e.g. an unpowered drive); whatever is found
-        /// is still connected so partial bring-up works. Returns true only if at least one
-        /// drive connected cleanly.
-        /// </summary>
+        /// <summary>Opens the adapter at <paramref name="busIndex"/> in the last <see cref="ListBuses"/>
+        /// result, then adds + connects every drive found in scan order. A count mismatch against
+        /// <paramref name="expectedDeviceCount"/> only warns, so partial bring-up still works.</summary>
         public bool Connect(int busIndex, int expectedDeviceCount, IProgress<string> log)
         {
             if (IsConnected)
@@ -130,7 +124,6 @@ namespace NanotecController
                            "Check power/cabling, or update the expected count.");
             }
 
-            // Add + connect each drive, preserving scan (bus) order.
             for (int pos = 0; pos < found.Count; pos++)
             {
                 DeviceId dev = found[pos];
@@ -180,6 +173,10 @@ namespace NanotecController
             return r.hasError() ? "?" : r.getResult();
         }
 
+        #endregion
+
+        #region Teardown
+
         /// <summary>Releases everything connected so far (used on a mid-sequence failure).</summary>
         private void TeardownPartial(IProgress<string> log)
         {
@@ -210,14 +207,9 @@ namespace NanotecController
             _busScan = null;
         }
 
-        /// <summary>
-        /// Disconnects every drive and closes the bus. Safe when not connected.
-        ///
-        /// Each drive's release is isolated, and the bus close runs regardless: a single
-        /// disconnectDevice failure must not abandon the remaining handles OR skip
-        /// closeBusHardware, because the caller is told (IsConnected = false) that the adapter is
-        /// free and the next Connect would then re-open an adapter that was never closed.
-        /// </summary>
+        /// <summary>Disconnects every drive and closes the bus; safe when not connected. Each drive's
+        /// release is isolated and the bus close runs regardless, so one failure can't leave the
+        /// adapter open while the caller is told (IsConnected = false) that it is free.</summary>
         public void Disconnect(IProgress<string> log)
         {
             if (_accessor == null)
@@ -255,5 +247,7 @@ namespace NanotecController
                 AdapterName = "";
             }
         }
+
+        #endregion
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
 using HalconDotNet;
@@ -6,45 +6,32 @@ using HalconDotNet;
 namespace NanotecController
 {
     /// <summary>
-    /// Finds the wafer NOTCH in a frame, in two modes that answer two different questions.
+    /// Finds the wafer NOTCH, in two modes answering two different questions.
+    /// <see cref="TryCoarse"/> asks "is the rim in this frame anomalous?" — what a Θ sweep asks of
+    /// every frame. <see cref="TryMeasure"/> asks "where exactly is the apex?" — asked once, of a
+    /// stationary frame, after the sweep has stopped on a hit.
     ///
-    /// <see cref="TryCoarse"/> asks only "is the rim in this frame anomalous?" — the question a Θ
-    /// sweep asks of every frame it passes. <see cref="TryMeasure"/> asks "where exactly is the
-    /// apex?" — asked once, of a stationary frame, after the sweep has stopped on a hit.
+    /// They differ in their BASELINE, and that is the design. Coarse fits a plain regression line to
+    /// the whole contour, so it needs no clean rim anywhere and still fires on a half-visible notch,
+    /// which is what a sweep meets first. Fine anchors a chord on the two ENDS — far more accurate,
+    /// but it demands plain rim at both ends and refuses a partial notch, so hunting with it would
+    /// step straight over the notch.
     ///
-    /// They differ in their BASELINE, and that is the whole design. Coarse fits a plain regression
-    /// line to the entire rim contour; it needs no clean rim anywhere, so it still fires when the
-    /// notch is only half in view, which is what a sweep meets first. Fine anchors a chord on the
-    /// two ENDS of the contour, which is far more accurate but demands plain rim at both ends and
-    /// refuses a partial notch. Using the fine test to hunt would step straight over the notch.
+    /// DO NOT run this on a downscaled frame: at 1/4 the separation between notch and plain rim
+    /// disappears, because the morphology radii fall to a few px and the residual then measures
+    /// raggedness rather than shape.
     ///
-    /// Measured through HDevEngine over the twelve captures on file (see `Halcon/notch
-    /// detector.hdev`, which is this class's tuning mirror and carries the full derivation):
-    ///   coarse residual   plain rim 0.012-0.046 mm    notch frame 0.548 mm
-    ///   fine depth        plain rim 0.006-0.032 mm    notch frame 1.002 mm (SEMI nominal 1.00)
-    /// The coarse threshold of 0.12 mm sits 2.6x above the worst plain rim — a real margin, but a
-    /// tenth of what the fine test enjoys, which is the price of partial-notch sensitivity.
+    /// Unlike <see cref="WaferEdgeDetector"/>, which takes the CHUCK-side gap boundary for a
+    /// repeatable radius, this takes the WAFER-side one — the notch is a feature of the wafer's
+    /// outline, while the chuck-side boundary is shaped by illumination geometry. Everything else
+    /// about the segmentation is shared.
     ///
-    /// DO NOT run this on a downscaled frame to save time. Measured at 1/4 with every radius and
-    /// area constant rescaled, the notch reads 0.275 mm and plain rim 0.217 mm: the separation is
-    /// gone, because the opening/closing radii fall to 2 and 5 px and the gap outline goes ragged,
-    /// so the residual measures raggedness rather than shape. There is no need for it either — the
-    /// coarse path costs ~230 ms on a full 4016x3024 frame against a ~710 ms sweep budget.
-    ///
-    /// WHICH BOUNDARY, and why this differs from <see cref="WaferEdgeDetector"/>. The unlit gap past
-    /// the rim has two boundaries. WaferEdgeDetector deliberately takes the CHUCK-side one, because
-    /// the chuck is in focus and that makes the measured RADIUS repeatable. This class must take the
-    /// WAFER-side one instead: the notch is a feature of the wafer's outline, whereas the chuck-side
-    /// boundary is where the shadow ends on the chuck, whose shape is set by the illumination
-    /// geometry rather than by the notch profile. The wafer side is the choice that produced the
-    /// 1.002 mm depth above, against the SEMI nominal of 1.00 — which is the evidence it is tracing
-    /// the real edge. Everything else about the segmentation is shared, including the flank-contrast
-    /// test, which is a validity test for "is this dark region a rim gap at all" and is unaffected by
-    /// which side is then taken.
+    /// Halcon/notch detector.hdev is this class's tuning mirror and carries the full derivation.
+    /// See Developer Guide, NotchSearch.md.
     /// </summary>
     public sealed class NotchDetector
     {
-        // ---- Segmentation. Mirrors WaferEdgeDetector; retune there first, then copy across. ----
+        #region Segmentation (mirrors WaferEdgeDetector; retune there first)
 
         /// <summary>True when the wafer reads BRIGHTER than the off-wafer background.</summary>
         public bool WaferIsBrighter { get; set; } = true;
@@ -60,67 +47,39 @@ namespace NanotecController
         private const double MinCollarAreaPx = 5000;
         private const double SideGrowRadiusPx = 2;
 
-        // ---- Notch geometry. These ARE the .hdev's parameters; keep the two in step. ----
+        #endregion
 
-        /// <summary>Residual above which the sweep calls a frame anomalous and stops.
-        ///
-        /// Set against MEASURED full-frame values: plain rim 0.012–0.046 mm, notch 0.548 mm. At 0.30
-        /// this is 6.5× the worst plain rim and still 1.8× under the notch. It does NOT need to catch
-        /// a barely-visible notch, which is what an earlier 0.12 was for: the sweep grabs a frame
-        /// every ~0.67 mm of rim (5.6 mm/s ÷ ~120 ms), and the notch sits wholly inside the 4.9 mm
-        /// field over 2.0 mm of travel, so ~3 frames per pass see all of it. Buying sensitivity to a
-        /// sliver bought nothing and cost the margin against debris.</summary>
+        #region Notch geometry (these ARE the .hdev's parameters; keep the two in step)
+
+        /// <summary>Residual above which the sweep calls a frame anomalous. 6.5x the worst measured
+        /// plain rim and 1.8x under a real notch. It need NOT catch a barely-visible notch: the sweep
+        /// sees the notch over ~3 frames per pass, so sensitivity to a sliver only costs margin
+        /// against debris.</summary>
         public double CoarseThresholdMm { get; set; } = 0.30;
 
-        /// <summary>The deviation must PERSIST over this many contiguous contour points, not merely
-        /// peak once.
-        ///
-        /// This is the test that separates a notch from dust on shape rather than on size, which is
-        /// the honest distinction: a notch is deep AND wide (thousands of points), while debris, a
-        /// skeleton spur, or a ring bridged across a break is a narrow spike that can reach any
-        /// height at all. A threshold alone cannot tell them apart — it only asks how far, never how
-        /// long — so raising it to reject debris also blinds the sweep to a real notch seen at an
-        /// unlucky angle.</summary>
+        /// <summary>The deviation must PERSIST over this many contiguous contour points. This is what
+        /// separates a notch from dust on SHAPE rather than size — a notch is deep AND wide, while
+        /// debris or a bridged break is a narrow spike that can reach any height. A threshold alone
+        /// only asks how far, never how long.</summary>
         public int CoarseMinRunPoints { get; set; } = 200;
 
-        /// <summary>Contour points at each END that anchor the fine chord.
-        ///
-        /// This sets how hard the notch is to CATCH, and it is easy to make far too large. The rim
-        /// contour runs 3000-4200 points depending on how the rim crosses the frame; the notch is
-        /// 2.9 mm ≈ 2340 of them. On a 3138-point contour that leaves only ~800 points of clean rim,
-        /// so two 300-point anchors consume 600 of them and the notch is both enclosed AND clear of
-        /// both anchors over a window of just 0.14° of Θ. A search stepping 1° walks straight over
-        /// that, which is exactly what was observed on hardware.
-        ///
-        /// At 120 the window is 0.32-1.16° over the same frames — wider than the search step, which
-        /// is the condition that actually matters. Two 120-point anchors 1.6 mm apart are still an
-        /// ample line fit; the cost is a little more noise in the chord, not a worse chord.</summary>
+        /// <summary>Contour points at each END anchoring the fine chord — this sets how hard the notch
+        /// is to CATCH, and is easy to make far too large. At 300 the window in which the notch is both
+        /// enclosed and clear of both anchors shrinks to 0.14° of Θ, and a 1° search step walks over
+        /// it. At 120 the window is 0.32-1.16°, wider than the search step.</summary>
         public int EndSpanPoints { get; set; } = 120;
 
-        /// <summary>How far the chord's end spans may depart from straight before the frame is
-        /// refused.
-        ///
-        /// This guards the DEPTH, not the angle. A tilted baseline biases depth and width directly,
-        /// but the apex comes from two straight-line fits to raw contour points, and the baseline
-        /// only decides which points fall in the flank band — shifting that band along a straight
-        /// flank returns the same line. So a modest tilt costs a little depth accuracy and almost no
-        /// apex accuracy, and refusing such a frame outright threw away usable measurements: 0.101
-        /// and 0.151 mm were both rejected on hardware while the notch was plainly in view.
-        /// Its real job is to catch ends that are not rim AT ALL — chuck texture, or a notch so far
-        /// off-centre that the baseline is meaningless — and 0.25 still does that. The value is
-        /// logged with every result so a depth measured off a tilted chord can be recognised.</summary>
+        /// <summary>How far the chord's end spans may depart from straight. This guards the DEPTH, not
+        /// the angle: the apex comes from flank line fits that a modest tilt barely moves. Its real job
+        /// is catching ends that are not rim AT ALL. Logged with every result, so a depth measured off
+        /// a tilted chord can be recognised.</summary>
         public double MaxChordFitMm { get; set; } = 0.25;
 
         public double MinNotchDepthMm { get; set; } = 0.25;
 
-        /// <summary>Deepest a real notch can read before the feature is something else.
-        ///
-        /// A SEMI 200 mm notch is 1.00 mm and measures 1.002 mm on the capture on file, 0.987 mm on
-        /// hardware — the depth is the best-behaved number this detector produces, so a ceiling costs
-        /// nothing and catches a whole class of impostor. On 2026-08-06 a vacuum port in the chuck,
-        /// whose dark boundary had merged with the rim gap into one region, presented its arc as a
-        /// 1.958 mm deep "notch" and was accepted. 1.5 sits 50 % above every real measurement and
-        /// 24 % below that one.</summary>
+        /// <summary>Deepest a real notch can read before the feature is something else. A SEMI 200 mm
+        /// notch is 1.00 mm and measures 0.987-1.002 mm, so a ceiling costs nothing — it caught a
+        /// chuck vacuum port presenting as a 1.958 mm "notch" on 2026-08-06.</summary>
         public double MaxNotchDepthMm { get; set; } = 1.5;
         public double MinNotchWidthMm { get; set; } = 1.5;
         public double MaxNotchWidthMm { get; set; } = 4.0;
@@ -145,14 +104,14 @@ namespace NanotecController
         /// <summary>Below this the flank fit is noise and the apex falls back to the deepest point.</summary>
         public int MinFlankPoints { get; set; } = 40;
 
-        /// <summary>A coarse residual is only meaningful over a contour of at least this many points.
-        /// Below it the line is fitted to a scrap and the number means nothing — so
-        /// <see cref="TryCoarse"/> returns FALSE rather than a small residual that reads as "no
-        /// notch here". That distinction matters during a sweep: a real rim in view yields 3000-4200
-        /// points, so a short contour means the rim has been LOST, and a sweep that cannot tell
-        /// "clean rim, no notch" from "no rim at all" would sail past the notch reporting nothing
-        /// wrong for the rest of the revolution.</summary>
+        /// <summary>Below this the line is fitted to a scrap, so <see cref="TryCoarse"/> returns FALSE
+        /// rather than a small residual reading as "no notch here". A sweep that cannot tell "clean rim"
+        /// from "no rim at all" would sail past the notch for the rest of the revolution.</summary>
         public int MinCoarseContourPoints { get; set; } = 500;
+
+        #endregion
+
+        #region Results
 
         /// <summary>What a measured notch came to. <paramref name="ApexRow"/>/<paramref name="ApexCol"/>
         /// is the flank-intersection apex — the repeatable reference for the Θ angle. It is NOT where
@@ -167,11 +126,13 @@ namespace NanotecController
         /// <summary>Diagnostic from the last call, in the same terms as the .hdev's step messages.</summary>
         public string LastReport { get; private set; } = "";
 
-        /// <summary>
-        /// Sweep mode: the rim contour's greatest departure from a straight line, in mm. True when a
-        /// contour was obtained at all — <paramref name="residualMm"/> is then compared against
-        /// <see cref="CoarseThresholdMm"/> by the caller, so a sweep can log the value on every frame
-        /// rather than only on hits.
+        #endregion
+
+        #region Coarse (sweep) mode
+
+        /// <summary>The rim contour's greatest departure from a straight line, in mm. True when a
+        /// contour was obtained at all — the caller compares <paramref name="residualMm"/> against
+        /// <see cref="CoarseThresholdMm"/>, so a sweep can log the value on every frame, not only hits.
         /// </summary>
         public bool TryCoarse(HObject image, double umPerPixel, out double residualMm, out int runPoints)
         {
@@ -197,9 +158,8 @@ namespace NanotecController
                     return false;
                 }
 
-                // Peak departure, and the longest CONTIGUOUS stretch of contour that stays over the
-                // threshold. Contiguity is measured in contour order, which is why the ring is walked
-                // as an ordered skeleton rather than sampled as a point set.
+                // Contiguity is measured in contour order, which is why the ring is walked as an
+                // ordered skeleton rather than sampled as a point set.
                 double cutPx = CoarseThresholdMm * 1000.0 / umPerPixel;
                 double worst = 0;
                 int run = 0;
@@ -223,11 +183,13 @@ namespace NanotecController
         public bool IsAnomalous(double residualMm, int runPoints)
             => residualMm > CoarseThresholdMm && runPoints >= CoarseMinRunPoints;
 
-        /// <summary>
-        /// Measurement mode, for a STATIONARY frame with the notch fully in view. Returns false, with
-        /// the reason in <see cref="LastReport"/>, when the frame has no rim, the contour is too
-        /// short, the chord's ends are not plain rim, or the shape fails any of the four notch tests.
-        /// </summary>
+        #endregion
+
+        #region Fine (measurement) mode
+
+        /// <summary>For a STATIONARY frame with the notch fully in view. False, with the reason in
+        /// <see cref="LastReport"/>, when the frame has no rim, the contour is too short, the chord's
+        /// ends are not plain rim, or the shape fails any of the four notch tests.</summary>
         public bool TryMeasure(HObject image, double umPerPixel, out Measurement measurement)
         {
             measurement = default;
@@ -245,10 +207,9 @@ namespace NanotecController
                     return false;
                 }
 
-                // The baseline chord, from the two ends ONLY. A robust fit over the whole contour
-                // cannot be used: in the frame on file the notch is ~3900 of ~4200 points, so it is
-                // the MAJORITY and a robust fit converges onto a flank, calling the real rim the
-                // outlier. What is reliable is that the rim is straight at this field of view.
+                // From the two ends ONLY. A robust fit over the whole contour converges onto a flank,
+                // the notch being the MAJORITY of points; what is reliable is that the rim is straight
+                // at this field of view.
                 int span = EndSpanPoints;
                 var endRow = new double[2 * span];
                 var endCol = new double[2 * span];
@@ -277,10 +238,9 @@ namespace NanotecController
                     return false;
                 }
 
-                // Which side is INTO the wafer. The notch removes material, so its apex lies on the
-                // side the contour bulges towards over its deepest excursion; a bulge the other way
-                // is debris on the rim. Taken from the extreme itself rather than from a separate
-                // wafer-side probe, so this stays correct whichever way the rim runs in the frame.
+                // Which side is INTO the wafer: the notch removes material, so its apex lies on the
+                // side the contour bulges towards over its deepest excursion. Taken from the extreme
+                // itself, so this stays correct whichever way the rim runs in the frame.
                 double tanR = -perpC, tanC = perpR;
                 int extreme = 0;
                 double extremeAbs = -1;
@@ -334,12 +294,10 @@ namespace NanotecController
                     return false;
                 }
 
-                // A steadier apex, for the ANGLE only. The deepest pixel rests on one noisy sample;
-                // the flanks average hundreds. It is NOT a depth — extrapolating two straight flanks
-                // past an apex that is genuinely rounded (~1.1 mm radius on the silhouette, since
-                // what is traced is the gap's outer edge and it is defocused besides) overshoots the
-                // tip, by 0.37 mm on the frame on file. VertexOffsetMm reports that overshoot rather
-                // than letting it inflate the depth.
+                // A steadier apex, for the ANGLE only — the deepest pixel rests on one noisy sample
+                // while the flanks average hundreds. NOT a depth: extrapolating two straight flanks
+                // past a genuinely rounded apex overshoots the tip, and VertexOffsetMm reports that
+                // overshoot rather than letting it inflate the depth.
                 double apexRow = row[apexIdx], apexCol = col[apexIdx];
                 double includedDeg = -1;
                 double flankLo = FlankLoFraction * depthPx, flankHi = FlankHiFraction * depthPx;
@@ -361,9 +319,8 @@ namespace NanotecController
                     if (TryIntersect(ar, ac, anR, anC, br, bc, bnR, bnC, out double ir, out double ic))
                     {
                         apexRow = ir; apexCol = ic;
-                        // Point both flank directions AWAY from the apex before measuring between
-                        // them, or the answer depends on which way round each fitted line happens to
-                        // run — and the two flanks are traversed in opposite senses.
+                        // Point both flank directions AWAY from the apex first, or the answer depends
+                        // on which way round each fitted line happens to run.
                         double adR = -anC, adC = anR, bdR = -bnC, bdC = bnR;
                         if (adR * (ar - ir) + adC * (ac - ic) < 0) { adR = -adR; adC = -adC; }
                         if (bdR * (br - ir) + bdC * (bc - ic) < 0) { bdR = -bdR; bdC = -bdC; }
@@ -386,12 +343,13 @@ namespace NanotecController
             finally { LastReport = log.ToString(); foreach (HObject t in temps) t.Dispose(); }
         }
 
-        // ---- Shared front end ------------------------------------------------------
+        #endregion
 
-        // Segment the gap, take the WAFER-side boundary ring, and walk it into an ordered point list.
-        // gen_contour_region_xld is not used: it traces the border OF the ring, down one side and
-        // back the other, giving every rim point twice. skeleton() collapses the ring to one pixel
-        // wide and gen_contours_skeleton_xld walks it in order.
+        #region Shared front end
+
+        /// <summary>Segments the gap, takes the WAFER-side boundary ring, and walks it into an ordered
+        /// point list. gen_contour_region_xld is not used: it traces the border OF the ring, down one
+        /// side and back the other, giving every rim point twice.</summary>
         private bool TryContourPoints(
             HObject image, StringBuilder log, List<HObject> temps, out double[] row, out double[] col)
         {
@@ -425,8 +383,8 @@ namespace NanotecController
             return row.Length >= 2;
         }
 
-        // The gap's wafer-side boundary, clipped clear of the image frame. Same cut, cleanup and
-        // per-region gates as WaferEdgeDetector; the side taken is the opposite one (see remarks).
+        /// <summary>The gap's wafer-side boundary, clipped clear of the image frame. Same cut, cleanup
+        /// and per-region gates as <see cref="WaferEdgeDetector"/>; the side taken is the opposite.</summary>
         private HObject? SegmentRim(HObject image, StringBuilder log, List<HObject> temps)
         {
             HObject gray = Preprocess(image); temps.Add(gray);
@@ -472,8 +430,8 @@ namespace NanotecController
             }
             if (ring == null) return null;
 
-            // Drop the stretches that merely run along the image frame. A frame taken wholly off the
-            // wafer is all "off-wafer" and its only boundary is that one.
+            // Drop the stretches running along the image frame — a frame wholly off the wafer is all
+            // "off-wafer", and that is its only boundary.
             HOperatorSet.GenRectangle1(out HObject inner, FrameMarginPx, FrameMarginPx,
                 height.D - 1 - FrameMarginPx, width.D - 1 - FrameMarginPx); temps.Add(inner);
             HOperatorSet.Intersection(ring, inner, out HObject clipped); temps.Add(clipped);
@@ -484,10 +442,9 @@ namespace NanotecController
             return result;
         }
 
-        // The BRIGHTER of the region's two largest flanks — the bevel's specular glint, i.e. the
-        // wafer side. The flank-contrast test is kept exactly as WaferEdgeDetector applies it: it
-        // decides whether this dark region is a rim gap at all (a shadow trough in the machined chuck
-        // has chuck on both flanks and reads near 1), which is independent of which side is taken.
+        /// <summary>The BRIGHTER of the region's two largest flanks — the bevel's glint, i.e. the wafer
+        /// side. The flank-contrast test is applied exactly as <see cref="WaferEdgeDetector"/> does: it
+        /// decides whether this is a rim gap at all, independent of which side is then taken.</summary>
         private HObject? SelectWaferSide(HObject gap, HObject gray, StringBuilder log, List<HObject> temps)
         {
             HOperatorSet.DilationCircle(gap, out HObject grown, SideProbeRadius); temps.Add(grown);
@@ -519,12 +476,14 @@ namespace NanotecController
             return reach;
         }
 
-        // ---- Small maths -----------------------------------------------------------
+        #endregion
 
-        // Total-least-squares line through count points starting at start, returned as a point on the
-        // line plus a UNIT NORMAL. The normal is built here rather than taken from HALCON's Nr/Nc/Dist
-        // because that convention's sign and offset are easy to get subtly wrong, and getting it wrong
-        // would flip which side counts as "into the wafer" while still producing plausible numbers.
+        #region Line maths
+
+        /// <summary>Total-least-squares line through count points from start, as a point on the line
+        /// plus a UNIT NORMAL. Built here rather than from HALCON's Nr/Nc/Dist because that
+        /// convention's sign is easy to get subtly wrong, and doing so would flip which side counts as
+        /// "into the wafer" while still producing plausible numbers.</summary>
         private static bool TryLineFit(
             double[] row, double[] col, int start, int count,
             out double r0, out double c0, out double perpR, out double perpC)
@@ -550,7 +509,7 @@ namespace NanotecController
             return true;
         }
 
-        // Intersection of two lines each given as (point, unit normal). False when they are parallel.
+        /// <summary>Intersection of two lines each given as (point, unit normal). False when parallel.</summary>
         private static bool TryIntersect(
             double ar, double ac, double anR, double anC,
             double br, double bc, double bnR, double bnC,
@@ -600,5 +559,7 @@ namespace NanotecController
             HOperatorSet.ConvertImageType(image, out HObject byteImg, "byte");
             return byteImg;
         }
+
+        #endregion
     }
 }

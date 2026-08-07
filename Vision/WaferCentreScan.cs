@@ -1,28 +1,21 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Turns a Θ-scan of the wafer rim into the wafer's offset from the chuck's rotation axis.
-    ///
-    /// The wafer rim is far larger than the X/Y travel, so it cannot be circled with the stage the
-    /// way the chuck rim is (see FrmVisionProtocols.AutoCentre). Instead the stage parks on ONE
-    /// reachable spot on the rim and Θ turns the wafer underneath the camera. Each sample is a rim
-    /// point E in user-frame steps (built by CentreFinder.ToStepPoint, exactly as the chuck
-    /// centre-find builds its own) paired with the chuck angle θ it was taken at.
+    /// Turns a Θ-scan of the wafer rim into the wafer's offset from the chuck's rotation axis. The
+    /// rim is far larger than the X/Y travel, so instead of circling it the stage parks on ONE
+    /// reachable spot and Θ turns the wafer underneath the camera.
     ///
     /// De-rotating each sample about the chuck centre by its own θ expresses it in the chuck's
-    /// rotating frame, where the samples span the full 360° even though every one of them was
-    /// measured from the same small patch of reachable travel. Those de-rotated points are then fed
-    /// to the same Pratt CircleFit the chuck centre-find uses, and its centre is the wafer's offset
-    /// from the rotation axis.
+    /// rotating frame, where the samples span the full 360° despite all being measured from the same
+    /// small patch of travel. Those points feed the same Pratt <see cref="CircleFit"/> the chuck
+    /// centre-find uses, and its centre is the wafer's offset from the rotation axis.
     ///
-    /// The maths is in mm, not steps: X and Y have different StepsPerMm (1261.5 vs 1256.5), so a
-    /// rotation is only a rotation once that anisotropy is divided out.
-    ///
-    /// See docs/developer-guide/WaferCentreByRotation.md for the derivation, including why an error
-    /// in the stored chuck centre biases the fitted RADIUS but not the offset.
+    /// The maths is in mm, not steps: X and Y have different StepsPerMm, so a rotation is only a
+    /// rotation once that anisotropy is divided out. See Developer Guide,
+    /// WaferCentreByRotation.md, for the derivation.
     /// </summary>
     public static class WaferCentreScan
     {
@@ -50,27 +43,19 @@ namespace NanotecController
         private const double OUTLIER_SIGMA = 3.0;
 
         /// <summary>The two handednesses are only judged by RMS when the loser is at least this bad
-        /// (mm). Any 3 points lie exactly on some circle, so at small N BOTH signs fit perfectly and
-        /// the comparison is meaningless — without this floor the tie would be broken by floating-point
-        /// noise, silently choosing the wrong handedness and mirroring the answer.</summary>
+        /// (mm). Any 3 points lie exactly on some circle, so at small N both signs fit perfectly and
+        /// the tie would otherwise be broken by floating-point noise, mirroring the answer.</summary>
         private const double SIGN_SEPARATION_MM = 0.05;
 
         /// <summary>…and the winner must beat the loser by at least this factor, not merely edge it.</summary>
         private const double SIGN_MARGIN = 0.5;
 
-        /// <summary>
-        /// Fits <paramref name="samples"/> to a wafer offset + radius.
-        ///
-        /// Both de-rotation handednesses are tried and the clearly better one wins, because a wrong
-        /// sign yields a plausible-looking but mirrored centre and RotationSign is only ever fixed
-        /// empirically. When the scan is too short to tell them apart — any 3 points fit some circle
-        /// exactly, so at N = 3 both signs are perfect — <paramref name="expectedSign"/> (±1, or 0 if
-        /// the caller has none) breaks the tie instead. An ambiguous scan with no expectation is an
-        /// error rather than a guess.
-        ///
-        /// Returns false (with <paramref name="error"/>) for &lt;3 samples, a degenerate set, or that
-        /// unresolvable handedness.
-        /// </summary>
+        /// <summary>Fits <paramref name="samples"/> to a wafer offset + radius. Both de-rotation
+        /// handednesses are tried and the clearly better one wins, a wrong sign yielding a plausible
+        /// but mirrored centre. When the scan is too short to tell them apart,
+        /// <paramref name="expectedSign"/> (±1, or 0) breaks the tie — an ambiguous scan with no
+        /// expectation is an error rather than a guess. False for &lt;3 samples, a degenerate set, or
+        /// unresolvable handedness.</summary>
         public static bool TryFit(
             IReadOnlyList<Sample> samples,
             long centreX, long centreY,
@@ -84,8 +69,8 @@ namespace NanotecController
             if (samples.Count < 3) { error = $"Need at least 3 rim samples (have {samples.Count})."; return false; }
             if (stepsPerMmX <= 0 || stepsPerMmY <= 0) { error = "X and Y need StepsPerMm before a wafer scan can be fitted."; return false; }
 
-            // Try both handednesses; the wrong one scatters the de-rotated points instead of
-            // forming a circle, so the RMS separates them by orders of magnitude.
+            // The wrong handedness scatters the de-rotated points instead of forming a circle, so
+            // the RMS separates them by orders of magnitude.
             bool okPos = TryFitWithSign(samples, +1, centreX, centreY, stepsPerMmX, stepsPerMmY,
                                         out CircleFit.Result fitPos, out List<(double X, double Y)> ptsPos, out string? errPos);
             bool okNeg = TryFitWithSign(samples, -1, centreX, centreY, stepsPerMmX, stepsPerMmY,

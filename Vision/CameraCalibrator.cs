@@ -1,23 +1,19 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Builds the pixel→step affine <see cref="PixelStepAffine"/> from manually-captured
-    /// samples. Each sample pairs a detected fiducial pixel (row, col) with the motor
-    /// position (X, Y, steps) the table was at when the frame was grabbed. Because the
-    /// camera is fixed and the table moves, moving the table by ΔM shifts the fiducial's
-    /// pixel linearly: Δpixel = J·ΔM. We fit the inverse directly — steps as a linear
-    /// function of pixels — by least squares over all samples:
+    /// Builds the pixel→step affine from manually-captured samples, each pairing a detected fiducial
+    /// pixel with the motor position the frame was grabbed at. Fits steps as a linear function of
+    /// pixels by least squares:
     ///
     ///     X = Xr·row + Xc·col + eX
     ///     Y = Yr·row + Yc·col + eY
     ///
-    /// The (Xr,Xc,Yr,Yc) slopes ARE the steps-per-pixel matrix A (scale + camera/stage
-    /// rotation). The offsets (eX,eY) are fit but discarded — only displacements are used
-    /// downstream, so the offset cancels. ≥3 samples that span BOTH axes are required;
-    /// collinear samples (all along one line) are rejected.
+    /// The slopes ARE the steps-per-pixel matrix (scale + camera/stage rotation). The offsets are fit
+    /// but discarded, since only displacements are used downstream. Needs ≥3 samples spanning BOTH
+    /// axes; collinear samples are rejected.
     /// </summary>
     public sealed class CameraCalibrator
     {
@@ -30,12 +26,9 @@ namespace NanotecController
         public void Add(double row, double column, long x, long y) => _samples.Add(new Sample(row, column, x, y));
         public void Clear() => _samples.Clear();
 
-        /// <summary>
-        /// Solves for the affine. Returns false (with <paramref name="error"/>) if there are
-        /// fewer than 3 samples or they don't span two dimensions. <paramref name="residualSteps"/>
-        /// is the RMS fit error in motor steps — a small value means the relationship is linear
-        /// (no backlash/clipping contamination); a large value means something's off.
-        /// </summary>
+        /// <summary>Solves for the affine. False (with <paramref name="error"/>) for fewer than 3
+        /// samples or a set that doesn't span two dimensions. <paramref name="residualSteps"/> is the
+        /// RMS fit error in steps — small means the relationship really is linear.</summary>
         public bool TrySolve(out PixelStepAffine affine, out double residualSteps, out string? error)
         {
             affine = new PixelStepAffine();
@@ -45,7 +38,7 @@ namespace NanotecController
             int n = _samples.Count;
             if (n < 3) { error = $"Need at least 3 samples (have {n})."; return false; }
 
-            // Centering: Sums for centred least squares
+            // Sums for centred least squares.
             double sr = 0, sc = 0, sx = 0, sy = 0;
             double srr = 0, scc = 0, src = 0;
             double sxr = 0, sxc = 0, syr = 0, syc = 0;

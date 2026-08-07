@@ -1,42 +1,39 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace NanotecController
 {
     /// <summary>
-    /// Vision protocols window: the camera-scale calibration, chuck/wafer centre-find, and the
-    /// rotate-about-crosshair setup (Rotate by/to + the one-time handedness Sign test), plus a
-    /// captured pane where each detection's overlay lands. It does NOT own the camera — the live
-    /// view lives on the main screen; this window is handed the shared <see cref="IVisionFrameSource"/>
-    /// (from FrmMain) and enqueues its detection jobs there. All motion is executed/serialized by
-    /// <see cref="IMotionHost"/> (FrmMain); this window only reads position and requests moves.
+    /// Vision protocols window: camera-scale calibration, chuck/wafer centre-find, notch find, and the
+    /// rotate-about-crosshair setup, plus a captured pane where each detection's overlay lands. It does
+    /// NOT own the camera — it is handed the shared <see cref="IVisionFrameSource"/> and enqueues
+    /// detection jobs there. All motion is serialized by <see cref="IMotionHost"/>.
     ///
-    /// The interactive jog + hold-to-rotate also live in the main motion cluster (RAW/VISION mode
-    /// switch); this window keeps a convenience copy so the operator can nudge the stage while
-    /// watching the mirror during calibration. Because those are hold-to-move controls, this window
+    /// The convenience copy of the jog / hold-to-rotate controls is hold-to-move, so this window
     /// installs a focus-loss safety stop (Deactivate → VisionStop + StopHoldRotate).
     /// </summary>
     public sealed partial class FrmVisionProtocols : Form
     {
-        // The shared live camera (owned by FrmMain). Detection jobs run against its RAW frames;
-        // results are marshalled back and overlaid on our captured pane.
+        #region Shared view and captured pane
+
+        /// <summary>The shared live camera, owned by FrmMain. Detection jobs run against its RAW
+        /// frames; results are marshalled back and overlaid on the captured pane.</summary>
         private readonly IVisionFrameSource _view;
         private readonly PictureBox _capturedBox = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
         private readonly Label _status = new() { Text = "Ready.", AutoSize = true };
 
-        // Live-view MIRROR of the main-screen camera (this window owns no camera): the primary
-        // control pushes frames here via IVisionFrameSource.FrameDisplayed, so the operator can align
-        // a feature to the crosshair without switching to the main window. The crosshair toggle is
-        // local to this view; zoom drives the shared camera (so it also changes the main view).
+        /// <summary>Live-view MIRROR of the main-screen camera — the primary control pushes frames here,
+        /// so a feature can be aligned to the crosshair without switching windows. The crosshair toggle
+        /// is local to this view; zoom drives the shared camera, so it changes the main view too.</summary>
         private readonly VisionViewControl _live = new() { OwnsCamera = false };
         private readonly Button _crosshairBtn = new() { Text = "Crosshair" };
         private readonly ComboBox _zoomBox = new() { DropDownStyle = ComboBoxStyle.DropDownList };
 
-        // Camera-scale calibration (manual jog + capture; owner supplies motor position).
-        // Non-nullable: the ctor requires it. It was declared nullable while every use site said
-        // `_owner!`, which meant the compiler checked nothing and a reader could not tell the
-        // genuinely-optional accesses from the noise.
+        #endregion
+
+        #region Camera-scale calibration
+
         private readonly IMotionHost _owner;
         private readonly SolidCircleDetector _markDetector = new();
         private readonly CameraCalibrator _calibrator = new();
@@ -46,11 +43,13 @@ namespace NanotecController
         private readonly TextBox _sampleList = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
         private readonly Label _calibResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
 
-        // --- Auto wafer centre-find (Θ scan). The wafer rim is far larger than the X/Y travel, so it
-        // cannot be circled with the stage the way the chuck rim is: the stage parks on one reachable
-        // spot on the rim and Θ turns the wafer underneath the camera instead. Wafer Ø sizes the
-        // approach jump and sanity-checks the fitted radius; Samples is how many angles are visited
-        // over one revolution. Logic lives in FrmVisionProtocols.AutoWafer.cs.
+        #endregion
+
+        #region Auto wafer centre-find (Θ scan)
+
+        // The stage parks on one reachable spot on the rim and Θ turns the wafer underneath the
+        // camera, the rim being far larger than the X/Y travel. Wafer Ø sizes the approach jump and
+        // sanity-checks the fitted radius. Logic lives in FrmVisionProtocols.AutoWafer.cs.
         private readonly WaferEdgeDetector _waferDetector = new();
         private readonly NumericUpDown _waferDia = new() { Minimum = 10, Maximum = 600, Value = 200, DecimalPlaces = 1, Increment = 10 };
         private readonly NumericUpDown _waferSamples = new() { Minimum = 3, Maximum = 72, Value = 24, Increment = 1 };
@@ -60,7 +59,10 @@ namespace NanotecController
         private readonly Label _waferResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
         private readonly TextBox _waferLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
 
-        // Notch find (FrmVisionProtocols.NotchFind.cs)
+        #endregion
+
+        #region Notch find (FrmVisionProtocols.NotchFind.cs)
+
         private readonly Button _notchRunBtn = new() { Text = "Find Notch (Θ sweep)", Enabled = false };
         private readonly Button _notchCancelBtn = new() { Text = "Cancel", Enabled = false };
         private readonly NumericUpDown _notchDatum = new() { Minimum = 0, Maximum = 360, Value = 0, DecimalPlaces = 1, Increment = 5 };
@@ -69,7 +71,10 @@ namespace NanotecController
         private readonly Button _notchCheckBtn = new() { Text = "Check notch angle", Enabled = false };
         private readonly TextBox _notchLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
 
-        // --- Chuck centre-find: capture >=3 edge points (step space), circle-fit, go to centre --
+        #endregion
+
+        #region Chuck centre-find (manual: >=3 edge points, circle-fit, go to centre)
+
         private readonly ChuckEdgeDetector _edgeDetector = new();
         private readonly CentreFinder _chuckFinder = new();   // accumulates chuck edge points (user-frame steps)
         private readonly Button _edgeBtn = new() { Text = "Add Edge", Enabled = false };
@@ -82,19 +87,24 @@ namespace NanotecController
         private readonly Label _centreResult = new() { BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 8F), TextAlign = ContentAlignment.TopLeft };
         private (long X, long Y)? _chuckCentre;   // last computed/loaded centre (user frame)
 
-        // --- Auto chuck centre-find: the same points and the same fit, collected by the stage instead
-        // of by hand. The run homes X/Y, offsets to the seed point, then probes 8 directions. Max R is
-        // the MAX SEARCH RADIUS in steps — the single bound on how far a probe may travel and how far
-        // out a detection is still believed. It is an operational limit, not a measurement of the
-        // feature, so it is NOT seeded from the last fit. Logic lives in FrmVisionProtocols.AutoCentre.cs.
+        #endregion
+
+        #region Auto chuck centre-find (FrmVisionProtocols.AutoCentre.cs)
+
+        // The same points and the same fit, collected by the stage instead of by hand. Max R is the
+        // MAX SEARCH RADIUS in steps — an operational limit, not a measurement of the feature, so it
+        // is NOT seeded from the last fit.
         private readonly NumericUpDown _autoRadius = new() { Minimum = 0, Maximum = 100000000, Increment = 1000, ThousandsSeparator = true, Value = 10000 };
         private readonly Button _autoRunBtn = new() { Text = "Auto Centre-Find", Enabled = false };
         private readonly Button _autoCancelBtn = new() { Text = "Cancel", Enabled = false };
         private readonly TextBox _autoLog = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 8F), BackColor = Color.White };
 
-        // --- Rotate about crosshair (setup): relative ("Rotate by"), absolute ("Rotate to"), and the
-        // one-time handedness "Sign test". All gated/executed by FrmMain (serialized motion). The
-        // interactive hold-to-rotate lives in the main motion cluster's VISION mode now.
+        #endregion
+
+        #region Rotate about crosshair (setup)
+
+        // Relative "Rotate by", absolute "Rotate to", and the one-time handedness "Sign test". All
+        // gated and executed by FrmMain. The interactive hold-to-rotate lives in the main VISION mode.
         private readonly NumericUpDown _rotBy = new() { Minimum = -360, Maximum = 360, Value = 90, DecimalPlaces = 1, Increment = 5, Enabled = false };
         private readonly Button _rotByBtn = new() { Text = "Rotate by°", Enabled = false };
         private readonly NumericUpDown _rotTo = new() { Minimum = 0, Maximum = 360, Value = 0, DecimalPlaces = 1, Increment = 5, Enabled = false };
@@ -102,11 +112,13 @@ namespace NanotecController
         private readonly Label _signLabel = new() { AutoSize = true };
         private readonly Button _signTestBtn = new() { Text = "Sign test", Enabled = false };
 
-        // --- Vision motion controls (a convenience copy of the main-screen VISION mode, so the
-        // operator can jog / rotate while looking at this window during calibration): the drift-
-        // corrected X/Y jog (puck + d-pad) and hold-to-rotate about the crosshair. Everything runs
-        // through IMotionHost (FrmMain serializes all motion). Rotate SPEED is set on the main window
-        // (VISION-mode Θ slider → RotateThetaSpeed); this window just triggers the moves. ---
+        #endregion
+
+        #region Vision motion controls
+
+        // A convenience copy of the main-screen VISION mode, so the operator can jog while watching
+        // this window during calibration. Everything runs through IMotionHost. Rotate SPEED is set on
+        // the main window; this window only triggers the moves.
         private readonly NumericUpDown _vSpeed = new() { Minimum = 0, Maximum = 6000, Value = 1000, Increment = 100, Enabled = false };
         private readonly JoystickPad _vPad = new() { Enabled = false };
         private readonly System.Windows.Forms.Timer _vPadTimer = new() { Interval = 50 };
@@ -117,6 +129,10 @@ namespace NanotecController
         private readonly Button _vRight = new() { Text = "▶", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
         private readonly Button _rotHoldCcwBtn = new() { Text = "⟲ Hold", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
         private readonly Button _rotHoldCwBtn = new() { Text = "Hold ⟳", Font = new Font("Segoe UI Symbol", 11F), Enabled = false };
+
+        #endregion
+
+        #region Construction and layout
 
         public FrmVisionProtocols(IMotionHost owner, IVisionFrameSource view)
         {
@@ -130,7 +146,7 @@ namespace NanotecController
             ClientSize = new Size(1490, 762);
             MinimumSize = new Size(1200, 802);
 
-            // ---- Live view (mirror) + captured pane (top row) --------------------
+            // Live view (mirror) + captured pane (top row)
             // Left: a live MIRROR of the main-screen camera (crosshair toggle + shared zoom) so the
             // operator can align features here. Right: the captured pane showing each detection's
             // overlay (crosshair + edge/mark).
@@ -169,7 +185,7 @@ namespace NanotecController
             _status.Location = new Point(500, 484);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            // ---- Auto wafer centre-find, Θ scan (bottom strip) -------------------
+            // Auto wafer centre-find, Θ scan (bottom strip)
             // Fully automatic: the stage finds one reachable spot on the rim, then Θ turns the wafer a
             // full revolution underneath the camera while the rim point is re-measured at each angle.
             // The log pane is the run's transcript — which angles found an edge, and where.
@@ -217,7 +233,7 @@ namespace NanotecController
             _waferResult.Size = new Size(298, 124);
             _waferResult.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            // ---- Notch find (bottom strip, below the wafer group) -----------------
+            // Notch find (bottom strip, below the wafer group)
             // Needs the wafer centre-find first: the sweep follows the rim using the stored offset.
             // Θ turns continuously for up to a revolution (~112 s — Θ's speed cap is the floor) while
             // frames stream past a coarse detector; on a hit it stops and re-measures a stationary
@@ -266,7 +282,7 @@ namespace NanotecController
             _notchLog.Size = new Size(440, 86);
             _notchLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            // ---- Auto chuck centre-find (bottom strip, right of the wafer group) --
+            // Auto chuck centre-find (bottom strip, right of the wafer group)
             // Rough-centre the chuck by hand, enter the nominal radius, and the stage probes outward in
             // 8 directions collecting the rim points the manual "Add Edge" flow collects by jogging.
             // The log pane is the run's transcript — which directions found an edge, and where.
@@ -291,7 +307,7 @@ namespace NanotecController
             _autoLog.Size = new Size(292, 62);
             _autoLog.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-            // ---- Camera-scale calibration column (right) -------------------------
+            // Camera-scale calibration column (right)
             // Manual workflow: jog the table (main window) to keep the ring in view, then
             // Add Sample — that records (motor X,Y) + the detected ring centre (row,col).
             // After >= 3 samples spanning both axes, Compute & Save solves the pixel->step
@@ -321,7 +337,7 @@ namespace NanotecController
             _calibResult.Size = new Size(228, 110);
             _calibResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            // ---- Chuck centre-find column (far right) ----------------------------
+            // Chuck centre-find column (far right)
             // Jog so the chuck EDGE is in view (main window), Add Edge (detects the edge point nearest
             // the crosshair, converts to step space via the calibration). After >=3 around the rim,
             // Compute Centre circle-fits them; Go to Centre drives there.
@@ -369,7 +385,7 @@ namespace NanotecController
             _centreResult.Size = new Size(228, 90);
             _centreResult.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            // ---- Rotate about crosshair — setup (under the centre-find column) ---
+            // Rotate about crosshair — setup (under the centre-find column)
             // Needs the camera-scale calibration + a chuck centre. "Sign test" fixes the image
             // handedness once; "Rotate by/to" pin the crosshair point while Θ turns. Interactive
             // hold-to-rotate is on the main window (VISION mode, Θ arrows).
@@ -398,7 +414,7 @@ namespace NanotecController
             _signTestBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _signTestBtn.Click += async (s, e) => await SignTestAsync();
 
-            // ---- Drift-corrected vision jog (under the calibration column) -------
+            // Drift-corrected vision jog (under the calibration column)
             // The puck / d-pad command screen-space motion (right = +col, up = −row) mapped through
             // the pixel→step affine, so the feature under the crosshair tracks the input regardless of
             // the table's orientation. Speed here scales the puck; the d-pad uses it directly. Needs
@@ -587,5 +603,7 @@ namespace NanotecController
             _view.FrameDisplayed -= _live.PushFrame;
             _capturedBox.Image?.Dispose();
         }
+
+        #endregion
     }
 }

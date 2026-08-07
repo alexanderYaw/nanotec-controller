@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using HalconDotNet;
 
 namespace NanotecController
@@ -56,16 +56,13 @@ namespace NanotecController
         public void Open()
         {
             if (_acq != null) return;
-            // Device is "default" (= the single connected camera), NOT an index. The USB3Vision
-            // interface resolves this parameter as a device NAME, so the old "0" failed to match
-            // any device and open_framegrabber threw 5312 ("device cannot be initialized") even
-            // though info_framegrabber enumerated the camera fine. The alternative is the full
-            // unique name (e.g. "26760172B178_Basler_acA402429um"), which would pin this build to
-            // one physical camera; "default" keeps it swappable while there is only ever one.
+            // "default", NOT an index: USB3Vision resolves this as a device NAME, so "0" matched
+            // nothing and open_framegrabber threw 5312. A full unique name would pin the build to one
+            // physical camera; "default" keeps it swappable while there is only ever one.
             HOperatorSet.OpenFramegrabber("USB3Vision", 0, 0, 0, 0, 0, 0, "progressive", -1,
                 "default", -1, "false", "default", "default", 0, -1, out HTuple acq);
-            // Keep only the newest frame so the displayed image can't fall behind real time
-            // (best-effort: not every driver exposes this GenICam param under this name).
+            // Keep only the newest frame so the view can't fall behind real time. Best-effort:
+            // not every driver exposes this GenICam param under this name.
             try
             {
                 HOperatorSet.SetFramegrabberParam(acq, "[Stream]StreamBufferHandlingMode", "NewestOnly");
@@ -81,11 +78,10 @@ namespace NanotecController
                 catch (HOperatorException) { /* unsupported on this transport/driver */ }
             }
 
-            // Centred ROI (see Zoom): streaming fewer pixels lifts the USB-bandwidth fps cap
-            // toward the sensor's own limit. Sizes rounded to multiples of 16 and offsets to
-            // multiples of 4 to satisfy the camera's increment/Bayer-alignment constraints.
-            // Offsets are zeroed FIRST so a shrunken previous ROI (params persist in the camera
-            // until power-cycle) never blocks growing the window back. Best-effort.
+            // Centred ROI: streaming fewer pixels lifts the USB-bandwidth fps cap toward the
+            // sensor's limit. Sizes are multiples of 16 and offsets of 4, per the camera's
+            // increment/Bayer-alignment constraints. Offsets are zeroed FIRST so a shrunken previous
+            // ROI — camera params persist until power-cycle — can't block growing the window back.
             try
             {
                 HOperatorSet.GetFramegrabberParam(acq, "WidthMax", out HTuple wmax);
@@ -101,15 +97,13 @@ namespace NanotecController
             }
             catch (HalconException) { /* ROI unsupported; stream the full frame */ }
 
-            // Full-res 8-bit Bayer frames are ~20 MB, so the camera's default 360 MB/s USB limit
-            // caps the stream at 18 fps. Ask for more; the camera clamps to what the link allows.
+            // Full-res 8-bit Bayer frames are ~20 MB, so the default 360 MB/s USB limit caps the
+            // stream at 18 fps. Ask for more; the camera clamps to what the link allows.
             try { HOperatorSet.SetFramegrabberParam(acq, "DeviceLinkThroughputLimit", 440000000.0); }
             catch (HalconException) { /* camera clamps or rejects; keep its default */ }
 
-            // What the camera thinks it can deliver (GenICam-standard names; best-effort).
-            // HalconException (not just HOperatorException) because the returned tuple type
-            // varies per camera — e.g. a boolean feature may come back as int or string, and
-            // a wrong accessor throws HTupleAccessException.
+            // HalconException, not just HOperatorException: the returned tuple type varies per
+            // camera, and a wrong accessor throws HTupleAccessException.
             static string Text(HTuple t) => t.Type == HTupleType.STRING ? t.S : t.D.ToString("0.###");
             var info = new System.Text.StringBuilder();
             try { HOperatorSet.GetFramegrabberParam(acq, "ResultingFrameRate", out HTuple fr); info.Append($"cam {fr.D:0.0} fps"); }
@@ -138,8 +132,8 @@ namespace NanotecController
         public HObject GrabImage()
         {
             if (_acq == null) throw new InvalidOperationException("Camera is not open.");
-            // Reject frames older than 100 ms so the view can't trail real time even if the
-            // NewestOnly buffer mode isn't supported by the driver.
+            // Reject stale frames, so the view can't trail real time even where the driver does
+            // not support NewestOnly buffering.
             HOperatorSet.GrabImageAsync(out HObject image, _acq, 100);
             return image;
         }

@@ -1,17 +1,17 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace NanotecController
 {
-    // FrmMain — RAW / VISION jog mode. One motion cluster (d-pad + puck + speed sliders) drives
-    // either the raw drive axes or screen-space vision motion, chosen by the mode switch. In VISION
-    // mode the X/Y controls do the drift-corrected screen jog and the Θ controls rotate about the
-    // crosshair (Z is always raw). The heavy motion code is shared: raw jog = StartJog/StopJog
-    // (FrmMain.Jog.cs), vision X/Y = VisionJogUser (FrmMain.Vision.cs), Θ = HoldRotateAsync
-    // (FrmMain.Rotation.cs). This file only routes the controls and swaps the per-mode slider ranges.
-    // (Partial of FrmMain.)
+    /// <summary>
+    /// FrmMain — RAW / VISION jog mode. One motion cluster (d-pad + puck + speed sliders) drives
+    /// either the raw drive axes or screen-space vision motion, chosen by the mode switch. In VISION
+    /// mode the X/Y controls do the drift-corrected screen jog and Θ rotates about the crosshair;
+    /// Z is always raw. The heavy motion code is shared — this file only routes the controls and
+    /// swaps the per-mode slider ranges.
+    /// </summary>
     public partial class FrmMain
     {
         private enum JogMode { Raw, Vision }
@@ -126,7 +126,7 @@ namespace NanotecController
             if (_jogMode == JogMode.Vision && id == AxisId.Theta) RotateThetaSpeed = row.Speed.Value;
         }
 
-        // --- d-pad arrow dispatch (mode-aware) ------------------------------------
+        #region d-pad arrow dispatch (mode-aware)
         // Raw: hold-to-jog the drive axis. Vision: X/Y do the drift-corrected screen jog, Θ holds a
         // rotate-about-crosshair, Z stays raw. MouseUp always stops whatever the press started.
 
@@ -159,8 +159,9 @@ namespace NanotecController
             VisionJog(sx, sy, _visionSpeed.Value);
         }
 
-        // --- vision-jog maths (moved here from the protocols window) ----------------
+        #endregion
 
+        #region vision-jog maths (moved here from the protocols window)
         // Discrete screen-direction jog (sx right+, sy up+) at the given speed, drift-corrected
         // through the pixel→step affine. Needs the camera-scale calibration.
         private void VisionJog(int sx, int sy, int speed)
@@ -194,5 +195,7 @@ namespace NanotecController
             if (vx == 0 && vy == 0) VisionStop();
             else VisionJogUser(vx, vy);
         }
+
+        #endregion
     }
 }
