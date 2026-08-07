@@ -3,95 +3,19 @@
 <procedure name="main">
 <interface/>
 <body>
-<c>* Inner-circle detector - HDevelop tuning script.</c>
-<c>* Finds the boundary between the brightly-lit, in-focus, machined chuck FACE and the large</c>
-<c>* near-black region beside it, and reports the point on that boundary nearest the image</c>
-<c>* centre - the same output contract as 'chuck edge detector.hdev', so the host consumes it</c>
-<c>* the same way. Mirrored in Vision/InnerCircleDetector.cs; tune here, then copy across.</c>
+<c>* Inner-circle detector - HDevelop tuning script. Mirrors Vision/InnerCircleDetector.cs.</c>
 <c>* Step with Run (F5); it pauses at each stop().</c>
-<c>* </c>
-<c>* WHY THIS IS A DIFFERENT PIPELINE FROM THE OUTER CHUCK EDGE, NOT A RETUNE OF IT.</c>
-<c>* The outer detector cannot use grey level at all: there the two sides of the rim are nearly</c>
-<c>* the same brightness, so only FOCUS separates them, and that whole script is built around a</c>
-<c>* focus-energy map. Here it is inverted - grey level separates the two sides trivially, and</c>
-<c>* focus energy is actively WRONG:</c>
-<c>*   GREY over the whole frame:</c>
-<c>*     dark side    72.9% of the frame   mean  13.8   99% below  24.9</c>
-<c>*     bright side  27.1% of the frame   mean 232.9   19.4% of the frame is SATURATED at 255</c>
-<c>*   A ~219-level gap with an essentially empty valley between the populations.</c>
-<c>*   FOCUS on the same frame overlaps outright, because a flat SATURATED area has zero</c>
-<c>*   gradient, so the focus map reads the middle of the bright face as 'blurry': the bright</c>
-<c>*   side's 1st-percentile energy is 2.8 against the dark side's mean of 2.08 and its 99% of</c>
-<c>*   39.5 (the dark side scores high AT the boundary step). Segmenting on that would punch</c>
-<c>*   holes through the face, which is why none of the outer detector's focus machinery is</c>
-<c>*   reused below.</c>
-<c>* </c>
-<c>* The boundary is also a STEP, not a ramp. Raw grey across it (row 1500, every 5th column):</c>
-<c>*     255 255 255 255 255 116 182  42  18  15  17  14  15  12  14</c>
-<c>* i.e. it falls from saturation to the dark floor inside ~15-20 px, where the OUTER edge is</c>
-<c>* approached through a ~200 px defocus ramp. That is why BrightThreshold is a MILD parameter</c>
-<c>* here while DarkThreshold is a critical one there: on a step, moving the cut barely moves</c>
-<c>* the edge. Across 40..230 the fitted radius shifts 4593 -&gt; 4627 px, i.e. 0.7%.</c>
-<c>* </c>
-<c>* The fitted circle's CENTRE LIES OUTSIDE THE FRAME (about row -1450, col +4390, r ~4600 px</c>
-<c>* on a 4016x3024 frame), so only a shallow arc is ever in view. Expect a long arc and a</c>
-<c>* radius larger than the frame; do not read that as a failure.</c>
-<c>* </c>
-<c>* TUNED ON ONE FRAME (capture_20260731_160143_116.bmp) - there is no second capture of this</c>
-<c>* scene yet. The sweeps below are real full-resolution measurements, but the MARGINS they</c>
-<c>* imply are provisional: they show how the pipeline responds to its own parameters, not how</c>
-<c>* much the SCENE varies. Re-run them once more captures exist.</c>
-<c>* </c>
-<c>* SmoothWindow  : &lt;= 1 disables it. OFF by default, which is the opposite of the outer</c>
-<c>*                 detector, where smoothing before the grey cut is essential. Two measured</c>
-<c>*                 reasons, both specific to cutting a STEP:</c>
-<c>*                   SmoothWindow    1     5    11    21    41</c>
-<c>*                   fit residual  4.06  4.14  4.40  4.90  5.76  px RMS</c>
-<c>*                   fitted radius 4597  4600  4608  4618  4627  px</c>
-<c>*                 (a) the cut at 80 sits well BELOW the step's midpoint (~123), so blurring</c>
-<c>*                 the step walks the crossing outward into the dark - a bias that grows with</c>
-<c>*                 the window, visible as the radius drift above; (b) it makes the stray</c>
-<c>*                 component WORSE, not better: the dark region holds a faint reflection blob</c>
-<c>*                 (raw grey up to 217) which is small enough for OpenRadius to erase, but</c>
-<c>*                 smoothing spreads it until it survives. The pits that smoothing was there</c>
-<c>*                 to suppress are already handled by CloseRadius and fill_up. Turn it back on</c>
-<c>*                 only if a future capture shows speckle those two cannot absorb.</c>
-<c>* BrightThreshold: grey cut separating face from dark region. -1 = use Otsu instead.</c>
-<c>*                 DELIBERATELY FIXED, where the outer detector defaults to Otsu, because</c>
-<c>*                 these two grey levels are set by the illumination and the material and do</c>
-<c>*                 NOT move with framing - whereas Otsu, being a RELATIVE split, shifts with</c>
-<c>*                 how much of the frame each side happens to occupy, which is exactly what</c>
-<c>*                 changes as the stage scans. Otsu lands at 123 on this frame. A fixed cut</c>
-<c>*                 also makes the 'no boundary in view' case fail honestly - see step 3b.</c>
-<c>*                   BrightThreshold  40    60    80   100   123   160   200   230</c>
-<c>*                   fit residual   3.69  4.10  4.06  4.15  4.33  4.35  4.66  5.83  px RMS</c>
-<c>*                 Flat, as a step edge should be - the choice is about MARGIN, not residual.</c>
-<c>*                 The dark floor sits at ~14 with 99% below 24.9; the bright plateau is ~233.</c>
-<c>*                 80 sits mid-valley with ~3x margin over the dark floor, and is far from the</c>
-<c>*                 scalloped lip of the face that a high cut bites into (230 costs 40% more</c>
-<c>*                 residual and splits the region in two).</c>
-<c>* CloseRadius   : bridges the dark pits that bite into the lip of the face. As in the outer</c>
-<c>*                 detector this is THE parameter that matters, and for the same reason - it</c>
-<c>*                 is the same machined texture. With smoothing off it is load-bearing:</c>
-<c>*                   CloseRadius     0    15    45    65   105   160</c>
-<c>*                   fit residual  191.0  7.22  5.35  4.73  4.06  3.62  px RMS</c>
-<c>*                   worst dev    1498.0 36.5  21.8  19.2  13.2  13.3  px</c>
-<c>*                 At 0 the region fragments into 7 pieces and the fit is meaningless. RMS</c>
-<c>*                 keeps falling past 105, but the WORST deviation bottoms out there and then</c>
-<c>*                 creeps back, so 105 is the knee. NOTE it will also seal any genuine notch</c>
-<c>*                 in the boundary narrower than ~2x this value - fine for pits, but do not</c>
-<c>*                 raise it far if the feature is ever expected to have real gaps.</c>
-<c>* OpenRadius    : drops isolated specks stranded in the dark region - here, the reflection</c>
-<c>*                 blob. Nearly inert (residual 4.07 at 0 vs 4.06 at 15) because keeping the</c>
-<c>*                 largest component already discards it; 25 starts eating the arc (worst</c>
-<c>*                 deviation 13.2 -&gt; 24.6). Kept small as insurance against specks this one</c>
-<c>*                 tuning frame does not happen to show.</c>
-<c>* MinArcLength  : the real arc spans the frame (~6280 px here); stubs left after clipping are</c>
-<c>*                 a few hundred at most.</c>
-<c>* BorderMargin  : the region's outline also runs along the image frame. Clipping to a</c>
-<c>*                 rectangle inset by this much throws those runs away and leaves the arc.</c>
-<c>* MinFacePercent / MaxFacePercent: reject the frame when only ONE population is present - see</c>
-<c>*                 step 3b.</c>
+<c>* Finds the boundary between the bright, in-focus chuck FACE and the near-black region beside</c>
+<c>* it, and reports the point on it nearest the image centre - the same output contract as</c>
+<c>* "chuck edge detector.hdev".</c>
+<c>* A different pipeline from the outer edge, not a retune of it: here grey level separates the</c>
+<c>* two sides outright (a ~219-level gap) and focus energy is actively WRONG, since the flat</c>
+<c>* SATURATED face has no gradient and reads as blurry. So none of the focus machinery is reused.</c>
+<c>* BrightThreshold is deliberately FIXED rather than Otsu: the two levels are set by the</c>
+<c>* illumination and do not move with framing, and a fixed cut makes step 3b honest.</c>
+<c>* The fitted circle's CENTRE LIES OUTSIDE THE FRAME (r ~4600 px) - expect a radius larger than</c>
+<c>* the frame and do not read it as a failure.</c>
+<c>* Tuned on one frame (capture_20260731_160143_116.bmp); the margins are provisional.</c>
 <l>SmoothWindow := 1</l>
 <l>BrightThreshold := 80</l>
 <l>CloseRadius := 105</l>
@@ -110,8 +34,7 @@
 <l>dev_display (Image)</l>
 <l>disp_message (WindowHandle, '0: input frame  ' + Width + 'x' + Height, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 1. Single-channel byte image. The mono camera passes straight through; a colour frame</c>
-<c>*    yields its RED channel (the old colour-camera scenes were red-lit).</c>
+<c>* 1. Single channel. Mono passes through; a colour frame yields its RED channel.</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
 <l>    access_channel (Image, Gray, 1)</l>
@@ -122,8 +45,8 @@
 <l>dev_display (Gray)</l>
 <l>disp_message (WindowHandle, '1: grey (' + Channels + ' channel(s) in), range ' + GrayMin + '-' + GrayMax, 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 2. Optional smoothing before the cut - OFF by default here, see the parameter note. Left in</c>
-<c>*    as a switch because it is the first thing to try if a future capture speckles.</c>
+<c>* 2. Optional smoothing before the cut - OFF by default; the first thing to try if a future</c>
+<c>*    capture speckles.</c>
 <l>if (SmoothWindow &gt; 1)</l>
 <l>    mean_image (Gray, GraySmoothed, SmoothWindow, SmoothWindow)</l>
 <l>else</l>
@@ -133,9 +56,8 @@
 <l>disp_message (WindowHandle, '2: smoothing ' + (SmoothWindow &gt; 1 ? '' + SmoothWindow + 'x' + SmoothWindow : 'OFF'), 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 <c>* 3. Split the two sides on grey level. LOOK HERE if the result is wrong - the green region</c>
-<c>*    should be the whole bright face and nothing else, with the ragged, pitted lip left for</c>
-<c>*    step 4 to close. Otsu is available (BrightThreshold := -1) but is not the default; see</c>
-<c>*    the parameter note for why a fixed cut is the safer choice in this scene.</c>
+<c>*    should be the whole bright face and nothing else, with the pitted lip left for step 4.</c>
+<c>*    Otsu is available (BrightThreshold := -1) but is not the default.</c>
 <l>if (BrightThreshold &lt; 0)</l>
 <l>    binary_threshold (GraySmoothed, FaceRaw, 'max_separability', 'light', UsedThreshold)</l>
 <l>else</l>
@@ -151,32 +73,17 @@
 <l>disp_message (WindowHandle, '3: grey &gt;= ' + UsedThreshold + ' (green) = the bright face, before cleanup - ' + FacePercent$'.1f' + '% of the frame', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 <c>* 3b. Reject the frame when only ONE of the two populations is present, i.e. the boundary is</c>
-<c>*     not in view. This is the analogue of the outer detector's step 2b, but it gets to be a</c>
-<c>*     much simpler test, and that is a direct consequence of the FIXED threshold above. Otsu</c>
-<c>*     always returns a split, so on a one-population frame it manufactures a plausible</c>
-<c>*     boundary out of noise and every later step still runs to completion - which is what</c>
-<c>*     forced the outer detector to measure absolute focus energy. A fixed grey cut has no such</c>
-<c>*     failure mode: an all-dark frame yields an EMPTY region and an all-bright frame yields</c>
-<c>*     the whole frame. Measured on crops of this capture:</c>
-<c>*       all-dark crop (top-right quadrant)      0.00% face</c>
-<c>*       all-bright crop (bottom-left corner)   99.82% face</c>
-<c>*       full frame, boundary in view           27.36% face</c>
-<c>*     The bounds are set wide (2% / 98%) on purpose: they are here to catch NO BOUNDARY AT</c>
-<c>*     ALL, not to police framing - a valid capture with the arc just entering a corner is</c>
-<c>*     legitimately a few percent, and narrowing these would start rejecting usable frames.</c>
-<c>*     What they do NOT catch is a frame that is genuinely two-population but whose boundary</c>
-<c>*     is not the circle of interest; the circle-fit residual in step 6 is the check for that.</c>
+<c>*     not in view. The fixed cut makes this simple: an all-dark frame yields an EMPTY region</c>
+<c>*     and an all-bright frame the whole frame. The bounds are wide on purpose - they catch NO</c>
+<c>*     BOUNDARY AT ALL, they do not police framing.</c>
 <l>if (FacePercent &lt; MinFacePercent or FacePercent &gt; MaxFacePercent)</l>
 <l>    dev_display (Gray)</l>
 <l>    disp_message (WindowHandle, 'REJECTED: no boundary in view - the bright face is ' + FacePercent$'.1f' + '% of the frame, outside ' + MinFacePercent$'.0f' + '-' + MaxFacePercent$'.0f' + '%. The frame is all face or all dark region; move the stage until the boundary crosses the view.', 'window', 12, 12, 'red', 'false')</l>
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 4. Clean up to ONE solid region: close the pits that bite into the lip, open away stranded</c>
-<c>*    specks, keep the largest connected component, fill its interior. fill_up disposes of the</c>
-<c>*    pits left INSIDE the face; the closing repairs the ones ON its edge, and that second job</c>
-<c>*    is where nearly all of the accuracy is won - at CloseRadius 0 this region comes apart</c>
-<c>*    into 7 pieces and the fitted circle is off by 1498 px at worst.</c>
+<c>* 4. Clean up to ONE solid region. The closing repairs the pits ON the lip, which is where</c>
+<c>*    nearly all of the accuracy is won; fill_up disposes of the ones inside the face.</c>
 <l>closing_circle (FaceRaw, FaceClosed, CloseRadius)</l>
 <l>opening_circle (FaceClosed, FaceOpened, OpenRadius)</l>
 <l>connection (FaceOpened, FaceParts)</l>
@@ -192,8 +99,7 @@
 <l>disp_message (WindowHandle, '4: solid face - ' + NumParts + ' component(s), largest covers ' + (100.0 * FaceArea / (Width * Height))$'.1f' + '% of the frame', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
 <c>* 5. The inner circle edge = that region's outline, minus the stretches that merely run along</c>
-<c>*    the image frame. clip_contours_xld cuts the outline at a rectangle inset by BorderMargin,</c>
-<c>*    which severs those runs; the length filter then drops the stubs it leaves behind.</c>
+<c>*    the image frame. The clip severs those runs; the length filter drops the stubs it leaves.</c>
 <l>gen_contour_region_xld (Face, RegionBorder, 'border')</l>
 <l>clip_contours_xld (RegionBorder, ClippedBorder, BorderMargin, BorderMargin, Height - 1 - BorderMargin, Width - 1 - BorderMargin)</l>
 <l>count_obj (ClippedBorder, NumClipped)</l>
@@ -211,12 +117,9 @@
 <l>    stop ()</l>
 <l>    return ()</l>
 <l>endif</l>
-<c>* 6. Circle fitted to the longest arc - a sanity read-out, not part of the result, and the</c>
-<c>*    only check that the arc found is the CIRCLE and not some other two-tone boundary. On the</c>
-<c>*    tuning frame: arc 6284 px, r 4597 px, centre (row -1452, col 4388), residual 4.06 px RMS</c>
-<c>*    with a worst deviation of 13.2 px. A residual in the tens means the outline wandered off</c>
-<c>*    the arc - suspect CloseRadius first (15 alone takes it to 7.2 px RMS, 0 to 191), then a</c>
-<c>*    BrightThreshold up in the scalloped lip.</c>
+<c>* 6. Circle fitted to the longest arc - a sanity read-out, not part of the result, and the only</c>
+<c>*    check that the arc found is the CIRCLE and not some other two-tone boundary. The tuning</c>
+<c>*    frame gives 4.06 px RMS; a residual in the tens means suspect CloseRadius first.</c>
 <l>length_xld (EdgeArcs, ArcLengths)</l>
 <l>tuple_sort_index (ArcLengths, LengthIdx)</l>
 <l>select_obj (EdgeArcs, MainArc, LengthIdx[|LengthIdx| - 1] + 1)</l>
@@ -234,8 +137,7 @@
 <l>dev_display (FitCircle)</l>
 <l>disp_message (WindowHandle, '6: longest arc = ' + ArcLengths[LengthIdx[|LengthIdx| - 1]]$'.0f' + ' px; fitted circle r=' + CircRadius$'.0f' + ' px at (' + CircRow$'.0f' + ', ' + CircCol$'.0f' + '), residual ' + FitRms$'.1f' + ' px RMS', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* 7. Edge point closest to the image centre - the value the host consumes. Gather every point</c>
-<c>*    from the surviving arc(s), then pick the one with the smallest distance to the centre.</c>
+<c>* 7. Edge point closest to the image centre - the value the host consumes.</c>
 <l>CenterRow := Height / 2.0</l>
 <l>CenterCol := Width / 2.0</l>
 <l>AllRow := []</l>

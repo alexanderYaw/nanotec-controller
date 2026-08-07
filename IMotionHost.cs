@@ -82,8 +82,8 @@ namespace NanotecController
         /// owns it for the whole revolution.</summary>
         long SweepThetaTicks { get; }
         /// <summary>Θ's velocity cap. This is what floors the search time — a revolution is
-        /// <see cref="CrosshairRotation.ChuckTicksPerRev"/> ticks, so at 3200 steps/s no sweep can
-        /// take less than ~112 s.</summary>
+        /// <see cref="CrosshairRotation.ChuckTicksPerRev"/> ticks, so at 5000 steps/s no sweep can
+        /// take less than ~72 s.</summary>
         int ThetaSpeedMax { get; }
 
         #endregion

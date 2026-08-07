@@ -36,11 +36,33 @@ namespace NanotecController
             IReadOnlyList<double> DroppedAngles);
 
         /// <summary>Residuals below this (mm) are never treated as outliers however tight the fit is,
-        /// so a clean scan cannot shed good points to its own noise floor.</summary>
-        private const double OUTLIER_FLOOR_MM = 0.3;
+        /// so a clean scan cannot shed good points to its own noise floor. Measured hardware scans run
+        /// an RMS of 0.076 mm, so this is ~2x the noise; it was 0.3 mm until 2026-08-07, which kept
+        /// anything within 4x the noise — the scale of a bevel or partial-notch mis-latch.</summary>
+        private const double OUTLIER_FLOOR_MM = 0.15;
 
-        /// <summary>Residual multiple of the RMS above which a point is dropped and the fit redone once.</summary>
-        private const double OUTLIER_SIGMA = 3.0;
+        /// <summary>Residual multiple of the RMS above which a point is dropped and the fit redone
+        /// (3.0 until 2026-08-07).</summary>
+        private const double OUTLIER_SIGMA = 2.5;
+
+        /// <summary>Hard ceiling on the cut (mm), whatever the RMS says. A multiple of the RMS cannot
+        /// catch an outlier at small N: with 9 points one bad sample drags the circle onto itself and
+        /// inflates the very RMS that sets the cut, so it ends up inside its own threshold and
+        /// survives — measured, a 2 mm outlier at N=8 was kept at any sigma. A rim point is a physical
+        /// thing: hardware scans fit to an RMS of 0.076 mm, so 0.5 mm is ~6x the noise and nothing
+        /// genuine reaches it. This ceiling, not the sigma, is what rejects outliers on a short scan.</summary>
+        private const double OUTLIER_MAX_MM = 0.5;
+
+        /// <summary>Drop-and-refit passes. More than one because the cut is set by an RMS the outliers
+        /// themselves inflate: one gross point can widen the first cut past the second-worst point, so
+        /// each refit shrinks the RMS and tightens the next pass. Bounded — this is a cleanup, not a
+        /// search, and a scan needing four passes has something wrong with it that the log should show.</summary>
+        private const int OUTLIER_MAX_PASSES = 3;
+
+        /// <summary>A refit is only accepted while at least this many points survive. Three is the
+        /// algebraic minimum, and a 3-point fit is exact — it would report a flattering RMS on what is
+        /// really no longer a measurement.</summary>
+        private const int OUTLIER_MIN_KEPT = 5;
 
         /// <summary>The two handednesses are only judged by RMS when the loser is at least this bad
         /// (mm). Any 3 points lie exactly on some circle, so at small N both signs fit perfectly and
@@ -100,24 +122,44 @@ namespace NanotecController
             CircleFit.Result fit = sign > 0 ? fitPos : fitNeg;
             List<(double X, double Y)> pts = sign > 0 ? ptsPos : ptsNeg;
 
-            // Drop outliers (a sample that landed on the notch, or a bad detection) and refit once.
+            // Drop outliers (a sample that landed on the notch, or a bad detection) and refit. Each
+            // pass re-cuts against the tighter RMS the previous refit produced, so an outlier that hid
+            // inside a cut its own residual had widened is caught on the next one. A pass that would
+            // leave too few points to be a measurement is abandoned whole: the fit and the reported
+            // drops then stay in step, rather than reporting drops that never went into the fit.
             var dropped = new List<double>();
-            double cut = Math.Max(OUTLIER_SIGMA * fit.RmsError, OUTLIER_FLOOR_MM);
-            var keptPts = new List<(double X, double Y)>(pts.Count);
-            var keptIdx = new List<int>(pts.Count);
-            for (int i = 0; i < pts.Count; i++)
-            {
-                double dx = pts[i].X - fit.CenterX, dy = pts[i].Y - fit.CenterY;
-                if (Math.Abs(Math.Sqrt(dx * dx + dy * dy) - fit.Radius) > cut) dropped.Add(samples[i].ThetaDeg);
-                else { keptPts.Add(pts[i]); keptIdx.Add(i); }
-            }
-            if (dropped.Count > 0 && keptPts.Count >= 3 &&
-                CircleFit.TryFit(keptPts, out CircleFit.Result refit, out _))
-                fit = refit;
-            else if (dropped.Count > 0 && keptPts.Count < 3)
-                dropped.Clear();   // too few left to refit — keep the original fit and report nothing dropped
+            var kept = new List<int>(pts.Count);
+            for (int i = 0; i < pts.Count; i++) kept.Add(i);
 
-            int used = dropped.Count > 0 && keptPts.Count >= 3 ? keptPts.Count : samples.Count;
+            for (int pass = 0; pass < OUTLIER_MAX_PASSES; pass++)
+            {
+                // Every pass re-judges EVERY sample against the current fit, not just the survivors.
+                // The first fit is dragged towards a gross outlier, so good points on the far side can
+                // land outside that pass's cut; once the refit is clean they belong again, and a set
+                // that only ever shrank would have thrown them away for the outlier's mistake.
+                double cut = Math.Clamp(OUTLIER_SIGMA * fit.RmsError, OUTLIER_FLOOR_MM, OUTLIER_MAX_MM);
+                var keepNow = new List<int>(pts.Count);
+                var dropNow = new List<double>();
+                for (int i = 0; i < pts.Count; i++)
+                {
+                    double dx = pts[i].X - fit.CenterX, dy = pts[i].Y - fit.CenterY;
+                    if (Math.Abs(Math.Sqrt(dx * dx + dy * dy) - fit.Radius) > cut) dropNow.Add(samples[i].ThetaDeg);
+                    else keepNow.Add(i);
+                }
+
+                if (SameSet(keepNow, kept)) break;                  // converged — this pass changes nothing
+                if (keepNow.Count < OUTLIER_MIN_KEPT) break;        // too few left to still be a measurement
+
+                var keptPts = new List<(double X, double Y)>(keepNow.Count);
+                foreach (int i in keepNow) keptPts.Add(pts[i]);
+                if (!CircleFit.TryFit(keptPts, out CircleFit.Result refit, out _)) break;
+
+                kept = keepNow;
+                dropped = dropNow;
+                fit = refit;
+            }
+
+            int used = kept.Count;
 
             // Back to steps. The offset is per-axis; the radius is isotropic, so it takes the mean.
             double meanSteps = (stepsPerMmX + stepsPerMmY) / 2.0;
@@ -126,6 +168,14 @@ namespace NanotecController
                 fit.Radius * meanSteps, fit.Radius,
                 fit.RmsError, fit.RmsError * meanSteps,
                 used, sign, dropped);
+            return true;
+        }
+
+        // Both lists are built in ascending index order, so equality is element-wise.
+        private static bool SameSet(List<int> a, List<int> b)
+        {
+            if (a.Count != b.Count) return false;
+            for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
             return true;
         }
 

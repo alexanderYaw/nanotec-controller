@@ -35,20 +35,21 @@ search until the actual numbers are put in:
 | | |
 |---|---|
 | Revolution | 359,859 Θ ticks (`CrosshairRotation.ChuckTicksPerRev`) |
-| Θ velocity cap | 3200 steps/s (`Drive/MotionTypes.cs`, `JogVelocityMax`) |
-| **⇒ one revolution** | **112 s of rotation, before a single frame is grabbed** |
-| Rim speed at that cap | 5.60 mm/s |
+| Θ velocity cap | 5000 steps/s (`Drive/MotionTypes.cs`, `JogVelocityMax`; was 3200 until 2026-08-07) |
+| **⇒ one revolution** | **72 s of rotation, before a single frame is grabbed** |
+| Rim speed at that cap | 8.73 mm/s |
 
-So the search takes ~112 s worst case and ~56 s expected **no matter how the frames are taken**.
+So the search takes ~72 s worst case and ~36 s expected **no matter how the frames are taken**.
 Everything in the design exists to add as little as possible on top of that floor.
 
 That is also why the sweep is **continuous** rather than step-and-settle. At a 4 mm capture pitch a
-stepped scan needs ~157 stops; at ~1.5 s each that is ~240 s *added* to the 112 s. Sweeping
-continuously adds nothing, because the detector (§3) finishes in ~130 ms against a 710 ms budget.
+stepped scan needs ~157 stops; at ~1.5 s each that is ~240 s *added* to the 72 s. Sweeping
+continuously adds nothing, because the detector (§3) finishes in ~130 ms against a 460 ms budget.
 
-> **The one lever.** `JogVelocityMax = 3200` is a **host-side constant**, not a limit read from the
-> drive. If Θ's motor and gearbox tolerate more, the whole search scales down linearly. Nothing else
-> comes close. Whether it is safe to raise is a hardware question.
+> **The one lever.** `JogVelocityMax` is a **host-side constant**, not a limit read from the drive,
+> so the whole search scales down linearly with it. It was raised 3200 → 5000 on 2026-08-07; the
+> per-frame budget fell with it (710 ms → 460 ms), still ~3.5× the detector's 130 ms. Nothing else
+> comes close to this lever. Whether it is safe to raise further is a hardware question.
 
 ---
 
@@ -136,7 +137,7 @@ A 30× separation collapses to 1.27×. The opening and closing radii fall to 2 a
 hold the gap's outline together, so the ring goes ragged and the residual measures raggedness rather
 than shape — several frames stop segmenting at all. It is also unnecessary: the coarse path costs
 **~130 ms at full resolution** (measured through the C# detector; 230 ms through HDevEngine) against
-a 710 ms budget.
+a 460 ms budget.
 
 ### Which boundary, and why it differs from the edge detector
 
@@ -340,19 +341,27 @@ same value to 3 decimals.)
 
 The **datum** is the other frame. As of 2026-08-06 it is read in the **camera's** frame — the bearing
 as it appears on the live view — because that is the frame the operator works in; `CameraFrame`
-converts, and the whole conversion is one angle, the camera's mounting tilt:
+converts. The conversion is two angles: the camera's mounting tilt, and a fixed quarter-turn that
+moves the dial's zero to **north** (2026-08-07):
 
 ```
 lab bearing = view bearing + tilt,     tilt = atan2(Yc/kY, Xc/kX) folded to (−90, 90]
+view bearing = datum + 270             (DatumZeroInView, CameraFrame)
 ```
+
+The view frame's own 0° reads **west** on screen, which is no use to an operator, so the datum is
+quoted from north: **0 = N, 90 = W, 180 = S, 270 = E**. Note it keeps the view frame's direction of
+travel and therefore runs **anticlockwise on screen — it is not a compass**. `DatumToLab` /
+`LabToDatum` are the only two places that know this, and every user-facing number (the datum box, the
+two `RotateNotchToDatumAsync` log lines, the station bearing in the check's log) goes through them.
 
 `tilt` is the lab bearing of one pixel COLUMN — where the view's horizontal points — so it is
 **measured, not configured**, and a camera swap needs only the camera-scale calibration re-run. It is
 computed in mm because X and Y differ by 0.4 % in steps/mm (step space gives the same angle to 0.06°),
 and folded because the ~180° the camera is mounted at belongs to the live view's display flip;
 counting it twice would invert every bearing. On the affine on file it is **+4.59°**, so a typed
-datum of 0 drives the notch to 4.59° in the machine frame, and the die grid — square to the notch to
-0.06° — lands square on the screen.
+datum of 0 drives the notch to 274.59° in the machine frame, and the die grid — square to the notch
+to 0.06° — lands square on the screen.
 
 **`CameraFrame` carries orientation only, and cannot carry positions.** The camera's origin travels
 with X and Y, so a point expressed in its frame stops meaning anything the moment the stage moves;
@@ -376,7 +385,7 @@ is `Θ_target = sign · (D − φ)`, and the move is `Θ_target − Θ_now`.
 > 150°, i.e. wrong every time and wrong differently each time. The corrected form lands on 150.00°
 > at all four.
 
-For reference, the camera station bears **~210°** in the machine frame (**~206°** as the datum now
+For reference, the camera station bears **~210°** in the machine frame (**~296°** as the datum now
 reads it) from the wafer centre — measured on hardware
 2026-08-06, with the station at X = −107,345 / Y ≈ −63,299 against a wafer centre near (2146, 1087):
 `atan2(−51.25, −86.79) = 210.6°`. An earlier note here said ~150°, which is the mirror of that in Y:
@@ -409,9 +418,16 @@ the visual form of the number the check reports. If it ever does *not*, the affi
 wrong, and that would be worth knowing — which is why the line is drawn from the calibration rather
 than fitted to the notch.
 
-Note the two panes differ: the Captured pane is the raw frame, the **live pane is rotated 180°**
-(`VisionViewControl._invertView`, the camera being mounted inverted). Same rim, same 25°, but the
-notch points the opposite way, so the two must not be compared with each other by eye.
+**The two panes now agree** (2026-08-07): the Captured pane takes the same 180° flip as the live one
+(`VisionViewControl._invertView`, the camera being mounted inverted). The flip is applied in
+`ShowCaptured` — **after** the caller has drawn its overlay, so the overlay stays glued to the pixels
+it was measured against and the raw row/col the detector reports still mean what they say. Detection
+is untouched: every job runs on the raw frame and every caller still posts with `flip: false`.
+
+> Before this the Captured pane was raw and the live pane flipped, so the same notch pointed opposite
+> ways in the two and they could not be compared by eye. The reported angles never changed and do not
+> change now — a 180° rotation preserves a line's angle, so the notch still reads 25° off horizontal
+> in both.
 
 **Rotating the view to square it up was built and then rolled back** (2026-08-06), and the reason is
 worth keeping: it would not straighten the notch. Squaring the picture with the machine makes screen
@@ -498,7 +514,7 @@ apex misses that by more than `NOTCH_APEX_TOL_STEPS`. Two details matter:
   had already committed to.
 
 **A lost rim reading as a clean one.** `TryCoarse` returns **false** rather than a small residual
-when the contour is too short to fit. That distinction matters over a 112 s unattended sweep: a run
+when the contour is too short to fit. That distinction matters over a 72 s unattended sweep: a run
 that could not tell "clean rim, no notch" from "no rim at all" would sail past the notch reporting
 nothing wrong for the rest of the revolution. Forty consecutive failures abandon the sweep.
 
@@ -520,8 +536,9 @@ Everything about the vision is measured. Everything about the motion is arithmet
    below 0.05 mm elsewhere.
 2. **Y-follow tracking.** Sweep a revolution with capture disabled and log the rim's position in
    frame. Expect ≪ 1 mm of error at 365 steps/s.
-3. **Frame pacing.** 130 ms of processing against a 710 ms budget assumes the camera delivers on
-   demand at ~1.4 fps while the drives are being hammered at 40 Hz.
+3. **Frame pacing.** 130 ms of processing against a 460 ms budget assumes the camera delivers on
+   demand at ~2.2 fps while the drives are being hammered at 40 Hz. This is the margin the 3200 →
+   5000 Θ raise ate into — check it on hardware before trusting the faster sweep.
 4. **End to end.** Set the notch to a known angle by hand, run 3×, require the reported angle to
    repeat within 0.1°.
 5. **Negative.** Run on bare chuck — must complete a revolution and report "not found" rather than
@@ -539,8 +556,8 @@ the crosshair and the measurement reads that ψ back.
 a constant: the station rides the rim as Θ turns while the wafer centre orbits the rotation axis, so
 the bearing drifts by about `atan(e/R)` either side of its mean. `RimStation.TryStationBearing`
 returns it for a given Θ, and the check iterates `Θ = σ·(β(Θ) − φ)` three times — a very weak fixed
-point, so it is at the noise floor after two. This is also why the user guide's "datum 150° parks
-the notch under the camera" is only approximate while the check is not.
+point, so it is at the noise floor after two. This is also why the user guide's "a datum of ~296°
+parks the notch under the camera" is only approximate while the check is not.
 
 The reason this exists at all is an error budget that says the software **cannot** be the source of
 a discrepancy of degrees. Against the calibration on file (eccentricity 0.717 mm, wafer R 100.24 mm,

@@ -3,30 +3,18 @@
 <procedure name="main">
 <interface/>
 <body>
-<c>* Solid-circle fiducial detector — mirrors Vision/SolidCircleDetector.cs stage for stage.</c>
-<c>* The marker is a solid disk, distinctly brighter than a uniform background, with bright</c>
-<c>* diagonal scribe lines nearby that may or may not cross it.</c>
-<c>* </c>
-<c>* The scene is NOT fixed, so there is no hand-tuned grey level here. Each frame accepts a</c>
-<c>* BAND of workable cuts 11-15 levels wide, but no single statistic lands inside every band:</c>
-<c>*   mono acA4024 frame  : band  60-130, otsu= 85, p99=130, p95=106</c>
-<c>*   colour acA5472 clean: band 195-245, otsu=211, p99=255, p95=245</c>
-<c>*   colour + dark strip : band 190-245, otsu=130 (WRONG - locks onto the strip), p97=192</c>
-<c>* So we try otsu + the 99/97/95/93/90th percentiles and keep the ROUNDEST result. Scoring on</c>
-<c>* circularity (rather than first-pass-wins) also lands mid-band, where the rim is truest.</c>
-<c>* </c>
-<c>* ClosingRadius : bridge the notch where a scribe line cuts the rim; &gt;= the widest gap</c>
-<c>* OpenRadius    : sever a line where it CROSSES the disk; stay well below the disk radius.</c>
-<c>*                 It need not erase a line outright - one left whole is elongated, so</c>
-<c>*                 MinCircularity drops it (that is what happens on the mono frames, where</c>
-<c>*                 the ~65 px lines outlive a radius-20 opening).</c>
-<c>* MinCircularity: reject those surviving lines and any non-round blob</c>
+<c>* Solid-circle fiducial detector - mirrors Vision/SolidCircleDetector.cs stage for stage.</c>
+<c>* The marker is a solid disk, brighter than a uniform background, with bright diagonal scribe</c>
+<c>* lines nearby that may or may not cross it.</c>
+<c>* The scene is not fixed, so there is no hand-tuned grey level: try Otsu plus the 99/97/95/93/</c>
+<c>* 90th percentiles and keep the ROUNDEST result.</c>
+<c>* ClosingRadius bridges the notch where a scribe line cuts the rim; OpenRadius severs a line</c>
+<c>* crossing the disk; MinCircularity drops any line left whole, which reads as elongated.</c>
 <l>ClosingRadius := 25</l>
 <l>OpenRadius := 20</l>
 <l>MinCircularity := 0.85</l>
 <l>MinArea := 5000</l>
 <l>MaxArea := 1e9</l>
-<c>* Load a test frame.</c>
 <l>dev_update_off ()</l>
 <l>dev_close_window ()</l>
 <l>* read_image (Image, 'C:/Users/AlexanderYawKaiMun/Desktop/images/solid_circle_fiducial.png')</l>
@@ -38,8 +26,7 @@
 <l>dev_display (Image)</l>
 <l>disp_message (WindowHandle, '0: input frame', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* Preprocess: mono passes through; a colour frame yields its RED channel (the markers were</c>
-<c>* red-lit under the old colour camera, and luminance weights red only ~0.3).</c>
+<c>* Mono passes through; a colour frame yields its RED channel (the old colour scenes were red-lit).</c>
 <l>count_channels (Image, Channels)</l>
 <l>if (Channels &gt;= 3)</l>
 <l>    access_channel (Image, Single, 1)</l>
@@ -50,8 +37,7 @@
 <l>dev_display (GrayByte)</l>
 <l>disp_message (WindowHandle, '1: single channel (byte)', 'window', 12, 12, 'yellow', 'false')</l>
 <l>stop ()</l>
-<c>* Build the candidate cuts: otsu first, then descending percentiles of this frame's own</c>
-<c>* histogram (the fiducial is always a small, bright minority of the frame).</c>
+<c>* Candidate cuts: Otsu, then descending percentiles of this frame's own histogram.</c>
 <l>binary_threshold (GrayByte, OtsuRegion, 'max_separability', 'light', OtsuThreshold)</l>
 <l>gray_histo (GrayByte, GrayByte, AbsoluteHisto, RelativeHisto)</l>
 <l>Candidates := [OtsuThreshold]</l>

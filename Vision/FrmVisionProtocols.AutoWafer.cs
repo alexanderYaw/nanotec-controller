@@ -35,9 +35,12 @@ namespace NanotecController
 
         /// <summary>Acceptance band on |E − chuck centre| as fractions of the nominal radius. Wide
         /// enough for any eccentricity that could physically sit on the chuck, tight enough to reject
-        /// a detection that latched onto something else.</summary>
-        private const double WAFER_BAND_LO_FRAC = 0.70;
-        private const double WAFER_BAND_HI_FRAC = 1.30;
+        /// a detection that latched onto something else. ±10 % on a 200 mm wafer is ±10 mm, still ~14x
+        /// the 0.72 mm eccentricity measured on hardware and well clear of a mistyped diameter, so no
+        /// genuine rim point can fall outside it. Was ±30 % until 2026-08-07, which let a detection
+        /// 30 mm off the rim into the fit.</summary>
+        private const double WAFER_BAND_LO_FRAC = 0.90;
+        private const double WAFER_BAND_HI_FRAC = 1.10;
 
         /// <summary>A detection this close to the frame edge (px) is refused — wider than
         /// WaferEdgeDetector's own margin, a rim point that close having half its neighbourhood out
@@ -50,8 +53,8 @@ namespace NanotecController
         /// Bounded on purpose: a lost sample is cheap, a 100 mm traverse is not.</summary>
         private const int WAFER_SEARCH_HOPS = 6;
 
-        /// <summary>Θ speed for the scan's rotations (steps/s). Θ tops out at 3200 and a revolution is
-        /// 359,859 ticks, so a scan spends ~2 minutes turning whatever N is.</summary>
+        /// <summary>Θ speed for the scan's rotations (steps/s). Θ's cap is 5000 and a revolution is
+        /// 359,859 ticks, so a scan spends ~72 s turning whatever N is.</summary>
         private const int WAFER_THETA_SPEED = 5000;
 
         /// <summary>Arrival tolerance for the station moves, as a fraction of one hop.</summary>

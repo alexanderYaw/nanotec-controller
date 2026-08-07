@@ -635,7 +635,7 @@ namespace NanotecController
             }
             double viewTilt = CameraFrame.TiltDeg(cal) ?? 0;
             NotchLog($"The station bears {bearing:F2}° from the wafer centre at Θ={target:F2}° " +
-                     $"({CameraFrame.ToView(bearing, viewTilt):F2}° in the view frame the datum uses), and the " +
+                     $"({CameraFrame.LabToDatum(bearing, viewTilt):F2}° on the datum's dial), and the " +
                      $"stored notch is {stored:F2}° in the chuck frame — so Θ={target:F2}° should put the notch " +
                      $"on the crosshair. One degree is {mmPerDeg:F2} mm of rim; the frame holds about 4.9 mm.");
             _status.Text = "Check notch: turning the notch to the camera...";
@@ -780,9 +780,10 @@ namespace NanotecController
             int sign = cal.WaferFitSign ?? +1;
 
             // The datum is read in the CAMERA's frame — the bearing as it appears on the live view —
-            // because that is the frame the operator works in. The conversion is one angle, the
-            // camera's mounting tilt (CameraFrame), so the chuck turns by that much more and the
-            // wafer ends up square to the VIEW rather than to the stage.
+            // because that is the frame the operator works in, and quoted from NORTH (0 = north,
+            // 90 = west). The conversion is two angles, the camera's mounting tilt and that quarter
+            // turn (both in CameraFrame), so the chuck turns by that much more and the wafer ends up
+            // square to the VIEW rather than to the stage.
             //
             // Underneath it is still a lab bearing, related to the stored CHUCK-frame angle by
             // lab = chuckFrame + sign·Θ, so the Θ putting the notch on the datum is
@@ -791,19 +792,20 @@ namespace NanotecController
             // turns the wrong way entirely on this machine.
             double tilt = CameraFrame.TiltDeg(cal) ?? 0;
             double datum = (double)_notchDatum.Value;
-            double labDatum = CameraFrame.ToLab(datum, tilt);
+            double labDatum = CameraFrame.DatumToLab(datum, tilt);
             double nowLab = ((notch + sign * now) % 360.0 + 360.0) % 360.0;
             double targetTheta = sign * (labDatum - notch);
             double delta = ((targetTheta - now) % 360.0 + 540.0) % 360.0 - 180.0;
-            NotchLog($"Notch bears {CameraFrame.ToView(nowLab, tilt):F2}° in the view now " +
+            NotchLog($"Notch bears {CameraFrame.LabToDatum(nowLab, tilt):F2}° on the datum's dial now " +
                      $"({nowLab:F2}° in the machine frame; chuck-frame {notch:F2}°, Θ={now:F2}°, " +
                      $"sign {sign:+0;-0}).");
-            NotchLog($"The camera is mounted {tilt:+0.00;-0.00}° off the machine's axes, so the {datum:F1}° " +
-                     $"datum is {labDatum:F2}° in the machine frame; turning Θ by {delta:+0.00;-0.00}°.");
+            NotchLog($"The datum reads from north and the camera is mounted {tilt:+0.00;-0.00}° off the " +
+                     $"machine's axes, so the {datum:F1}° datum is {labDatum:F2}° in the machine frame; " +
+                     $"turning Θ by {delta:+0.00;-0.00}°.");
             _status.Text = $"Rotate to datum: turning {delta:+0.0;-0.0}°...";
             bool ok = await _owner.RotateThetaOnlyAsync(delta, NOTCH_NUDGE_SPEED);
             _status.Text = ok
-                ? $"Notch at the {datum:F1}° datum (view frame; {labDatum:F1}° machine)."
+                ? $"Notch at the {datum:F1}° datum ({labDatum:F1}° machine)."
                 : "Rotate to datum: the move did not complete — see the main log.";
         }
 

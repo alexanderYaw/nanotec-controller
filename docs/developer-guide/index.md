@@ -1337,9 +1337,9 @@ place on the rim that is not a circle. The centre-find drops the notch when it m
 on the minority of runs where it lands wholly in frame; this finds it deliberately, from any
 orientation, and stores its bearing so the wafer can be turned to a datum.
 
-It is a **continuous** Θ sweep, not step-and-settle: a revolution costs 112 s of rotation whatever
-happens (359,859 ticks ÷ Θ's 3200 steps/s cap), and stopping ~157 times would triple that, while
-sweeping adds nothing because the detector runs in ~130 ms against a 710 ms budget. Y follows the
+It is a **continuous** Θ sweep, not step-and-settle: a revolution costs 72 s of rotation whatever
+happens (359,859 ticks ÷ Θ's 5000 steps/s cap), and stopping ~157 times would quadruple that, while
+sweeping adds nothing because the detector runs in ~130 ms against a 460 ms budget. Y follows the
 rim's computed path — a 10 mm excursion at 365 steps/s, since all it cancels is the 2.5 mm
 eccentricity. Detection is two-stage: a line-residual test that tolerates a half-visible notch does
 the hunting, then a chord-anchored measurement on a stationary frame gives the apex.
@@ -1376,7 +1376,10 @@ paints the newest finished frame.
   the grab thread between frames because it must re-open the grabber. It therefore changes the
   field of view **in steps**, which is why the auto centre-find recomputes its hop per run.
 * **Invert / Mono** are display-only (the camera is mounted inverted, so invert defaults on);
-  detections always run on the **raw full-resolution** frame.
+  detections always run on the **raw full-resolution** frame. Invert reaches the protocols window's
+  *Captured* pane too, as of 2026-08-07 — `ShowCaptured` applies it **after** the caller's overlay is
+  drawn, so the two panes agree by eye while overlay pixels still line up with the raw row/col the
+  detector reports.
 * **The camera is mounted ~4.6° rotated**, and the affine carries it (column axis at 184.6° in the
   stage frame, row axis at 94.45° — orthogonal to 0.1°, so a real rotation, not skew). Every
   measurement divides it out; only the picture leans. **A display rotation to square the view up was

@@ -52,7 +52,7 @@ namespace NanotecController
         // sanity-checks the fitted radius. Logic lives in FrmVisionProtocols.AutoWafer.cs.
         private readonly WaferEdgeDetector _waferDetector = new();
         private readonly NumericUpDown _waferDia = new() { Minimum = 10, Maximum = 600, Value = 200, DecimalPlaces = 1, Increment = 10 };
-        private readonly NumericUpDown _waferSamples = new() { Minimum = 3, Maximum = 72, Value = 24, Increment = 1 };
+        private readonly NumericUpDown _waferSamples = new() { Minimum = 3, Maximum = 72, Value = 8, Increment = 1 };
         private readonly Button _waferRunBtn = new() { Text = "Auto Wafer Centre (Θ)", Enabled = false };
         private readonly Button _waferCancelBtn = new() { Text = "Cancel", Enabled = false };
         private readonly Button _waferGoBtn = new() { Text = "Go to Centre", Enabled = false };
@@ -266,7 +266,7 @@ namespace NanotecController
             _notchCancelBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _notchCancelBtn.Click += (s, e) => CancelNotchFind();
 
-            var notchDatumLabel = new Label { Text = "Datum°:", Location = new Point(_notchCancelBtn.Right + 10, 695), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+            var notchDatumLabel = new Label { Text = "Datum° (0=N, 90=W):", Location = new Point(_notchCancelBtn.Right + 10, 695), AutoSize = true, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
             _notchDatum.Size = new Size(64, 22);
             _notchDatum.Location = new Point(After(notchDatumLabel), 692);
             _notchDatum.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
@@ -579,10 +579,14 @@ namespace NanotecController
             if (open) _vPadTimer.Start(); else { _vPadTimer.Stop(); _owner.VisionStop(); }
         }
 
-        // Puts a bitmap in the captured pane, taking ownership (disposes the previous one).
+        // Puts a bitmap in the captured pane, taking ownership (disposes the previous one). The 180°
+        // display flip is applied HERE, after the caller has drawn its overlay, so the pane matches
+        // the live view while the overlay stays glued to the pixels it was measured against. Detection
+        // never sees this — every job runs on the raw frame, and the callers post with flip: false.
         private void ShowCaptured(Bitmap bmp)
         {
             if (IsDisposed) { bmp.Dispose(); return; }
+            if (_view.InvertView) bmp.RotateFlip(RotateFlipType.Rotate180FlipNone);
             Image? old = _capturedBox.Image;
             _capturedBox.Image = bmp;
             if (!ReferenceEquals(old, bmp)) old?.Dispose();

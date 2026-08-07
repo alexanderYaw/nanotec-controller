@@ -39,6 +39,20 @@ namespace NanotecController
         /// <summary>A bearing read off the live view, back in the lab frame.</summary>
         public static double ToLab(double viewDeg, double tiltDeg) => Norm360(viewDeg + tiltDeg);
 
+        /// <summary>Where the notch datum's 0° points, as a bearing in the view frame. The view's own
+        /// 0° reads WEST on screen; the datum is quoted from NORTH instead (user convention,
+        /// 2026-08-07), so 0 = north, 90 = west, 180 = south, 270 = east. The dial keeps the view
+        /// frame's own direction of travel, so it runs anticlockwise on screen — NOT a compass.</summary>
+        private const double DatumZeroInView = 270.0;
+
+        /// <summary>A datum the operator typed, as a lab bearing.</summary>
+        public static double DatumToLab(double datumDeg, double tiltDeg)
+            => ToLab(datumDeg + DatumZeroInView, tiltDeg);
+
+        /// <summary>A lab bearing, as the datum reading for the same direction.</summary>
+        public static double LabToDatum(double labDeg, double tiltDeg)
+            => Norm360(ToView(labDeg, tiltDeg) - DatumZeroInView);
+
         private static double Norm360(double deg) => ((deg % 360.0) + 360.0) % 360.0;
     }
 }
